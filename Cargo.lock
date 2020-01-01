@@ -296,7 +296,6 @@ dependencies = [
  "clap",
  "crit-core",
  "crit-tui",
- "nix",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",

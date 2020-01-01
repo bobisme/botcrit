@@ -158,8 +158,9 @@ create → [comment/reply/vote] → approve → merge
 
 ### Output Formats
 
-- **TOON** (default): Token-optimized, compact, human-readable
-- **JSON** (`--json`): Machine-parseable for scripting
+- **Pretty** (default for TTY): Human-readable with visual formatting
+- **Text** (default for pipes): Plain text, compact
+- **JSON** (`--json` or `--format json`): Machine-parseable for scripting
 
 ### Workspace Support
 
