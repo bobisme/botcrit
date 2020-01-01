@@ -55,6 +55,7 @@ pub fn parse_since(value: &str) -> Result<DateTime<Utc>> {
 /// # Arguments
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
+#[tracing::instrument(skip(crit_root, scm, format), fields(title = %title))]
 pub fn run_reviews_create(
     crit_root: &Path,
     scm: &dyn ScmRepo,
@@ -219,6 +220,7 @@ pub fn run_reviews_show(repo_root: &Path, review_id: &str, format: OutputFormat)
 }
 
 /// Request reviewers for a review.
+#[tracing::instrument(skip(repo_root, format))]
 pub fn run_reviews_request(
     repo_root: &Path,
     review_id: &str,
@@ -262,13 +264,6 @@ pub fn run_reviews_request(
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
-
-    if format != OutputFormat::Json {
-        println!();
-        println!("Next:");
-        println!("  crit review {review_id}");
-        println!("  crit inbox");
-    }
 
     Ok(())
 }
@@ -465,6 +460,7 @@ pub fn run_reviews_merge(
 }
 
 /// Vote LGTM on a review.
+#[tracing::instrument(skip(repo_root, format))]
 pub fn run_lgtm(
     repo_root: &Path,
     review_id: &str,
@@ -483,6 +479,7 @@ pub fn run_lgtm(
 }
 
 /// Block a review (request changes).
+#[tracing::instrument(skip(repo_root, format))]
 pub fn run_block(
     repo_root: &Path,
     review_id: &str,
@@ -572,18 +569,6 @@ fn run_vote(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
-    if format != OutputFormat::Json {
-        println!();
-        println!("Next:");
-        if auto_approved {
-            println!("  crit reviews mark-merged {review_id}");
-        } else if vote == VoteType::Block {
-            println!("  crit comment {review_id} --file <path> --line <n> \"feedback\"");
-        } else {
-            println!("  crit review {review_id}");
-        }
-    }
-
     Ok(())
 }
 
@@ -593,6 +578,7 @@ fn run_vote(
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 /// * `since` - Optional filter to only show activity after this time
+#[tracing::instrument(skip(crit_root, scm, format))]
 pub fn run_review(
     crit_root: &Path,
     scm: &dyn ScmRepo,
@@ -937,6 +923,7 @@ fn print_file_diffs_text(
 }
 
 /// Show inbox - reviews and threads needing the agent's attention.
+#[tracing::instrument(skip(repo_root, format))]
 pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<()> {
     ensure_initialized(repo_root)?;
 

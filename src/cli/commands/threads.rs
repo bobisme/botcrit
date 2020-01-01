@@ -94,13 +94,6 @@ pub fn run_threads_create(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
-    if format != OutputFormat::Json {
-        println!();
-        println!("Next:");
-        println!("  crit reply {thread_id} \"...\"");
-        println!("  crit threads show {thread_id}");
-    }
-
     Ok(())
 }
 
@@ -256,7 +249,7 @@ pub fn run_threads_show(
                     Ok(ctx) => Some(ctx),
                     Err(e) => {
                         // Context extraction failed, but we can still show the thread
-                        eprintln!("Warning: could not extract context: {}", e);
+                        tracing::warn!("could not extract context: {}", e);
                         None
                     }
                 }

@@ -62,11 +62,11 @@ impl Cli {
                 "text" => return OutputFormat::Text,
                 "json" => return OutputFormat::Json,
                 "toon" => {
-                    eprintln!("Warning: 'toon' format has been removed, using 'text' instead");
+                    tracing::warn!("'toon' format has been removed, using 'text' instead");
                     return OutputFormat::Text;
                 }
                 _ => {
-                    eprintln!("Warning: unknown FORMAT value '{format_str}', using auto-detection");
+                    tracing::warn!("unknown FORMAT value '{format_str}', using auto-detection");
                 }
             }
         }

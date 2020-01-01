@@ -17,6 +17,7 @@ use crate::output::{Formatter, OutputFormat};
 use crate::scm::ScmRepo;
 
 /// Add a comment to a thread.
+#[tracing::instrument(skip(repo_root, message, format))]
 pub fn run_comments_add(
     repo_root: &Path,
     thread_id: &str,
@@ -78,13 +79,6 @@ pub fn run_comments_add(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
-    if format != OutputFormat::Json {
-        println!();
-        println!("Next:");
-        println!("  crit threads show {thread_id}");
-        println!("  crit review {}", thread.review_id);
-    }
-
     Ok(())
 }
 
@@ -97,6 +91,7 @@ pub fn run_comments_add(
 /// # Arguments
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
+#[tracing::instrument(skip(crit_root, scm, message, format))]
 pub fn run_comment(
     crit_root: &Path,
     scm: &dyn ScmRepo,
@@ -207,13 +202,6 @@ pub fn run_comment(
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
-
-    if format != OutputFormat::Json {
-        println!();
-        println!("Next:");
-        println!("  crit reply {thread_id} \"...\"");
-        println!("  crit review {review_id}");
-    }
 
     Ok(())
 }

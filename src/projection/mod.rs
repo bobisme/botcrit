@@ -923,9 +923,9 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<Sync
 
     // Print warnings if there are anomalies
     if !report.anomalies.is_empty() {
-        eprintln!("WARNING: review event file(s) appear stale (likely jj workspace sync)");
+        tracing::warn!("review event file(s) appear stale (likely jj workspace sync)");
         for anomaly in &report.anomalies {
-            eprintln!("  {}: {}", anomaly.review_id, anomaly.detail);
+            tracing::warn!("  {}: {}", anomaly.review_id, anomaly.detail);
         }
         eprintln!("Projection data preserved. To investigate:");
         eprintln!("  jj file annotate .crit/reviews/<review_id>/events.jsonl");
@@ -977,7 +977,7 @@ fn sync_new_file(
     let mut failed = false;
     for event in &events {
         if let Err(e) = apply_event_inner(&db.conn, event) {
-            eprintln!("WARNING: failed to apply event in {}: {}", review_id, e);
+            tracing::warn!("failed to apply event in {}: {}", review_id, e);
             report.anomalies.push(SyncAnomaly {
                 review_id: review_id.to_string(),
                 kind: AnomalyKind::ParseError,
@@ -1085,7 +1085,7 @@ fn sync_grew_file(
     let mut failed = false;
     for event in &new_events {
         if let Err(e) = apply_event_inner(&db.conn, event) {
-            eprintln!("WARNING: failed to apply event in {}: {}", review_id, e);
+            tracing::warn!("failed to apply event in {}: {}", review_id, e);
             report.anomalies.push(SyncAnomaly {
                 review_id: review_id.to_string(),
                 kind: AnomalyKind::ParseError,

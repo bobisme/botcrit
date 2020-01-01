@@ -30,6 +30,7 @@ fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
 }
 
 fn main() -> Result<()> {
+    let _telemetry = crit::telemetry::init();
     let cli = Cli::parse();
 
     // We need two paths:
