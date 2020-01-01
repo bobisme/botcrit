@@ -78,6 +78,13 @@ pub fn run_comments_add(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
+    if format != OutputFormat::Json {
+        println!();
+        println!("Next:");
+        println!("  crit threads show {thread_id}");
+        println!("  crit review {}", thread.review_id);
+    }
+
     Ok(())
 }
 
@@ -200,6 +207,13 @@ pub fn run_comment(
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
+
+    if format != OutputFormat::Json {
+        println!();
+        println!("Next:");
+        println!("  crit reply {thread_id} \"...\"");
+        println!("  crit review {review_id}");
+    }
 
     Ok(())
 }

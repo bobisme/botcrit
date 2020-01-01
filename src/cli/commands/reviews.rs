@@ -263,6 +263,13 @@ pub fn run_reviews_request(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
+    if format != OutputFormat::Json {
+        println!();
+        println!("Next:");
+        println!("  crit review {review_id}");
+        println!("  crit inbox");
+    }
+
     Ok(())
 }
 
@@ -564,6 +571,18 @@ fn run_vote(
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
+
+    if format != OutputFormat::Json {
+        println!();
+        println!("Next:");
+        if auto_approved {
+            println!("  crit reviews mark-merged {review_id}");
+        } else if vote == VoteType::Block {
+            println!("  crit comment {review_id} --file <path> --line <n> \"feedback\"");
+        } else {
+            println!("  crit review {review_id}");
+        }
+    }
 
     Ok(())
 }

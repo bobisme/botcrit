@@ -8,4 +8,5 @@ pub mod log;
 pub mod output;
 pub mod projection;
 pub mod scm;
+pub mod tui;
 pub mod version;

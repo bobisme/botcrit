@@ -94,6 +94,13 @@ pub fn run_threads_create(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
+    if format != OutputFormat::Json {
+        println!();
+        println!("Next:");
+        println!("  crit reply {thread_id} \"...\"");
+        println!("  crit threads show {thread_id}");
+    }
+
     Ok(())
 }
 

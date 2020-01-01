@@ -303,6 +303,10 @@ fn main() -> Result<()> {
             run_diff(&crit_root, scm.as_ref(), &review_id, format)?;
         }
 
+        Commands::Ui => {
+            crit::tui::run(&crit_root)?;
+        }
+
         Commands::Comment {
             review_id,
             file,
