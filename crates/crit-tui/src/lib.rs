@@ -24,10 +24,12 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+use crit_core::core::CritServices;
+
 use app::{update, App, Message, ViewMode};
 
 /// Run the TUI application
-pub fn run(repo_root: &Path) -> Result<()> {
+pub fn run(repo_root: &Path, services: CritServices) -> Result<()> {
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -37,7 +39,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
     // Create app
-    let mut app = App::new(repo_root.to_path_buf())?;
+    let mut app = App::new(repo_root.to_path_buf(), services)?;
 
     // Run main loop
     let result = run_loop(&mut terminal, &mut app);

@@ -16,9 +16,10 @@ use ratatui::{
     Frame,
 };
 
+use crit_core::core::CritServices;
 use crit_core::critignore::CritIgnore;
 use crit_core::jj::JjRepo;
-use crit_core::projection::{Comment, ProjectionDb, ReviewDetail, ThreadSummary};
+use crit_core::projection::{Comment, ReviewDetail, ThreadSummary};
 use crate::theme;
 
 /// A thread with its comments for display
@@ -86,12 +87,13 @@ pub struct ReviewDetailView {
 
 impl ReviewDetailView {
     /// Create a new review detail view
-    pub fn new(review: ReviewDetail, repo_root: &Path, db: &ProjectionDb) -> Self {
+    pub fn new(review: ReviewDetail, repo_root: &Path, services: &CritServices) -> Self {
         let has_delta = which::which("delta").is_ok();
 
         // Get threads for this review
-        let all_threads = db
-            .list_threads(&review.review_id, None, None)
+        let all_threads = services
+            .threads()
+            .list(&review.review_id, None, None)
             .unwrap_or_default();
 
         // Get the diff and split by file
@@ -106,7 +108,8 @@ impl ReviewDetailView {
             .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
             .unwrap_or_else(|| "@".to_string());
 
-        let files = Self::load_file_sections(&jj, &review, &target_commit, &all_threads, db);
+        let files =
+            Self::load_file_sections(&jj, &review, &target_commit, &all_threads, services);
 
         let mut file_list_state = ListState::default();
         if !files.is_empty() {
@@ -135,7 +138,7 @@ impl ReviewDetailView {
         review: &ReviewDetail,
         target_commit: &str,
         threads: &[ThreadSummary],
-        db: &ProjectionDb,
+        services: &CritServices,
     ) -> Vec<FileSection> {
         // Get the base commit for the diff: the parent of the initial commit.
         // This shows ALL files changed in the review, not just changes since creation.
@@ -165,7 +168,10 @@ impl ReviewDetailView {
                 .iter()
                 .filter(|t| t.file_path == file_path)
                 .map(|t| {
-                    let comments = db.list_comments(&t.thread_id).unwrap_or_default();
+                    let comments = services
+                        .comments()
+                        .list(&t.thread_id)
+                        .unwrap_or_default();
                     ThreadWithComments {
                         summary: t.clone(),
                         comments,

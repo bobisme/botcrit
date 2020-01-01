@@ -310,7 +310,10 @@ fn main() -> Result<()> {
             eprintln!("    cargo install --git https://github.com/anomalyco/botcrit-ui");
             eprintln!("  Then run: crit-ui");
             eprintln!();
-            crit_tui::run(&crit_root)?;
+            let db_path = crit_root.join(".crit").join("index.db");
+            let ctx = crit_core::core::CoreContext::new(&crit_root, &db_path)?;
+            let services = ctx.services()?;
+            crit_tui::run(&crit_root, services)?;
         }
 
         Commands::Comment {

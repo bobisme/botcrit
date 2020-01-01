@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use super::views::{ReviewDetailView, ReviewListView};
-use crit_core::projection::ProjectionDb;
+use crit_core::core::CritServices;
 
 /// Which view is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +61,9 @@ pub struct App {
     /// Path to repository root
     pub repo_root: PathBuf,
 
+    /// Core services for data access
+    pub services: CritServices,
+
     /// Current view mode
     pub view_mode: ViewMode,
 
@@ -82,12 +85,12 @@ pub struct App {
 
 impl App {
     /// Create a new App instance
-    pub fn new(repo_root: PathBuf) -> Result<Self> {
-        let db = Self::open_db_static(&repo_root)?;
-        let reviews = db.list_reviews(None, None)?;
+    pub fn new(repo_root: PathBuf, services: CritServices) -> Result<Self> {
+        let reviews = services.reviews().list(None, None)?;
 
         let mut app = Self {
             repo_root,
+            services,
             view_mode: ViewMode::ReviewList,
             review_list: ReviewListView::new(reviews),
             review_detail: None,
@@ -101,36 +104,21 @@ impl App {
 
     /// Refresh all data from the database
     pub fn refresh(&mut self) -> Result<()> {
-        let db = self.open_db()?;
-        self.review_list.reviews = db.list_reviews(None, None)?;
+        // Re-sync the projection before querying
+        self.services.sync().sync()?;
+        self.review_list.reviews = self.services.reviews().list(None, None)?;
 
         // If we're in detail view, refresh that too
         if let Some(ref mut detail) = self.review_detail {
             // Reload the review detail
-            if let Some(review) = db.get_review(&detail.review.review_id)? {
-                self.review_detail = Some(ReviewDetailView::new(review, &self.repo_root, &db));
+            if let Some(review) = self.services.reviews().get_optional(&detail.review.review_id)? {
+                self.review_detail =
+                    Some(ReviewDetailView::new(review, &self.repo_root, &self.services));
             }
         }
 
         self.status_message = Some("Refreshed".to_string());
         Ok(())
-    }
-
-    /// Open the projection database (static version for initialization)
-    fn open_db_static(repo_root: &PathBuf) -> Result<ProjectionDb> {
-        let crit_dir = repo_root.join(".crit");
-        let index_path = crit_dir.join("index.db");
-        let events_path = crit_dir.join("events.jsonl");
-        let log = crit_core::log::open_or_create(&events_path)?;
-        let db = ProjectionDb::open(&index_path)?;
-        db.init_schema()?;
-        crit_core::projection::sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
-        Ok(db)
-    }
-
-    /// Open the projection database
-    fn open_db(&self) -> Result<ProjectionDb> {
-        Self::open_db_static(&self.repo_root)
     }
 
     /// Enter review detail view for the selected review
@@ -139,13 +127,16 @@ impl App {
             return Ok(());
         };
 
-        let db = self.open_db()?;
-        let Some(review) = db.get_review(&review_summary.review_id)? else {
+        let Some(review) = self
+            .services
+            .reviews()
+            .get_optional(&review_summary.review_id)?
+        else {
             self.status_message = Some("Review not found".to_string());
             return Ok(());
         };
 
-        self.review_detail = Some(ReviewDetailView::new(review, &self.repo_root, &db));
+        self.review_detail = Some(ReviewDetailView::new(review, &self.repo_root, &self.services));
         self.view_mode = ViewMode::ReviewDetail;
         Ok(())
     }
