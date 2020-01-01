@@ -1,0 +1,22 @@
+[package]
+name = "crit-tui"
+description = "Terminal UI for crit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crit-core.workspace = true
+anyhow.workspace = true
+ansi-to-tui.workspace = true
+crossterm.workspace = true
+nix.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

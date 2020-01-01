@@ -1,59 +1,57 @@
-[package]
-name = "crit"
+[workspace]
+members = [
+    "crates/crit-core",
+    "crates/crit-cli",
+    "crates/crit-tui",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.24.0"
 edition = "2021"
-description = "Agent-centric distributed code review tool for Git and jj"
 license = "MIT"
 
-[[bin]]
-name = "crit"
-path = "src/main.rs"
-
-[features]
-default = []
-otel = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-otlp",
-    "dep:opentelemetry-appender-tracing",
-    "dep:tracing-opentelemetry",
-]
-
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.100"
-ansi-to-tui = "7.0"
 chrono = { version = "0.4.43", features = ["serde"] }
-clap = { version = "4.5.54", features = ["derive"] }
-crossterm = "0.28"
 fs2 = "0.4.3"
-nix = { version = "0.29", features = ["signal"] }
-ratatui = "0.29"
+getrandom = "0.3"
+ignore = "0.4"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-thiserror = "2.0.18"
-getrandom = "0.3"
-ignore = "0.4"
 terseid = "0.1"
+thiserror = "2.0.18"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 which = "8.0.0"
 
-# Optional OTEL dependencies (feature-gated)
-opentelemetry = { version = "0.31", optional = true }
-opentelemetry_sdk = { version = "0.31", optional = true, features = ["trace", "logs"] }
-opentelemetry-otlp = { version = "0.31", optional = true, default-features = false, features = ["trace", "logs", "http-proto", "reqwest-blocking-client"] }
-opentelemetry-appender-tracing = { version = "0.31", optional = true }
-tracing-opentelemetry = { version = "0.32", optional = true }
+# CLI-specific
+clap = { version = "4.5.54", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+nix = { version = "0.29", features = ["signal"] }
 
-[dev-dependencies]
+# TUI-specific
+ansi-to-tui = "7.0"
+crossterm = "0.28"
+ratatui = "0.29"
+
+# OTEL dependencies (optional at crate level, not workspace level)
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["trace", "logs"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "logs", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-appender-tracing = "0.31"
+tracing-opentelemetry = "0.32"
+
+# Dev
 tempfile = "3.24.0"
 
-[lints.clippy]
+# Internal
+crit-core = { path = "crates/crit-core" }
+
+[workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 unwrap_used = "deny"
-# maybe
 suspicious = { level = "warn", priority = -2 }
 complexity = { level = "warn", priority = -2 }
 perf = { level = "warn", priority = -2 }
