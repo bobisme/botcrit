@@ -305,6 +305,11 @@ fn main() -> Result<()> {
         }
 
         Commands::Ui => {
+            eprintln!("WARNING: `crit ui` is deprecated and will be removed in a future release.");
+            eprintln!("  Install botcrit-ui for the canonical interactive review experience:");
+            eprintln!("    cargo install --git https://github.com/anomalyco/botcrit-ui");
+            eprintln!("  Then run: crit-ui");
+            eprintln!();
             crit::tui::run(&crit_root)?;
         }
 
