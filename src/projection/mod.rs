@@ -927,10 +927,10 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<Sync
         for anomaly in &report.anomalies {
             tracing::warn!("  {}: {}", anomaly.review_id, anomaly.detail);
         }
-        eprintln!("Projection data preserved. To investigate:");
-        eprintln!("  jj file annotate .crit/reviews/<review_id>/events.jsonl");
-        eprintln!("To force rebuild from current files:");
-        eprintln!("  crit sync --rebuild");
+        tracing::warn!("Projection data preserved. To investigate:");
+        tracing::warn!("  jj file annotate .crit/reviews/<review_id>/events.jsonl");
+        tracing::warn!("To force rebuild from current files:");
+        tracing::warn!("  crit sync --rebuild");
     }
 
     Ok(report)

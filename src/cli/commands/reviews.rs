@@ -55,7 +55,7 @@ pub fn parse_since(value: &str) -> Result<DateTime<Utc>> {
 /// # Arguments
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
-#[tracing::instrument(skip(crit_root, scm, format), fields(title = %title))]
+#[tracing::instrument(skip(crit_root, scm, format, description, reviewers), fields(title = %title))]
 pub fn run_reviews_create(
     crit_root: &Path,
     scm: &dyn ScmRepo,
@@ -460,7 +460,7 @@ pub fn run_reviews_merge(
 }
 
 /// Vote LGTM on a review.
-#[tracing::instrument(skip(repo_root, format))]
+#[tracing::instrument(skip(repo_root, format, message))]
 pub fn run_lgtm(
     repo_root: &Path,
     review_id: &str,
@@ -479,7 +479,7 @@ pub fn run_lgtm(
 }
 
 /// Block a review (request changes).
-#[tracing::instrument(skip(repo_root, format))]
+#[tracing::instrument(skip(repo_root, format, reason))]
 pub fn run_block(
     repo_root: &Path,
     review_id: &str,

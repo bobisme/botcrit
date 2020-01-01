@@ -10,7 +10,7 @@ name = "crit"
 path = "src/main.rs"
 
 [features]
-default = ["otel"]
+default = []
 otel = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
