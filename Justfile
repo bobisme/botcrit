@@ -5,4 +5,4 @@ test:
   cargo test
 
 install:
-  cargo install --locked --path .
+  cargo install --locked --path crates/crit-cli
