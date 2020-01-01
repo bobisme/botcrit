@@ -1,0 +1,28 @@
+{
+  "name": "solarized",
+  "syntaxTheme": "Solarized (dark)",
+  "seeds": {
+    "background": "#001f27",
+    "foreground": "#93a1a1",
+    "primary": "#6c71c4",
+    "muted": "#586e75",
+    "success": "#859900",
+    "warning": "#b58900",
+    "error": "#dc322f"
+  },
+  "overrides": {
+    "diffHighlightAdded": "#2aa198",
+    "diffHighlightRemoved": "#d33682",
+    "syntaxKeyword": "#859900",
+    "syntaxFunction": "#268bd2",
+    "syntaxTypeName": "#b58900",
+    "syntaxString": "#2aa198",
+    "syntaxNumber": "#d33682",
+    "syntaxComment": "#586e75",
+    "syntaxOperator": "#6c71c4",
+    "syntaxPunctuation": "#839496",
+    "syntaxVariable": "#93a1a1",
+    "syntaxConstant": "#cb4b16",
+    "syntaxAttribute": "#268bd2"
+  }
+}

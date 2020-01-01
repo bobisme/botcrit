@@ -1,0 +1,26 @@
+{
+  "name": "monokai",
+  "syntaxTheme": "base16-mocha.dark",
+  "seeds": {
+    "background": "#23241e",
+    "foreground": "#f8f8f2",
+    "primary": "#ae81ff",
+    "muted": "#75715e",
+    "success": "#a6e22e",
+    "warning": "#fd971f",
+    "error": "#f92672"
+  },
+  "overrides": {
+    "syntaxKeyword": "#f92672",
+    "syntaxFunction": "#a6e22e",
+    "syntaxTypeName": "#66d9ef",
+    "syntaxString": "#e6db74",
+    "syntaxNumber": "#ae81ff",
+    "syntaxComment": "#75715e",
+    "syntaxOperator": "#f92672",
+    "syntaxPunctuation": "#f8f8f2",
+    "syntaxVariable": "#f8f8f2",
+    "syntaxConstant": "#ae81ff",
+    "syntaxAttribute": "#a6e22e"
+  }
+}

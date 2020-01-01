@@ -1,0 +1,31 @@
+{
+  "name": "default-dark",
+  "syntaxTheme": "base16-ocean.dark",
+  "colors": {
+    "background": "#1a1b26",
+    "foreground": "#c0caf5",
+    "border": "#3b4261",
+    "borderFocused": "#7aa2f7",
+    "panelBg": "#24283b",
+    "selectionBg": "#33467c",
+    "selectionFg": "#c0caf5",
+    "cursor": "#c0caf5",
+    "primary": "#7aa2f7",
+    "success": "#9ece6a",
+    "warning": "#e0af68",
+    "error": "#f7768e",
+    "muted": "#565f89",
+    "diffAdded": "#9ece6a",
+    "diffRemoved": "#f7768e",
+    "diffContext": "#a9b1d6",
+    "diffHunkHeader": "#565f89",
+    "diffHighlightAdded": "#73daca",
+    "diffHighlightRemoved": "#ff7a93",
+    "diffAddedBg": "#1a2f1a",
+    "diffRemovedBg": "#2f1a1a",
+    "diffContextBg": "#1a1b26",
+    "diffLineNumber": "#565f89",
+    "diffAddedLineNumberBg": "#152515",
+    "diffRemovedLineNumberBg": "#251515"
+  }
+}

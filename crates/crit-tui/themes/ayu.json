@@ -1,0 +1,26 @@
+{
+  "name": "ayu",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#0f1419",
+    "foreground": "#d6dae0",
+    "primary": "#3fb7e3",
+    "muted": "#73819b",
+    "success": "#78d05c",
+    "warning": "#e4a75c",
+    "error": "#f58572"
+  },
+  "overrides": {
+    "syntaxKeyword": "#ff8f40",
+    "syntaxFunction": "#3fb7e3",
+    "syntaxTypeName": "#e4a75c",
+    "syntaxString": "#b1c74a",
+    "syntaxNumber": "#f2856f",
+    "syntaxComment": "#73819b",
+    "syntaxOperator": "#f29668",
+    "syntaxPunctuation": "#a3adba",
+    "syntaxVariable": "#d6dae0",
+    "syntaxConstant": "#66c6f1",
+    "syntaxAttribute": "#e4a75c"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "nord",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#1f2430",
+    "foreground": "#e5e9f0",
+    "primary": "#88c0d0",
+    "muted": "#6a7492",
+    "success": "#a3be8c",
+    "warning": "#d08770",
+    "error": "#bf616a"
+  },
+  "overrides": {
+    "syntaxKeyword": "#81a1c1",
+    "syntaxFunction": "#88c0d0",
+    "syntaxTypeName": "#eac196",
+    "syntaxString": "#a3be8c",
+    "syntaxNumber": "#b48ead",
+    "syntaxComment": "#6a7492",
+    "syntaxOperator": "#81a1c1",
+    "syntaxPunctuation": "#a4adbf",
+    "syntaxVariable": "#e5e9f0",
+    "syntaxConstant": "#b48ead",
+    "syntaxAttribute": "#d08770"
+  }
+}

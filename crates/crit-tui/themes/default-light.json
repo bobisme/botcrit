@@ -1,0 +1,31 @@
+{
+  "name": "default-light",
+  "syntaxTheme": "base16-ocean.light",
+  "colors": {
+    "background": "#d5d6db",
+    "foreground": "#343b58",
+    "border": "#9699a3",
+    "borderFocused": "#34548a",
+    "panelBg": "#cbccd1",
+    "selectionBg": "#99a7df",
+    "selectionFg": "#343b58",
+    "cursor": "#343b58",
+    "primary": "#34548a",
+    "success": "#485e30",
+    "warning": "#8f5e15",
+    "error": "#8c4351",
+    "muted": "#6a6f87",
+    "diffAdded": "#485e30",
+    "diffRemoved": "#8c4351",
+    "diffContext": "#343b58",
+    "diffHunkHeader": "#6a6f87",
+    "diffHighlightAdded": "#33635c",
+    "diffHighlightRemoved": "#a8323e",
+    "diffAddedBg": "#c5dcc5",
+    "diffRemovedBg": "#dcc5c5",
+    "diffContextBg": "#d5d6db",
+    "diffLineNumber": "#6a6f87",
+    "diffAddedLineNumberBg": "#b5ccb5",
+    "diffRemovedLineNumberBg": "#ccb5b5"
+  }
+}

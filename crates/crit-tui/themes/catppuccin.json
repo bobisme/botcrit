@@ -1,0 +1,27 @@
+{
+  "name": "catppuccin",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#1e1e2e",
+    "foreground": "#cdd6f4",
+    "primary": "#b4befe",
+    "muted": "#6c7086",
+    "success": "#a6d189",
+    "warning": "#f4b8e4",
+    "error": "#f38ba8"
+  },
+  "overrides": {
+    "diffHighlightAdded": "#94e2d5",
+    "syntaxKeyword": "#cba6f7",
+    "syntaxFunction": "#89b4fa",
+    "syntaxTypeName": "#f9e2af",
+    "syntaxString": "#a6e3a1",
+    "syntaxNumber": "#fab387",
+    "syntaxComment": "#6c7086",
+    "syntaxOperator": "#89dceb",
+    "syntaxPunctuation": "#bac2de",
+    "syntaxVariable": "#cdd6f4",
+    "syntaxConstant": "#fab387",
+    "syntaxAttribute": "#cba6f7"
+  }
+}

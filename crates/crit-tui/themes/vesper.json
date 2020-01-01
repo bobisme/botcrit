@@ -1,0 +1,26 @@
+{
+  "name": "vesper",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#101010",
+    "foreground": "#ffffff",
+    "primary": "#ffc799",
+    "muted": "#606060",
+    "success": "#99ffe4",
+    "warning": "#ffc799",
+    "error": "#ff8080"
+  },
+  "overrides": {
+    "syntaxKeyword": "#ffc799",
+    "syntaxFunction": "#ffffff",
+    "syntaxTypeName": "#ffc799",
+    "syntaxString": "#99ffe4",
+    "syntaxNumber": "#ff8080",
+    "syntaxComment": "#505050",
+    "syntaxOperator": "#ffc799",
+    "syntaxPunctuation": "#a0a0a0",
+    "syntaxVariable": "#ffffff",
+    "syntaxConstant": "#ff8080",
+    "syntaxAttribute": "#ffc799"
+  }
+}

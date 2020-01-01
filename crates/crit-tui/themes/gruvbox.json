@@ -1,0 +1,26 @@
+{
+  "name": "gruvbox",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#282828",
+    "foreground": "#ebdbb2",
+    "primary": "#83a598",
+    "muted": "#928374",
+    "success": "#b8bb26",
+    "warning": "#fabd2f",
+    "error": "#fb4934"
+  },
+  "overrides": {
+    "syntaxKeyword": "#fb4934",
+    "syntaxFunction": "#b8bb26",
+    "syntaxTypeName": "#fabd2f",
+    "syntaxString": "#b8bb26",
+    "syntaxNumber": "#d3869b",
+    "syntaxComment": "#928374",
+    "syntaxOperator": "#8ec07c",
+    "syntaxPunctuation": "#a89984",
+    "syntaxVariable": "#ebdbb2",
+    "syntaxConstant": "#d3869b",
+    "syntaxAttribute": "#fe8019"
+  }
+}

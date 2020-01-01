@@ -8,12 +8,17 @@ license.workspace = true
 [dependencies]
 crit-core.workspace = true
 anyhow.workspace = true
-ansi-to-tui.workspace = true
-crossterm.workspace = true
-nix.workspace = true
-ratatui.workspace = true
 serde.workspace = true
-which.workspace = true
+serde_json.workspace = true
+
+# Rendering
+ftui-core.workspace = true
+ftui-render.workspace = true
+ftui-style.workspace = true
+palette.workspace = true
+
+# Syntax highlighting
+syntect.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

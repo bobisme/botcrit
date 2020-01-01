@@ -1,0 +1,26 @@
+{
+  "name": "dracula",
+  "syntaxTheme": "base16-ocean.dark",
+  "seeds": {
+    "background": "#14151f",
+    "foreground": "#f8f8f2",
+    "primary": "#bd93f9",
+    "muted": "#6272a4",
+    "success": "#50fa7b",
+    "warning": "#ffb86c",
+    "error": "#ff5555"
+  },
+  "overrides": {
+    "syntaxKeyword": "#ff79c6",
+    "syntaxFunction": "#50fa7b",
+    "syntaxTypeName": "#ffb86c",
+    "syntaxString": "#f1fa8c",
+    "syntaxNumber": "#bd93f9",
+    "syntaxComment": "#6272a4",
+    "syntaxOperator": "#8be9fd",
+    "syntaxPunctuation": "#f8f8f2",
+    "syntaxVariable": "#f8f8f2",
+    "syntaxConstant": "#bd93f9",
+    "syntaxAttribute": "#50fa7b"
+  }
+}
