@@ -4,17 +4,12 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
-use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::cli::commands::helpers::{ensure_initialized, open_services};
 use crit_core::critignore::{AllFilesIgnoredError, CritIgnore};
-use crit_core::events::{
-    get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
-    ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
-};
-use crit_core::log::{open_or_create_review, AppendLog};
+use crit_core::events::VoteType;
 use crate::output::{Formatter, OutputFormat};
 use crit_core::projection::{ReviewDetail, ThreadSummary};
 use crit_core::scm::ScmRepo;
-use crit_core::version::require_v2;
 
 /// Parse a --since value into a DateTime.
 /// Supports:
@@ -93,30 +88,7 @@ pub fn run_reviews_create(
         bail!("No files changed in this commit. Nothing to review.");
     }
 
-    let review_id = new_review_id();
-    let author = get_agent_identity(author)?;
-
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewCreated(ReviewCreated {
-            review_id: review_id.clone(),
-            jj_change_id: change_id.clone(),
-            scm_kind: Some(scm.kind().as_str().to_string()),
-            scm_anchor: Some(change_id.clone()),
-            initial_commit: commit_id.clone(),
-            title: title.clone(),
-            description: description.clone(),
-        }),
-    );
-
-    // Enforce v2 format
-    require_v2(crit_root)?;
-
-    // Write to per-review event log (v2)
-    let log = open_or_create_review(crit_root, &review_id)?;
-    log.append(&event)?;
-
-    // If reviewers specified, request them immediately
+    // Parse reviewers before creating the review
     let reviewer_list: Option<Vec<String>> = reviewers.map(|r| {
         r.split(',')
             .map(|s| s.trim().to_string())
@@ -124,18 +96,18 @@ pub fn run_reviews_create(
             .collect()
     });
 
-    if let Some(ref reviewers) = reviewer_list {
-        if !reviewers.is_empty() {
-            let reviewer_event = EventEnvelope::new(
-                &author,
-                Event::ReviewersRequested(ReviewersRequested {
-                    review_id: review_id.clone(),
-                    reviewers: reviewers.clone(),
-                }),
-            );
-            log.append(&reviewer_event)?;
-        }
-    }
+    // Use core service to create the review (handles event construction + log append)
+    let services = open_services(crit_root)?;
+    let review_id = services.reviews().create(
+        scm,
+        title.clone(),
+        description.clone(),
+        reviewer_list.clone(),
+        author,
+    )?;
+
+    // Resolve author for output (same logic the service uses internally)
+    let author_str = crit_core::events::get_agent_identity(author)?;
 
     // Output the result
     let scm_anchor = change_id.clone();
@@ -146,7 +118,7 @@ pub fn run_reviews_create(
         "scm_anchor": scm_anchor,
         "initial_commit": commit_id,
         "title": title,
-        "author": author,
+        "author": author_str,
     });
     if let Some(ref reviewers) = reviewer_list {
         result["reviewers"] = serde_json::json!(reviewers);
@@ -180,8 +152,8 @@ pub fn run_reviews_list(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
-    let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
+    let services = open_services(crit_root)?;
+    let reviews = services.reviews().list_filtered(status, author, needs_reviewer, has_unresolved)?;
 
     // Build context-aware empty message
     let empty_msg = if needs_reviewer.is_some() {
@@ -228,12 +200,7 @@ pub fn run_reviews_request(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::require_local_review;
-
     ensure_initialized(repo_root)?;
-
-    // Verify review exists locally (need to write to its log)
-    require_local_review(repo_root, review_id)?;
 
     let reviewer_list: Vec<String> = reviewers
         .split(',')
@@ -245,17 +212,8 @@ pub fn run_reviews_request(
         bail!("No reviewers specified");
     }
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewersRequested(ReviewersRequested {
-            review_id: review_id.to_string(),
-            reviewers: reviewer_list.clone(),
-        }),
-    );
-
-    let log = open_or_create_review(repo_root, review_id)?;
-    log.append(&event)?;
+    let services = open_services(repo_root)?;
+    services.reviews().request_reviewers(review_id, reviewer_list.clone(), author)?;
 
     let result = serde_json::json!({
         "review_id": review_id,
@@ -275,12 +233,12 @@ pub fn run_reviews_approve(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::require_local_review;
-
     ensure_initialized(repo_root)?;
 
+    let services = open_services(repo_root)?;
+
     // Verify review exists locally and is open
-    let review = require_local_review(repo_root, review_id)?;
+    let review = services.reviews().get(review_id)?;
     if review.status != "open" {
         bail!(
             "Cannot approve review with status '{}': {}",
@@ -289,16 +247,7 @@ pub fn run_reviews_approve(
         );
     }
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewApproved(ReviewApproved {
-            review_id: review_id.to_string(),
-        }),
-    );
-
-    let log = open_or_create_review(repo_root, review_id)?;
-    log.append(&event)?;
+    services.reviews().approve(review_id, author)?;
 
     let result = serde_json::json!({
         "review_id": review_id,
@@ -319,12 +268,12 @@ pub fn run_reviews_abandon(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::require_local_review;
-
     ensure_initialized(repo_root)?;
 
+    let services = open_services(repo_root)?;
+
     // Verify review exists locally and is not already abandoned/merged
-    let review = require_local_review(repo_root, review_id)?;
+    let review = services.reviews().get(review_id)?;
     if review.status == "abandoned" {
         bail!("Review is already abandoned: {}", review_id);
     }
@@ -332,17 +281,7 @@ pub fn run_reviews_abandon(
         bail!("Cannot abandon merged review: {}", review_id);
     }
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewAbandoned(ReviewAbandoned {
-            review_id: review_id.to_string(),
-            reason: reason.clone(),
-        }),
-    );
-
-    let log = open_or_create_review(repo_root, review_id)?;
-    log.append(&event)?;
+    services.reviews().abandon(review_id, reason.clone(), author)?;
 
     let result = serde_json::json!({
         "review_id": review_id,
@@ -371,12 +310,12 @@ pub fn run_reviews_merge(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::require_local_review;
-
     ensure_initialized(crit_root)?;
 
+    let services = open_services(crit_root)?;
+
     // Verify review exists locally (need to write to its log)
-    let review = require_local_review(crit_root, review_id)?;
+    let review = services.reviews().get(review_id)?;
     if review.status == "merged" {
         bail!("Review is already merged: {}", review_id);
     }
@@ -391,23 +330,15 @@ pub fn run_reviews_merge(
     }
     if review.status == "open" && self_approve {
         // Auto-approve the review first
-        let author_str = get_agent_identity(author)?;
-        let approve_event = EventEnvelope::new(
-            &author_str,
-            Event::ReviewApproved(ReviewApproved {
-                review_id: review_id.to_string(),
-            }),
-        );
-        let log = open_or_create_review(crit_root, review_id)?;
-        log.append(&approve_event)?;
+        services.reviews().approve(review_id, author)?;
     }
 
     // Re-open the database to get fresh state after any approval
-    let db = open_and_sync(crit_root)?;
+    let services = open_services(crit_root)?;
 
-    // Check for blocking votes
-    if db.has_blocking_votes(review_id)? {
-        let votes = db.get_votes(review_id)?;
+    // Check for blocking votes (not yet in service layer, use db directly)
+    if services.db().has_blocking_votes(review_id)? {
+        let votes = services.db().get_votes(review_id)?;
         let blockers: Vec<_> = votes
             .iter()
             .filter(|v| v.vote == "block")
@@ -435,17 +366,7 @@ pub fn run_reviews_merge(
             .context("Failed to get current commit for merge")?,
     };
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewMerged(ReviewMerged {
-            review_id: review_id.to_string(),
-            final_commit: final_commit.clone(),
-        }),
-    );
-
-    let log = open_or_create_review(crit_root, review_id)?;
-    log.append(&event)?;
+    services.reviews().mark_merged(review_id, final_commit.clone(), author)?;
 
     let result = serde_json::json!({
         "review_id": review_id,
@@ -506,13 +427,13 @@ fn run_vote(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::require_local_review;
-
     ensure_initialized(repo_root)?;
+
+    let services = open_services(repo_root)?;
 
     // Verify review exists locally and is open or approved (approved reviews can still
     // receive votes, e.g., to change a block to lgtm after issues are fixed)
-    let review = require_local_review(repo_root, review_id)?;
+    let review = services.reviews().get(review_id)?;
     if review.status == "merged" {
         bail!("Cannot vote on merged review: {}", review_id);
     }
@@ -521,33 +442,19 @@ fn run_vote(
     }
     let review_status = review.status.clone();
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ReviewerVoted(ReviewerVoted {
-            review_id: review_id.to_string(),
-            vote: vote.clone(),
-            reason: reason.clone(),
-        }),
-    );
+    // Resolve author identity for output and auto-approve check
+    let author_str = crit_core::events::get_agent_identity(author)?;
 
-    let log = open_or_create_review(repo_root, review_id)?;
-    log.append(&event)?;
+    services.reviews().vote(review_id, vote.clone(), reason.clone(), author)?;
 
     // Auto-approve on LGTM if review is open and no blocking votes from others
     let auto_approved = if vote == VoteType::Lgtm && review_status == "open" {
         // Re-sync to see our newly recorded vote
-        let db = open_and_sync(repo_root)?;
-        let has_blocks = db.has_blocking_votes_from_others(review_id, &author)?;
+        let services = open_services(repo_root)?;
+        let has_blocks = services.db().has_blocking_votes_from_others(review_id, &author_str)?;
         if !has_blocks {
             // Auto-approve the review
-            let approve_event = EventEnvelope::new(
-                &author,
-                Event::ReviewApproved(ReviewApproved {
-                    review_id: review_id.to_string(),
-                }),
-            );
-            log.append(&approve_event)?;
+            services.reviews().approve(review_id, author)?;
             true
         } else {
             false
@@ -560,7 +467,7 @@ fn run_vote(
         "review_id": review_id,
         "vote": vote.to_string(),
         "reason": reason,
-        "voter": author,
+        "voter": author_str,
     });
     if auto_approved {
         result["auto_approved"] = serde_json::json!(true);
@@ -588,17 +495,16 @@ pub fn run_review(
     include_diffs: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::get_review;
     use crit_core::jj::context::{extract_context, format_context};
 
     ensure_initialized(crit_root)?;
 
-    let review = get_review(crit_root, review_id)?;
-    let db = open_and_sync(crit_root)?;
+    let services = open_services(crit_root)?;
+    let review = services.reviews().get(review_id)?;
 
     // For JSON output, build a complete structure
     if matches!(format, OutputFormat::Json) {
-        let threads = db.list_threads(review_id, None, None)?;
+        let threads = services.threads().list(review_id, None, None)?;
         let mut threads_with_comments = Vec::new();
 
         // Determine commit for context (same logic as text/pretty output)
@@ -623,7 +529,7 @@ pub fn run_review(
         }
 
         for thread in &threads {
-            let comments = db.list_comments(&thread.thread_id)?;
+            let comments = services.comments().list(&thread.thread_id)?;
             // Filter comments by since if provided
             let filtered_comments: Vec<_> = if let Some(since_dt) = since {
                 comments
@@ -722,7 +628,7 @@ pub fn run_review(
     }
 
     // Get threads grouped by file
-    let threads = db.list_threads(review_id, None, None)?;
+    let threads = services.threads().list(review_id, None, None)?;
 
     // Determine commit for context/diff rendering
     let commit_ref = review
@@ -772,7 +678,7 @@ pub fn run_review(
 
     for thread in &threads {
         // Get comments and filter by since
-        let comments = db.list_comments(&thread.thread_id)?;
+        let comments = services.comments().list(&thread.thread_id)?;
         let filtered_comments: Vec<_> = if let Some(since_dt) = since {
             comments
                 .into_iter()
@@ -927,8 +833,8 @@ fn print_file_diffs_text(
 pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
-    let inbox = db.get_inbox(agent)?;
+    let services = open_services(repo_root)?;
+    let inbox = services.inbox().get(agent)?;
 
     if matches!(format, OutputFormat::Json) {
         let formatter = Formatter::new(format);

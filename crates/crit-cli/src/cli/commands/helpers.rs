@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::cli::commands::init::{index_path, is_initialized, CRIT_DIR};
+use crit_core::core::{CoreContext, CritServices};
 use crit_core::projection::{sync_from_review_logs, ProjectionDb, ReviewDetail, ThreadDetail};
 use crit_core::scm::ScmRepo;
 use crit_core::version::{detect_version, require_v2, DataVersion};
@@ -47,6 +48,16 @@ pub fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
     Ok(db)
 }
 
+/// Create a `CritServices` instance for the given repository root.
+///
+/// This is the recommended way to get service access in CLI commands.
+/// Validates initialization, enforces v2 format, opens and syncs the projection.
+pub fn open_services(repo_root: &Path) -> Result<CritServices> {
+    ensure_initialized(repo_root)?;
+    let ctx = CoreContext::new(repo_root, &index_path(repo_root))?;
+    Ok(ctx.services()?)
+}
+
 /// Open the projection database and sync, allowing v1 format (for read-only operations).
 ///
 /// Use this only for commands that need to read v1 data before migration.
@@ -79,12 +90,16 @@ pub fn open_and_sync_any_version(repo_root: &Path) -> Result<ProjectionDb> {
 
 /// Get a review by ID, returning an error if not found.
 pub fn get_review(crit_root: &Path, review_id: &str) -> Result<ReviewDetail> {
-    let db = open_and_sync(crit_root)?;
-    db.get_review(review_id)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-            review_id
-        )
+    let services = open_services(crit_root)?;
+    services.reviews().get(review_id).map_err(|e| {
+        if matches!(e, crit_core::core::CoreError::ReviewNotFound { .. }) {
+            anyhow::anyhow!(
+                "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
+                review_id
+            )
+        } else {
+            e.into()
+        }
     })
 }
 
@@ -97,12 +112,16 @@ pub fn require_local_review(crit_root: &Path, review_id: &str) -> Result<ReviewD
 
 /// Get a thread by ID, returning an error if not found.
 pub fn get_thread(crit_root: &Path, thread_id: &str) -> Result<ThreadDetail> {
-    let db = open_and_sync(crit_root)?;
-    db.get_thread(thread_id)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
-            thread_id
-        )
+    let services = open_services(crit_root)?;
+    services.threads().get(thread_id).map_err(|e| {
+        if matches!(e, crit_core::core::CoreError::ThreadNotFound { .. }) {
+            anyhow::anyhow!(
+                "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
+                thread_id
+            )
+        } else {
+            e.into()
+        }
     })
 }
 

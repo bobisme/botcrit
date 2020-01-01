@@ -4,15 +4,10 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{
-    ensure_initialized, open_and_sync, resolve_review_thread_commit, review_not_found_error,
-    thread_not_found_error,
+    ensure_initialized, open_services, resolve_review_thread_commit,
+    review_not_found_error, thread_not_found_error,
 };
 use crate::cli::commands::threads::parse_line_selection;
-use crit_core::events::{
-    get_agent_identity, make_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
-    ThreadCreated,
-};
-use crit_core::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crit_core::scm::ScmRepo;
 
@@ -27,57 +22,25 @@ pub fn run_comments_add(
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
+    let services = open_services(repo_root)?;
 
-    // Verify thread exists and get its review_id
-    let thread = db.get_thread(thread_id)?;
-    let thread = match thread {
-        None => return Err(thread_not_found_error(repo_root, thread_id)),
-        Some(t) => t,
-    };
-
-    // Verify review is open
-    let review = db.get_review(&thread.review_id)?;
-    if let Some(r) = &review {
-        if r.status != "open" {
-            bail!(
-                "Cannot comment on review with status '{}': {}",
-                r.status,
-                thread.review_id
-            );
-        }
+    // Verify thread exists (service will check review status too)
+    if services.threads().get_optional(thread_id)?.is_none() {
+        return Err(thread_not_found_error(repo_root, thread_id));
     }
 
-    // Get next comment number
-    let comment_number = db
-        .get_next_comment_number(thread_id)?
-        .expect("thread exists but has no comment number");
+    let result = services.comments().add_to_thread(thread_id, message, author)?;
 
-    let comment_id = make_comment_id(thread_id, comment_number);
-    let author = get_agent_identity(author)?;
-
-    let event = EventEnvelope::new(
-        &author,
-        Event::CommentAdded(CommentAdded {
-            comment_id: comment_id.clone(),
-            thread_id: thread_id.to_string(),
-            body: message.to_string(),
-        }),
-    );
-
-    // Write to the per-review log (v2)
-    let log = open_or_create_review(repo_root, &thread.review_id)?;
-    log.append(&event)?;
-
-    let result = serde_json::json!({
-        "comment_id": comment_id,
+    let author_str = crit_core::events::get_agent_identity(author)?;
+    let output = serde_json::json!({
+        "comment_id": result.comment_id,
         "thread_id": thread_id,
-        "author": author,
+        "author": author_str,
         "body": message,
     });
 
     let formatter = Formatter::new(format);
-    formatter.print(&result)?;
+    formatter.print(&output)?;
 
     Ok(())
 }
@@ -104,10 +67,10 @@ pub fn run_comment(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let services = open_services(crit_root)?;
 
     // Verify review exists and is open
-    let review = match db.get_review(review_id)? {
+    let review = match services.reviews().get_optional(review_id)? {
         None => return Err(review_not_found_error(crit_root, review_id)),
         Some(r) => r,
     };
@@ -124,75 +87,39 @@ pub fn run_comment(
     let selection = parse_line_selection(line)?;
     let start_line = selection.start_line() as i64;
 
-    // Resolve author identity once for both thread creation and comment
-    let author_str = get_agent_identity(author)?;
+    // Check if file exists when a new thread would be needed
+    let needs_new_thread = services.threads().find_at_location(review_id, file, start_line)?.is_none();
+    if needs_new_thread {
+        let commit_hash = resolve_review_thread_commit(scm, &review);
+        if !scm.file_exists(&commit_hash, file)? {
+            bail!(
+                "File does not exist in review {} at {}: {}",
+                review_id,
+                commit_hash,
+                file
+            );
+        }
+    }
 
-    // Check for existing thread at this location
-    let (thread_id, comment_number) =
-        match db.find_thread_at_location(review_id, file, start_line)? {
-            Some(existing_id) => {
-                // Use existing thread - get its next comment number
-                let comment_number = db
-                    .get_next_comment_number(&existing_id)?
-                    .expect("thread exists but has no comment number");
-                (existing_id, comment_number)
-            }
-            None => {
-                // Create new thread
-                let commit_hash = resolve_review_thread_commit(scm, &review);
+    // Resolve commit for thread creation
+    let commit_hash = resolve_review_thread_commit(scm, &review);
 
-                // Verify file exists at the review's commit anchor
-                if !scm.file_exists(&commit_hash, file)? {
-                    bail!(
-                        "File does not exist in review {} at {}: {}",
-                        review_id,
-                        commit_hash,
-                        file
-                    );
-                }
+    // Use core service to add comment (handles thread creation if needed)
+    let result = services.comments().add_to_review(
+        review_id,
+        file,
+        selection,
+        message,
+        commit_hash,
+        author,
+    )?;
 
-                let new_thread_id = new_thread_id();
-
-                let thread_event = EventEnvelope::new(
-                    &author_str,
-                    Event::ThreadCreated(ThreadCreated {
-                        thread_id: new_thread_id.clone(),
-                        review_id: review_id.to_string(),
-                        file_path: file.to_string(),
-                        selection: selection.clone(),
-                        commit_hash,
-                    }),
-                );
-
-                // Write to the per-review log (v2)
-                let log = open_or_create_review(crit_root, review_id)?;
-                log.append(&thread_event)?;
-
-                // New thread starts at comment number 1
-                (new_thread_id, 1)
-            }
-        };
-
-    // Now add the comment to the thread
-    let comment_id = make_comment_id(&thread_id, comment_number);
-
-    let comment_event = EventEnvelope::new(
-        &author_str,
-        Event::CommentAdded(CommentAdded {
-            comment_id: comment_id.clone(),
-            thread_id: thread_id.clone(),
-            body: message.to_string(),
-        }),
-    );
-
-    // Write to the per-review log (v2)
-    let log = open_or_create_review(crit_root, review_id)?;
-    log.append(&comment_event)?;
+    let author_str = crit_core::events::get_agent_identity(author)?;
 
     // Output result
-    let result = serde_json::json!({
-        "comment_id": comment_id,
-        "thread_id": thread_id,
+    let output = serde_json::json!({
+        "comment_id": result.comment_id,
+        "thread_id": result.thread_id,
         "review_id": review_id,
         "file": file,
         "line": start_line,
@@ -201,7 +128,7 @@ pub fn run_comment(
     });
 
     let formatter = Formatter::new(format);
-    formatter.print(&result)?;
+    formatter.print(&output)?;
 
     Ok(())
 }
@@ -210,14 +137,14 @@ pub fn run_comment(
 pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
+    let services = open_services(repo_root)?;
 
     // Verify thread exists
-    if db.get_thread(thread_id)?.is_none() {
+    if services.threads().get_optional(thread_id)?.is_none() {
         return Err(thread_not_found_error(repo_root, thread_id));
     }
 
-    let comments = db.list_comments(thread_id)?;
+    let comments = services.comments().list(thread_id)?;
 
     let formatter = Formatter::new(format);
     formatter.print_list(

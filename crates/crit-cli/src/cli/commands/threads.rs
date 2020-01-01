@@ -4,15 +4,11 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{
-    ensure_initialized, open_and_sync, resolve_review_thread_commit, review_not_found_error,
+    ensure_initialized, open_services, resolve_review_thread_commit, review_not_found_error,
     thread_not_found_error,
 };
-use crit_core::events::{
-    get_agent_identity, new_thread_id, CodeSelection, Event, EventEnvelope, ThreadCreated,
-    ThreadReopened, ThreadResolved,
-};
+use crit_core::events::CodeSelection;
 use crit_core::jj::context::{extract_context, format_context};
-use crit_core::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crit_core::scm::ScmRepo;
 
@@ -32,9 +28,10 @@ pub fn run_threads_create(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
+    let services = open_services(crit_root)?;
+
     // Verify review exists
-    let db = open_and_sync(crit_root)?;
-    let review = match db.get_review(review_id)? {
+    let review = match services.reviews().get_optional(review_id)? {
         None => return Err(review_not_found_error(crit_root, review_id)),
         Some(r) => r,
     };
@@ -63,22 +60,16 @@ pub fn run_threads_create(
         );
     }
 
-    let thread_id = new_thread_id();
-    let author = get_agent_identity(author)?;
+    // Use core service to create the thread
+    let thread_id = services.threads().create(
+        review_id,
+        file,
+        selection.clone(),
+        commit_hash.clone(),
+        author,
+    )?;
 
-    let event = EventEnvelope::new(
-        &author,
-        Event::ThreadCreated(ThreadCreated {
-            thread_id: thread_id.clone(),
-            review_id: review_id.to_string(),
-            file_path: file.to_string(),
-            selection: selection.clone(),
-            commit_hash: commit_hash.clone(),
-        }),
-    );
-
-    let log = open_or_create_review(crit_root, review_id)?;
-    log.append(&event)?;
+    let author_str = crit_core::events::get_agent_identity(author)?;
 
     // Output result
     let result = serde_json::json!({
@@ -88,7 +79,7 @@ pub fn run_threads_create(
         "selection_start": selection.start_line(),
         "selection_end": selection.end_line(),
         "commit_hash": commit_hash,
-        "author": author,
+        "author": author_str,
     });
 
     let formatter = Formatter::new(format);
@@ -109,21 +100,21 @@ pub fn run_threads_list(
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
+    let services = open_services(repo_root)?;
 
     // Verify review exists
-    if db.get_review(review_id)?.is_none() {
+    if services.reviews().get_optional(review_id)?.is_none() {
         return Err(review_not_found_error(repo_root, review_id));
     }
 
-    let threads = db.list_threads(review_id, status, file)?;
+    let threads = services.threads().list(review_id, status, file)?;
 
     // Filter threads by --since (only those with recent comments)
     let threads: Vec<_> = if let Some(since_dt) = since {
         threads
             .into_iter()
             .filter(|t| {
-                let comments = db.list_comments(&t.thread_id).unwrap_or_default();
+                let comments = services.comments().list(&t.thread_id).unwrap_or_default();
                 comments.iter().any(|c| {
                     chrono::DateTime::parse_from_rfc3339(&c.created_at)
                         .map(|dt| dt.with_timezone(&chrono::Utc) >= since_dt)
@@ -171,7 +162,7 @@ pub fn run_threads_list(
             );
 
             // Get first comment if any
-            let comments = db.list_comments(&thread.thread_id)?;
+            let comments = services.comments().list(&thread.thread_id)?;
             if let Some(first) = comments.first() {
                 // Truncate body to first line or 80 chars
                 let preview: String = first
@@ -220,8 +211,8 @@ pub fn run_threads_show(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
-    let thread = db.get_thread(thread_id)?;
+    let services = open_services(crit_root)?;
+    let thread = services.threads().get_optional(thread_id)?;
 
     match thread {
         Some(t) => {
@@ -457,8 +448,7 @@ pub fn run_threads_resolve(
         bail!("Cannot specify both thread_id(s) and --all");
     }
 
-    let db = open_and_sync(repo_root)?;
-    let author = get_agent_identity(author)?;
+    let services = open_services(repo_root)?;
 
     let mut resolved_count = 0;
     let mut resolved_ids = Vec::new();
@@ -468,20 +458,11 @@ pub fn run_threads_resolve(
         // The CLI doesn't pass review_id to resolve, so --all resolves across all reviews.
 
         // Get all threads and filter to open ones
-        let all_reviews = db.list_reviews(None, None)?;
+        let all_reviews = services.reviews().list(None, None)?;
         for review in all_reviews {
-            let threads = db.list_threads(&review.review_id, Some("open"), file)?;
+            let threads = services.threads().list(&review.review_id, Some("open"), file)?;
             for thread in threads {
-                let event = EventEnvelope::new(
-                    &author,
-                    Event::ThreadResolved(ThreadResolved {
-                        thread_id: thread.thread_id.clone(),
-                        reason: reason.clone(),
-                    }),
-                );
-                // Write to the per-review log (v2)
-                let log = open_or_create_review(repo_root, &review.review_id)?;
-                log.append(&event)?;
+                services.threads().resolve(&thread.thread_id, reason.clone(), author)?;
                 resolved_ids.push(thread.thread_id);
                 resolved_count += 1;
             }
@@ -489,25 +470,16 @@ pub fn run_threads_resolve(
     } else {
         // Resolve one or more threads by ID
         for tid in thread_ids {
-            let thread = db.get_thread(tid)?;
-            let thread = match thread {
+            let thread = match services.threads().get_optional(tid)? {
                 None => return Err(thread_not_found_error(repo_root, tid)),
                 Some(t) if t.status == "resolved" => {
                     bail!("Thread is already resolved: {}", tid);
                 }
                 Some(t) => t,
             };
+            drop(thread);
 
-            let event = EventEnvelope::new(
-                &author,
-                Event::ThreadResolved(ThreadResolved {
-                    thread_id: tid.to_string(),
-                    reason: reason.clone(),
-                }),
-            );
-            // Write to the per-review log (v2)
-            let log = open_or_create_review(repo_root, &thread.review_id)?;
-            log.append(&event)?;
+            services.threads().resolve(tid, reason.clone(), author)?;
             resolved_ids.push(tid.to_string());
             resolved_count += 1;
         }
@@ -535,10 +507,9 @@ pub fn run_threads_reopen(
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
-    let thread = db.get_thread(thread_id)?;
+    let services = open_services(repo_root)?;
 
-    let thread = match thread {
+    let thread = match services.threads().get_optional(thread_id)? {
         None => return Err(thread_not_found_error(repo_root, thread_id)),
         Some(t) if t.status != "resolved" => {
             bail!(
@@ -549,19 +520,9 @@ pub fn run_threads_reopen(
         }
         Some(t) => t,
     };
+    drop(thread);
 
-    let author = get_agent_identity(author)?;
-    let event = EventEnvelope::new(
-        &author,
-        Event::ThreadReopened(ThreadReopened {
-            thread_id: thread_id.to_string(),
-            reason: reason.clone(),
-        }),
-    );
-
-    // Write to the per-review log (v2)
-    let log = open_or_create_review(repo_root, &thread.review_id)?;
-    log.append(&event)?;
+    services.threads().reopen(thread_id, reason.clone(), author)?;
 
     let result = serde_json::json!({
         "thread_id": thread_id,

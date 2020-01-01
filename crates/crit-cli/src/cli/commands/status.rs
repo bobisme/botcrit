@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::cli::commands::helpers::{ensure_initialized, open_and_sync, review_not_found_error};
+use crate::cli::commands::helpers::{ensure_initialized, open_services, review_not_found_error};
 use crit_core::critignore::{AllFilesIgnoredError, CritIgnore};
 use crit_core::jj::drift::{calculate_drift, DriftResult};
 use crate::output::{Formatter, OutputFormat};
@@ -49,21 +49,20 @@ pub fn run_status(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let services = open_services(crit_root)?;
     let current_commit = scm.current_commit()?;
 
     // Get reviews to process
     let reviews = if let Some(rid) = review_id {
-        let review = db.get_review(rid)?;
-        match review {
+        match services.reviews().get_optional(rid)? {
             Some(r) => vec![r],
             None => return Err(review_not_found_error(crit_root, rid)),
         }
     } else {
         // Get all open reviews
-        db.list_reviews(Some("open"), None)?
+        services.reviews().list(Some("open"), None)?
             .into_iter()
-            .filter_map(|rs| db.get_review(&rs.review_id).ok().flatten())
+            .filter_map(|rs| services.reviews().get_optional(&rs.review_id).ok().flatten())
             .collect()
     };
 
@@ -72,14 +71,14 @@ pub fn run_status(
     for review in reviews {
         // Get threads for this review
         let status_filter = if unresolved_only { Some("open") } else { None };
-        let threads = db.list_threads(&review.review_id, status_filter, None)?;
+        let threads = services.threads().list(&review.review_id, status_filter, None)?;
 
         let mut thread_entries = Vec::new();
         let mut drift_count = 0;
 
         for thread in &threads {
             // Calculate drift for this thread
-            let thread_detail = db.get_thread(&thread.thread_id)?;
+            let thread_detail = services.threads().get_optional(&thread.thread_id)?;
             let drift_result = if let Some(td) = &thread_detail {
                 calculate_drift(
                     scm,
@@ -180,11 +179,10 @@ pub fn run_diff(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let services = open_services(crit_root)?;
 
     // Get the review
-    let review = db.get_review(review_id)?;
-    let review = match review {
+    let review = match services.reviews().get_optional(review_id)? {
         Some(r) => r,
         None => return Err(review_not_found_error(crit_root, review_id)),
     };
@@ -224,7 +222,7 @@ pub fn run_diff(
     }
 
     // Get threads for context
-    let threads = db.list_threads(review_id, None, None)?;
+    let threads = services.threads().list(review_id, None, None)?;
 
     // Build structured output
     let result = serde_json::json!({

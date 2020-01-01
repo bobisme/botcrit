@@ -4,13 +4,9 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::path::Path;
 
-use crate::cli::commands::helpers::ensure_initialized;
-use crate::cli::commands::init::index_path;
+use crate::cli::commands::helpers::{ensure_initialized, open_services};
 use crate::output::{Formatter, OutputFormat};
-use crit_core::projection::{
-    rebuild_from_review_logs, sync_from_review_logs, ProjectionDb, SyncReport,
-};
-use crit_core::version::require_v2;
+use crit_core::projection::SyncReport;
 
 /// Serializable output for the sync command.
 #[derive(Serialize)]
@@ -73,27 +69,22 @@ pub fn run_sync(
     }
 
     ensure_initialized(crit_root)?;
-    require_v2(crit_root)?;
 
-    let db = ProjectionDb::open(&index_path(crit_root))?;
-    db.init_schema()?;
-
+    let services = open_services(crit_root)?;
     let formatter = Formatter::new(format);
 
     if rebuild {
         // Full destructive rebuild
-        let events_rebuilt = rebuild_from_review_logs(&db, crit_root)?;
-
-        // Re-populate review_file_state by syncing (all files are "new" now)
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let rebuild_result = services.sync().rebuild()?;
 
         let output = RebuildOutput {
             action: "rebuild".to_string(),
-            events_rebuilt,
-            events_applied: report.applied,
-            files_synced: report.files_synced,
-            files_skipped: report.files_skipped,
-            anomalies: report
+            events_rebuilt: rebuild_result.events_rebuilt,
+            events_applied: rebuild_result.sync_report.applied,
+            files_synced: rebuild_result.sync_report.files_synced,
+            files_skipped: rebuild_result.sync_report.files_skipped,
+            anomalies: rebuild_result
+                .sync_report
                 .anomalies
                 .iter()
                 .map(|a| AnomalyOutput {
@@ -106,15 +97,13 @@ pub fn run_sync(
         formatter.print(&output)?;
     } else if let Some(review_id) = accept_regression {
         // Re-baseline a single review file
-        db.delete_review_file_state(&review_id)?;
-
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let report = services.sync().accept_regression(&review_id)?;
 
         let output = SyncOutput::from_report("accept-regression", &report);
         formatter.print(&output)?;
     } else {
         // Normal sync
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let report = services.sync().sync()?;
 
         let output = SyncOutput::from_report("sync", &report);
         formatter.print(&output)?;
@@ -126,8 +115,10 @@ pub fn run_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::commands::init::index_path;
     use crit_core::events::{CodeSelection, Event, EventEnvelope, ReviewCreated, ThreadCreated};
     use crit_core::log::{AppendLog, ReviewLog};
+    use crit_core::projection::{sync_from_review_logs, ProjectionDb};
     use tempfile::tempdir;
 
     /// Set up a v2 crit repository with one review containing events.
