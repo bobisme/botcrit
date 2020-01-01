@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "crit-cli"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "crit-core"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "crit-tui"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
