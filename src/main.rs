@@ -13,13 +13,17 @@ use crit::cli::commands::{
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
 };
+use crit::jj::resolve_repo_root;
 use crit::output::OutputFormat;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Get current working directory as repo root
-    let repo_root = env::current_dir()?;
+    // We need two paths:
+    // 1. crit_root: where .crit/ lives (main repo root, shared across workspaces)
+    // 2. workspace_root: where jj commands run (current workspace, for @ resolution)
+    let workspace_root = env::current_dir()?;
+    let crit_root = resolve_repo_root(&workspace_root).unwrap_or_else(|_| workspace_root.clone());
 
     // Determine output format
     let format = if cli.json {
@@ -30,16 +34,16 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => {
-            run_init(&repo_root)?;
+            run_init(&crit_root)?;
         }
 
         Commands::Doctor => {
-            run_doctor(&repo_root, format)?;
+            run_doctor(&crit_root, format)?;
         }
 
         Commands::Agents(cmd) => match cmd {
             AgentsCommands::Init => {
-                run_agents_init(&repo_root)?;
+                run_agents_init(&crit_root)?;
             }
             AgentsCommands::Show => {
                 run_agents_show()?;
@@ -49,7 +53,8 @@ fn main() -> Result<()> {
         Commands::Reviews(cmd) => match cmd {
             ReviewsCommands::Create { title, description } => {
                 run_reviews_create(
-                    &repo_root,
+                    &crit_root,
+                    &workspace_root,
                     title,
                     description,
                     cli.author.as_deref(),
@@ -68,30 +73,35 @@ fn main() -> Result<()> {
                     crit::cli::ReviewStatus::Merged => "merged",
                     crit::cli::ReviewStatus::Abandoned => "abandoned",
                 });
-                // Get current agent for --needs-review filter
-                let needs_reviewer = if needs_review {
-                    Some(crit::events::get_agent_identity(cli.author.as_deref()))
+                // For --needs-review, use the subcommand --author as identity (if provided),
+                // falling back to global --author, then env vars.
+                // When --needs-review is used, --author should NOT also filter by review author.
+                let (author_filter, needs_reviewer) = if needs_review {
+                    // Use --author for identity, not filtering
+                    let identity = author.as_deref().or(cli.author.as_deref());
+                    (None, Some(crit::events::get_agent_identity(identity)))
                 } else {
-                    None
+                    // Normal case: --author filters by review author
+                    (author.as_deref().map(String::from), None)
                 };
                 run_reviews_list(
-                    &repo_root,
+                    &crit_root,
                     status_str,
-                    author.as_deref(),
+                    author_filter.as_deref(),
                     needs_reviewer.as_deref(),
                     has_unresolved,
                     format,
                 )?;
             }
             ReviewsCommands::Show { review_id } => {
-                run_reviews_show(&repo_root, &review_id, format)?;
+                run_reviews_show(&crit_root, &review_id, format)?;
             }
             ReviewsCommands::Request {
                 review_id,
                 reviewers,
             } => {
                 run_reviews_request(
-                    &repo_root,
+                    &crit_root,
                     &review_id,
                     &reviewers,
                     cli.author.as_deref(),
@@ -99,11 +109,11 @@ fn main() -> Result<()> {
                 )?;
             }
             ReviewsCommands::Approve { review_id } => {
-                run_reviews_approve(&repo_root, &review_id, cli.author.as_deref(), format)?;
+                run_reviews_approve(&crit_root, &review_id, cli.author.as_deref(), format)?;
             }
             ReviewsCommands::Abandon { review_id, reason } => {
                 run_reviews_abandon(
-                    &repo_root,
+                    &crit_root,
                     &review_id,
                     reason,
                     cli.author.as_deref(),
@@ -112,7 +122,8 @@ fn main() -> Result<()> {
             }
             ReviewsCommands::Merge { review_id, commit } => {
                 run_reviews_merge(
-                    &repo_root,
+                    &crit_root,
+                    &workspace_root,
                     &review_id,
                     commit,
                     cli.author.as_deref(),
@@ -128,7 +139,8 @@ fn main() -> Result<()> {
                 lines,
             } => {
                 run_threads_create(
-                    &repo_root,
+                    &crit_root,
+                    &workspace_root,
                     &review_id,
                     &file,
                     &lines,
@@ -145,7 +157,7 @@ fn main() -> Result<()> {
                     crit::cli::ThreadStatus::Open => "open",
                     crit::cli::ThreadStatus::Resolved => "resolved",
                 });
-                run_threads_list(&repo_root, &review_id, status_str, file.as_deref(), format)?;
+                run_threads_list(&crit_root, &review_id, status_str, file.as_deref(), format)?;
             }
             ThreadsCommands::Show {
                 thread_id,
@@ -158,7 +170,8 @@ fn main() -> Result<()> {
                 // --no-context overrides --context
                 let context_lines = if no_context { 0 } else { context };
                 run_threads_show(
-                    &repo_root,
+                    &crit_root,
+                    &workspace_root,
                     &thread_id,
                     context_lines,
                     current,
@@ -174,7 +187,7 @@ fn main() -> Result<()> {
                 reason,
             } => {
                 run_threads_resolve(
-                    &repo_root,
+                    &crit_root,
                     &thread_ids,
                     all,
                     file.as_deref(),
@@ -185,7 +198,7 @@ fn main() -> Result<()> {
             }
             ThreadsCommands::Reopen { thread_id, reason } => {
                 run_threads_reopen(
-                    &repo_root,
+                    &crit_root,
                     &thread_id,
                     reason,
                     cli.author.as_deref(),
@@ -204,10 +217,10 @@ fn main() -> Result<()> {
                 let msg = message.or(message_positional).ok_or_else(|| {
                     anyhow::anyhow!("Message is required (use --message or provide as argument)")
                 })?;
-                run_comments_add(&repo_root, &thread_id, &msg, cli.author.as_deref(), format)?;
+                run_comments_add(&crit_root, &thread_id, &msg, cli.author.as_deref(), format)?;
             }
             CommentsCommands::List { thread_id } => {
-                run_comments_list(&repo_root, &thread_id, format)?;
+                run_comments_list(&crit_root, &thread_id, format)?;
             }
         },
 
@@ -215,15 +228,21 @@ fn main() -> Result<()> {
             review_id,
             unresolved_only,
         } => {
-            run_status(&repo_root, review_id.as_deref(), unresolved_only, format)?;
+            run_status(
+                &crit_root,
+                &workspace_root,
+                review_id.as_deref(),
+                unresolved_only,
+                format,
+            )?;
         }
 
         Commands::Diff { review_id } => {
-            run_diff(&repo_root, &review_id, format)?;
+            run_diff(&crit_root, &workspace_root, &review_id, format)?;
         }
 
         Commands::Ui => {
-            crit::tui::run(&repo_root)?;
+            crit::tui::run(&crit_root)?;
         }
     }
 

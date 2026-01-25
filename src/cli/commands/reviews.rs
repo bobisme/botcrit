@@ -14,16 +14,22 @@ use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
 
 /// Create a new review for the current jj change.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_reviews_create(
-    repo_root: &Path,
+    crit_root: &Path,
+    workspace_root: &Path,
     title: String,
     description: Option<String>,
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
-    let jj = JjRepo::new(repo_root);
+    // Use workspace_root for jj commands so @ resolves to the workspace's working copy
+    let jj = JjRepo::new(workspace_root);
     let change_id = jj
         .get_current_change_id()
         .context("Failed to get current change ID")?;
@@ -45,7 +51,8 @@ pub fn run_reviews_create(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    // Use crit_root for storage
+    let log = open_or_create(&events_path(crit_root))?;
     log.append(&event)?;
 
     // Output the result
@@ -65,16 +72,16 @@ pub fn run_reviews_create(
 
 /// List reviews with optional filters.
 pub fn run_reviews_list(
-    repo_root: &Path,
+    crit_root: &Path,
     status: Option<&str>,
     author: Option<&str>,
     needs_reviewer: Option<&str>,
     has_unresolved: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(repo_root)?;
+    let db = open_and_sync(crit_root)?;
     let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
 
     // Build context-aware empty message
@@ -258,17 +265,22 @@ pub fn run_reviews_abandon(
 }
 
 /// Mark a review as merged.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_reviews_merge(
-    repo_root: &Path,
+    crit_root: &Path,
+    workspace_root: &Path,
     review_id: &str,
     commit: Option<String>,
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
     // Verify review exists and is approved
-    let db = open_and_sync(repo_root)?;
+    let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
         None => bail!("Review not found: {}", review_id),
@@ -288,7 +300,8 @@ pub fn run_reviews_merge(
     }
 
     // Get final commit hash - either provided or auto-detect from @
-    let jj = JjRepo::new(repo_root);
+    // Use workspace_root for jj commands so @ resolves correctly
+    let jj = JjRepo::new(workspace_root);
     let final_commit = match commit {
         Some(c) => c,
         None => jj
@@ -305,7 +318,7 @@ pub fn run_reviews_merge(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create(&events_path(crit_root))?;
     log.append(&event)?;
 
     let result = serde_json::json!({

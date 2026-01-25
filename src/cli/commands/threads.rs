@@ -15,18 +15,23 @@ use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
 
 /// Create a new comment thread on a file.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_create(
-    repo_root: &Path,
+    crit_root: &Path,
+    workspace_root: &Path,
     review_id: &str,
     file: &str,
     lines: &str,
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
     // Verify review exists
-    let db = open_and_sync(repo_root)?;
+    let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
         None => bail!("Review not found: {}", review_id),
@@ -43,8 +48,8 @@ pub fn run_threads_create(
     // Parse line selection
     let selection = parse_line_selection(lines)?;
 
-    // Get current commit for this review
-    let jj = JjRepo::new(repo_root);
+    // Get current commit for this review (use workspace for jj context)
+    let jj = JjRepo::new(workspace_root);
     let commit_hash = jj
         .get_current_commit()
         .context("Failed to get current commit")?;
@@ -68,7 +73,7 @@ pub fn run_threads_create(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create(&events_path(crit_root))?;
     log.append(&event)?;
 
     // Output result
@@ -121,8 +126,13 @@ pub fn run_threads_list(
 }
 
 /// Show details for a specific thread with optional context.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_show(
-    repo_root: &Path,
+    crit_root: &Path,
+    workspace_root: &Path,
     thread_id: &str,
     context_lines: u32,
     use_current: bool,
@@ -130,16 +140,16 @@ pub fn run_threads_show(
     use_color: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(repo_root)?;
+    let db = open_and_sync(crit_root)?;
     let thread = db.get_thread(thread_id)?;
 
     match thread {
         Some(t) => {
-            // If context requested, extract it
+            // If context requested, extract it (use workspace for jj context)
             let code_context = if context_lines > 0 {
-                let jj = JjRepo::new(repo_root);
+                let jj = JjRepo::new(workspace_root);
                 let anchor_start = t.selection_start as u32;
                 let anchor_end = t.selection_end.unwrap_or(t.selection_start) as u32;
 

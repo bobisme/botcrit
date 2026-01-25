@@ -9,8 +9,68 @@ pub use context::{extract_context, format_context, CodeContext, ContextLine};
 pub use drift::{calculate_drift, DriftResult};
 
 use anyhow::{bail, Context, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Resolve the canonical jj repo root from any path within the repo.
+///
+/// In jj workspaces, each workspace has its own working copy directory,
+/// but `.jj/repo` is a file containing the path to the main repo's `.jj/repo` directory.
+/// This function follows that pointer to find the main repo root.
+///
+/// # Algorithm
+/// 1. Start from `start_path` and walk up to find `.jj/` directory
+/// 2. If `.jj/repo` is a directory, this is the main repo - return its parent
+/// 3. If `.jj/repo` is a file, read it to get the path to the main repo's `.jj/repo`
+/// 4. Return the parent of that `.jj/repo` directory (the main repo root)
+///
+/// # Errors
+///
+/// Returns an error if no `.jj/` directory is found or the repo structure is invalid.
+pub fn resolve_repo_root(start_path: &Path) -> Result<PathBuf> {
+    // Walk up to find .jj directory
+    let mut current = start_path.to_path_buf();
+    let jj_dir = loop {
+        let jj_path = current.join(".jj");
+        if jj_path.exists() {
+            break jj_path;
+        }
+        if !current.pop() {
+            bail!("Not in a jj repository (no .jj directory found)");
+        }
+    };
+
+    let repo_pointer = jj_dir.join("repo");
+
+    if repo_pointer.is_dir() {
+        // This is the main repo - .jj/repo is a directory
+        // Return the parent of .jj (the repo root)
+        Ok(jj_dir
+            .parent()
+            .context("Invalid jj directory structure")?
+            .to_path_buf())
+    } else if repo_pointer.is_file() {
+        // This is a workspace - .jj/repo is a file containing path to main repo's .jj/repo
+        let main_repo_jj_repo = fs::read_to_string(&repo_pointer).with_context(|| {
+            format!(
+                "Failed to read workspace pointer: {}",
+                repo_pointer.display()
+            )
+        })?;
+        let main_repo_jj_repo = PathBuf::from(main_repo_jj_repo.trim());
+
+        // The path points to the main repo's .jj/repo directory
+        // Return the parent of .jj (two levels up from .jj/repo)
+        main_repo_jj_repo
+            .parent() // .jj
+            .and_then(|jj| jj.parent()) // repo root
+            .map(|p| p.to_path_buf())
+            .context("Invalid main repo path in workspace pointer")
+    } else {
+        bail!("Invalid jj repository structure: .jj/repo is neither file nor directory");
+    }
+}
 
 /// Wrapper for executing jj commands against a repository.
 #[derive(Debug, Clone)]

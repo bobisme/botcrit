@@ -36,16 +36,21 @@ pub struct ReviewStatus {
 }
 
 /// Show status of reviews with drift detection.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_status(
-    repo_root: &Path,
+    crit_root: &Path,
+    workspace_root: &Path,
     review_id: Option<&str>,
     unresolved_only: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(repo_root)?;
+    ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(repo_root)?;
-    let jj = JjRepo::new(repo_root);
+    let db = open_and_sync(crit_root)?;
+    let jj = JjRepo::new(workspace_root);
     let current_commit = jj.get_current_commit()?;
 
     // Get reviews to process
@@ -159,11 +164,20 @@ pub fn run_status(
 }
 
 /// Show diff for a review.
-pub fn run_diff(repo_root: &Path, review_id: &str, format: OutputFormat) -> Result<()> {
-    ensure_initialized(repo_root)?;
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
+pub fn run_diff(
+    crit_root: &Path,
+    workspace_root: &Path,
+    review_id: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(repo_root)?;
-    let jj = JjRepo::new(repo_root);
+    let db = open_and_sync(crit_root)?;
+    let jj = JjRepo::new(workspace_root);
 
     // Get the review
     let review = db.get_review(review_id)?;
