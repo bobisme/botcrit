@@ -497,7 +497,6 @@ mod tests {
                 comment_id: comment_id.to_string(),
                 thread_id: thread_id.to_string(),
                 body: body.to_string(),
-                request_id: None,
             }),
         )
     }

@@ -357,34 +357,16 @@ fn apply_comment_added(
     author: &str,
     ts: &DateTime<Utc>,
 ) -> Result<()> {
-    // Check for duplicate request_id (idempotency)
-    if let Some(ref request_id) = event.request_id {
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM comments WHERE request_id = ?",
-                params![request_id],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-
-        if exists {
-            // Duplicate request, skip silently
-            return Ok(());
-        }
-    }
-
     conn.execute(
         "INSERT OR IGNORE INTO comments (
-            comment_id, thread_id, body, author, created_at, request_id
-        ) VALUES (?, ?, ?, ?, ?, ?)",
+            comment_id, thread_id, body, author, created_at
+        ) VALUES (?, ?, ?, ?, ?)",
         params![
             event.comment_id,
             event.thread_id,
             event.body,
             author,
             ts.to_rfc3339(),
-            event.request_id,
         ],
     )?;
     Ok(())
@@ -485,12 +467,10 @@ CREATE TABLE IF NOT EXISTS comments (
     thread_id TEXT NOT NULL REFERENCES threads(thread_id),
     body TEXT NOT NULL,
     author TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    request_id TEXT UNIQUE
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_thread_id ON comments(thread_id);
-CREATE INDEX IF NOT EXISTS idx_comments_request_id ON comments(request_id) WHERE request_id IS NOT NULL;
 
 -- VIEWS
 CREATE VIEW IF NOT EXISTS v_reviews_summary AS
@@ -555,18 +535,13 @@ mod tests {
         )
     }
 
-    fn make_comment_added(
-        comment_id: &str,
-        thread_id: &str,
-        request_id: Option<&str>,
-    ) -> EventEnvelope {
+    fn make_comment_added(comment_id: &str, thread_id: &str) -> EventEnvelope {
         EventEnvelope::new(
             "test_author",
             Event::CommentAdded(CommentAdded {
                 comment_id: comment_id.to_string(),
                 thread_id: thread_id.to_string(),
                 body: "Test comment".to_string(),
-                request_id: request_id.map(String::from),
             }),
         )
     }
@@ -800,46 +775,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "open");
-    }
-
-    #[test]
-    fn test_apply_comment_with_deduplication() {
-        let db = ProjectionDb::open_in_memory().unwrap();
-        db.init_schema().unwrap();
-
-        // Setup: create review and thread
-        apply_event(&db, &make_review_created("cr-001")).unwrap();
-        apply_event(&db, &make_thread_created("th-001", "cr-001")).unwrap();
-
-        // Add comment with request_id
-        apply_event(&db, &make_comment_added("c-001", "th-001", Some("req-123"))).unwrap();
-
-        // Try to add duplicate with same request_id (should be ignored)
-        apply_event(&db, &make_comment_added("c-002", "th-001", Some("req-123"))).unwrap();
-
-        // Verify only one comment exists
-        let count: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM comments WHERE thread_id = ?",
-                params!["th-001"],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-
-        // Add comment without request_id (should succeed)
-        apply_event(&db, &make_comment_added("c-003", "th-001", None)).unwrap();
-
-        let count: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM comments WHERE thread_id = ?",
-                params!["th-001"],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 2);
     }
 
     #[test]

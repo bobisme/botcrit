@@ -171,9 +171,6 @@ pub struct CommentAdded {
     pub thread_id: String,
     /// Comment body
     pub body: String,
-    /// Optional request ID for idempotency
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
 }
 
 // ============================================================================

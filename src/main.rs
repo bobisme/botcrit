@@ -199,22 +199,12 @@ fn main() -> Result<()> {
                 thread_id,
                 message,
                 message_positional,
-                request_id,
-                expected_hash,
             } => {
                 // Support both --message and positional argument
                 let msg = message.or(message_positional).ok_or_else(|| {
                     anyhow::anyhow!("Message is required (use --message or provide as argument)")
                 })?;
-                run_comments_add(
-                    &repo_root,
-                    &thread_id,
-                    &msg,
-                    request_id,
-                    expected_hash,
-                    cli.author.as_deref(),
-                    format,
-                )?;
+                run_comments_add(&repo_root, &thread_id, &msg, cli.author.as_deref(), format)?;
             }
             CommentsCommands::List { thread_id } => {
                 run_comments_list(&repo_root, &thread_id, format)?;

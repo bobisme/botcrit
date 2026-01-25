@@ -274,14 +274,6 @@ pub enum CommentsCommands {
         /// Comment message (positional argument)
         #[arg(value_name = "MESSAGE")]
         message_positional: Option<String>,
-
-        /// Request ID for idempotency
-        #[arg(long)]
-        request_id: Option<String>,
-
-        /// Expected commit hash (optimistic locking)
-        #[arg(long)]
-        expected_hash: Option<String>,
     },
 
     /// List comments in a thread
