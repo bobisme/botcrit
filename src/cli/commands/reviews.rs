@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::cli::commands::init::{events_path, index_path, is_initialized};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
-    ReviewCreated, ReviewersRequested,
+    ReviewCreated, ReviewMerged, ReviewersRequested,
 };
 use crate::jj::JjRepo;
 use crate::log::{open_or_create, AppendLog};
@@ -68,12 +68,14 @@ pub fn run_reviews_list(
     repo_root: &Path,
     status: Option<&str>,
     author: Option<&str>,
+    needs_reviewer: Option<&str>,
+    has_unresolved: bool,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
 
     let db = open_and_sync(repo_root)?;
-    let reviews = db.list_reviews(status, author)?;
+    let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
 
     let formatter = Formatter::new(format);
     formatter.print(&reviews)?;
@@ -236,6 +238,69 @@ pub fn run_reviews_abandon(
         "review_id": review_id,
         "status": "abandoned",
         "reason": reason,
+    });
+
+    let formatter = Formatter::new(format);
+    formatter.print(&result)?;
+
+    Ok(())
+}
+
+/// Mark a review as merged.
+pub fn run_reviews_merge(
+    repo_root: &Path,
+    review_id: &str,
+    commit: Option<String>,
+    author: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    ensure_initialized(repo_root)?;
+
+    // Verify review exists and is approved
+    let db = open_and_sync(repo_root)?;
+    let review = db.get_review(review_id)?;
+    match &review {
+        None => bail!("Review not found: {}", review_id),
+        Some(r) if r.status == "merged" => {
+            bail!("Review is already merged: {}", review_id);
+        }
+        Some(r) if r.status == "abandoned" => {
+            bail!("Cannot merge abandoned review: {}", review_id);
+        }
+        Some(r) if r.status == "open" => {
+            bail!(
+                "Cannot merge unapproved review: {}. Approve it first.",
+                review_id
+            );
+        }
+        _ => {}
+    }
+
+    // Get final commit hash - either provided or auto-detect from @
+    let jj = JjRepo::new(repo_root);
+    let final_commit = match commit {
+        Some(c) => c,
+        None => jj
+            .get_current_commit()
+            .context("Failed to get current commit for merge")?,
+    };
+
+    let author = get_agent_identity(author);
+    let event = EventEnvelope::new(
+        &author,
+        Event::ReviewMerged(ReviewMerged {
+            review_id: review_id.to_string(),
+            final_commit: final_commit.clone(),
+        }),
+    );
+
+    let log = open_or_create(&events_path(repo_root))?;
+    log.append(&event)?;
+
+    let result = serde_json::json!({
+        "review_id": review_id,
+        "status": "merged",
+        "final_commit": final_commit,
     });
 
     let formatter = Formatter::new(format);

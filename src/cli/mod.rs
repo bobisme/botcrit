@@ -100,6 +100,14 @@ pub enum ReviewsCommands {
         /// Filter by author
         #[arg(long)]
         author: Option<String>,
+
+        /// Show only reviews where I am a requested reviewer
+        #[arg(long)]
+        needs_review: bool,
+
+        /// Show only reviews with unresolved threads
+        #[arg(long)]
+        has_unresolved: bool,
     },
 
     /// Show review details
@@ -132,6 +140,16 @@ pub enum ReviewsCommands {
         /// Reason for abandoning
         #[arg(long)]
         reason: Option<String>,
+    },
+
+    /// Mark a review as merged
+    Merge {
+        /// Review ID
+        review_id: String,
+
+        /// Final commit hash (auto-detected from @ if not provided)
+        #[arg(long)]
+        commit: Option<String>,
     },
 }
 
@@ -185,12 +203,20 @@ pub enum ThreadsCommands {
         /// Number of context lines (default: 3)
         #[arg(long, default_value = "3")]
         context: u32,
+
+        /// Show context at current commit instead of original
+        #[arg(long)]
+        current: bool,
+
+        /// Display as human-readable conversation with timestamps
+        #[arg(long)]
+        conversation: bool,
     },
 
     /// Resolve a thread
     Resolve {
-        /// Thread ID (or --all)
-        thread_id: Option<String>,
+        /// Thread IDs (can specify multiple, or use --all)
+        thread_ids: Vec<String>,
 
         /// Resolve all threads matching criteria
         #[arg(long)]

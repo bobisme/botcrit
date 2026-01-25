@@ -90,7 +90,7 @@ pub struct Comment {
 // ============================================================================
 
 impl ProjectionDb {
-    /// List reviews with optional filtering by status and/or author.
+    /// List reviews with optional filtering.
     ///
     /// Returns reviews sorted by creation date (newest first).
     pub fn list_reviews(
@@ -98,23 +98,50 @@ impl ProjectionDb {
         status: Option<&str>,
         author: Option<&str>,
     ) -> Result<Vec<ReviewSummary>> {
+        self.list_reviews_filtered(status, author, None, false)
+    }
+
+    /// List reviews with extended filtering options.
+    ///
+    /// - `needs_reviewer`: Only return reviews where this agent is a requested reviewer
+    /// - `has_unresolved`: Only return reviews with open_thread_count > 0
+    pub fn list_reviews_filtered(
+        &self,
+        status: Option<&str>,
+        author: Option<&str>,
+        needs_reviewer: Option<&str>,
+        has_unresolved: bool,
+    ) -> Result<Vec<ReviewSummary>> {
         let mut sql = String::from(
-            "SELECT review_id, title, author, status, thread_count, open_thread_count
-             FROM v_reviews_summary
-             WHERE 1=1",
+            "SELECT DISTINCT v.review_id, v.title, v.author, v.status, v.thread_count, v.open_thread_count
+             FROM v_reviews_summary v",
         );
         let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
+        // Join with review_reviewers if filtering by reviewer
+        if needs_reviewer.is_some() {
+            sql.push_str(" JOIN review_reviewers rr ON v.review_id = rr.review_id");
+        }
+
+        sql.push_str(" WHERE 1=1");
+
         if let Some(s) = status {
-            sql.push_str(" AND status = ?");
+            sql.push_str(" AND v.status = ?");
             param_values.push(Box::new(s.to_string()));
         }
         if let Some(a) = author {
-            sql.push_str(" AND author = ?");
+            sql.push_str(" AND v.author = ?");
             param_values.push(Box::new(a.to_string()));
         }
+        if let Some(r) = needs_reviewer {
+            sql.push_str(" AND rr.reviewer = ?");
+            param_values.push(Box::new(r.to_string()));
+        }
+        if has_unresolved {
+            sql.push_str(" AND v.open_thread_count > 0");
+        }
 
-        sql.push_str(" ORDER BY created_at DESC");
+        sql.push_str(" ORDER BY v.created_at DESC");
 
         let params: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
 

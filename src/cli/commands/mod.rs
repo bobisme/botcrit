@@ -14,7 +14,7 @@ pub use doctor::run_doctor;
 pub use init::run_init;
 pub use reviews::{
     run_reviews_abandon, run_reviews_approve, run_reviews_create, run_reviews_list,
-    run_reviews_request, run_reviews_show,
+    run_reviews_merge, run_reviews_request, run_reviews_show,
 };
 pub use status::{run_diff, run_status};
 pub use threads::{

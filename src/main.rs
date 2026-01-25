@@ -7,8 +7,8 @@ use std::env;
 use crit::cli::commands::{
     run_agents_init, run_agents_show, run_comments_add, run_comments_list, run_diff, run_doctor,
     run_init, run_reviews_abandon, run_reviews_approve, run_reviews_create, run_reviews_list,
-    run_reviews_request, run_reviews_show, run_status, run_threads_create, run_threads_list,
-    run_threads_reopen, run_threads_resolve, run_threads_show,
+    run_reviews_merge, run_reviews_request, run_reviews_show, run_status, run_threads_create,
+    run_threads_list, run_threads_reopen, run_threads_resolve, run_threads_show,
 };
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
@@ -50,14 +50,32 @@ fn main() -> Result<()> {
             ReviewsCommands::Create { title, desc } => {
                 run_reviews_create(&repo_root, title, desc, cli.author.as_deref(), format)?;
             }
-            ReviewsCommands::List { status, author } => {
+            ReviewsCommands::List {
+                status,
+                author,
+                needs_review,
+                has_unresolved,
+            } => {
                 let status_str = status.map(|s| match s {
                     crit::cli::ReviewStatus::Open => "open",
                     crit::cli::ReviewStatus::Approved => "approved",
                     crit::cli::ReviewStatus::Merged => "merged",
                     crit::cli::ReviewStatus::Abandoned => "abandoned",
                 });
-                run_reviews_list(&repo_root, status_str, author.as_deref(), format)?;
+                // Get current agent for --needs-review filter
+                let needs_reviewer = if needs_review {
+                    Some(crit::events::get_agent_identity(cli.author.as_deref()))
+                } else {
+                    None
+                };
+                run_reviews_list(
+                    &repo_root,
+                    status_str,
+                    author.as_deref(),
+                    needs_reviewer.as_deref(),
+                    has_unresolved,
+                    format,
+                )?;
             }
             ReviewsCommands::Show { review_id } => {
                 run_reviews_show(&repo_root, &review_id, format)?;
@@ -82,6 +100,15 @@ fn main() -> Result<()> {
                     &repo_root,
                     &review_id,
                     reason,
+                    cli.author.as_deref(),
+                    format,
+                )?;
+            }
+            ReviewsCommands::Merge { review_id, commit } => {
+                run_reviews_merge(
+                    &repo_root,
+                    &review_id,
+                    commit,
                     cli.author.as_deref(),
                     format,
                 )?;
@@ -114,18 +141,30 @@ fn main() -> Result<()> {
                 });
                 run_threads_list(&repo_root, &review_id, status_str, file.as_deref(), format)?;
             }
-            ThreadsCommands::Show { thread_id, context } => {
-                run_threads_show(&repo_root, &thread_id, context, format)?;
+            ThreadsCommands::Show {
+                thread_id,
+                context,
+                current,
+                conversation,
+            } => {
+                run_threads_show(
+                    &repo_root,
+                    &thread_id,
+                    context,
+                    current,
+                    conversation,
+                    format,
+                )?;
             }
             ThreadsCommands::Resolve {
-                thread_id,
+                thread_ids,
                 all,
                 file,
                 reason,
             } => {
                 run_threads_resolve(
                     &repo_root,
-                    thread_id.as_deref(),
+                    &thread_ids,
                     all,
                     file.as_deref(),
                     reason,

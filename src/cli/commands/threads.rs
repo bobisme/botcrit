@@ -118,6 +118,8 @@ pub fn run_threads_show(
     repo_root: &Path,
     thread_id: &str,
     context_lines: u32,
+    use_current: bool,
+    conversation: bool,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
@@ -127,16 +129,23 @@ pub fn run_threads_show(
 
     match thread {
         Some(t) => {
-            // If context requested and we have a commit hash, extract it
+            // If context requested, extract it
             let code_context = if context_lines > 0 {
                 let jj = JjRepo::new(repo_root);
                 let anchor_start = t.selection_start as u32;
                 let anchor_end = t.selection_end.unwrap_or(t.selection_start) as u32;
 
+                // Use current commit or original commit based on flag
+                let commit_ref = if use_current {
+                    "@".to_string()
+                } else {
+                    t.commit_hash.clone()
+                };
+
                 match extract_context(
                     &jj,
                     &t.file_path,
-                    &t.commit_hash,
+                    &commit_ref,
                     anchor_start,
                     anchor_end,
                     context_lines,
@@ -153,7 +162,10 @@ pub fn run_threads_show(
             };
 
             // Build output based on format
-            if matches!(format, OutputFormat::Json) {
+            if conversation {
+                // Conversation format: human-readable with timestamps
+                print_conversation(&t, code_context.as_ref());
+            } else if matches!(format, OutputFormat::Json) {
                 // For JSON, include context as structured data
                 let mut result = serde_json::to_value(&t)?;
                 if let Some(ctx) = code_context {
@@ -180,10 +192,121 @@ pub fn run_threads_show(
     Ok(())
 }
 
+/// Format and print a thread as a human-readable conversation.
+fn print_conversation(
+    thread: &crate::projection::ThreadDetail,
+    code_context: Option<&crate::jj::context::CodeContext>,
+) {
+    // Header with thread info
+    let status_indicator = if thread.status == "resolved" {
+        "[RESOLVED]"
+    } else {
+        "[OPEN]"
+    };
+
+    let line_range = match thread.selection_end {
+        Some(end) if end != thread.selection_start => {
+            format!("lines {}-{}", thread.selection_start, end)
+        }
+        _ => format!("line {}", thread.selection_start),
+    };
+
+    println!(
+        "Thread {} {} on {} ({})",
+        thread.thread_id, status_indicator, thread.file_path, line_range
+    );
+    println!("{}", "=".repeat(60));
+
+    // Show code context if available
+    if let Some(ctx) = code_context {
+        println!();
+        print!("{}", format_context(ctx));
+        println!("{}", "-".repeat(60));
+    }
+
+    // Thread creation
+    println!(
+        "\n{} started this thread ({})",
+        thread.author,
+        format_timestamp(&thread.created_at)
+    );
+
+    // Comments as conversation
+    for comment in &thread.comments {
+        println!();
+        println!(
+            "{} ({})",
+            comment.author,
+            format_timestamp(&comment.created_at)
+        );
+        // Indent the body for readability
+        for line in comment.body.lines() {
+            println!("  {}", line);
+        }
+    }
+
+    // Status changes
+    if thread.status == "resolved" {
+        if let Some(ref changed_by) = thread.status_changed_by {
+            println!();
+            let timestamp = thread
+                .status_changed_at
+                .as_deref()
+                .map(format_timestamp)
+                .unwrap_or_else(|| "unknown time".to_string());
+            print!("{} resolved this thread ({})", changed_by, timestamp);
+            if let Some(ref reason) = thread.resolve_reason {
+                print!(": {}", reason);
+            }
+            println!();
+        }
+    }
+
+    println!();
+}
+
+/// Format an ISO timestamp to a more readable form.
+fn format_timestamp(iso_timestamp: &str) -> String {
+    // Parse ISO 8601 format: 2026-01-25T12:34:56.789Z or 2026-01-25T12:34:56Z
+    // Return a more readable format: "Jan 25, 12:34"
+    if let Some(datetime_part) = iso_timestamp.split('T').nth(1) {
+        if let Some(time_part) = datetime_part.split('.').next() {
+            // Get just HH:MM
+            let time_short = time_part.split(':').take(2).collect::<Vec<_>>().join(":");
+            // Get the date part
+            if let Some(date_part) = iso_timestamp.split('T').next() {
+                let parts: Vec<&str> = date_part.split('-').collect();
+                if parts.len() == 3 {
+                    let month = match parts[1] {
+                        "01" => "Jan",
+                        "02" => "Feb",
+                        "03" => "Mar",
+                        "04" => "Apr",
+                        "05" => "May",
+                        "06" => "Jun",
+                        "07" => "Jul",
+                        "08" => "Aug",
+                        "09" => "Sep",
+                        "10" => "Oct",
+                        "11" => "Nov",
+                        "12" => "Dec",
+                        _ => parts[1],
+                    };
+                    let day = parts[2].trim_start_matches('0');
+                    return format!("{} {}, {}", month, day, time_short);
+                }
+            }
+        }
+    }
+    // Fallback: return as-is
+    iso_timestamp.to_string()
+}
+
 /// Resolve a thread (or all threads matching criteria).
+/// Supports batch resolve: pass multiple thread IDs to resolve them all at once.
 pub fn run_threads_resolve(
     repo_root: &Path,
-    thread_id: Option<&str>,
+    thread_ids: &[String],
     all: bool,
     file: Option<&str>,
     reason: Option<String>,
@@ -192,12 +315,12 @@ pub fn run_threads_resolve(
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    if !all && thread_id.is_none() {
-        bail!("Either specify a thread_id or use --all");
+    if !all && thread_ids.is_empty() {
+        bail!("Either specify thread_id(s) or use --all");
     }
 
-    if all && thread_id.is_some() {
-        bail!("Cannot specify both thread_id and --all");
+    if all && !thread_ids.is_empty() {
+        bail!("Cannot specify both thread_id(s) and --all");
     }
 
     let db = open_and_sync(repo_root)?;
@@ -209,10 +332,6 @@ pub fn run_threads_resolve(
 
     if all {
         // Resolve all open threads, optionally filtered by file
-        // We need to find the review_id first - get all threads from the db
-        // For --all, we need a review context. Let's get all open threads.
-        // Actually, looking at the CLI definition, --all should work within a review context.
-        // Let's check if there's a review_id we should be using...
         // The CLI doesn't pass review_id to resolve, so --all resolves across all reviews.
 
         // Get all threads and filter to open ones
@@ -233,27 +352,28 @@ pub fn run_threads_resolve(
             }
         }
     } else {
-        // Resolve a single thread
-        let tid = thread_id.unwrap();
-        let thread = db.get_thread(tid)?;
-        match &thread {
-            None => bail!("Thread not found: {}", tid),
-            Some(t) if t.status == "resolved" => {
-                bail!("Thread is already resolved: {}", tid);
+        // Resolve one or more threads by ID
+        for tid in thread_ids {
+            let thread = db.get_thread(tid)?;
+            match &thread {
+                None => bail!("Thread not found: {}", tid),
+                Some(t) if t.status == "resolved" => {
+                    bail!("Thread is already resolved: {}", tid);
+                }
+                _ => {}
             }
-            _ => {}
-        }
 
-        let event = EventEnvelope::new(
-            &author,
-            Event::ThreadResolved(ThreadResolved {
-                thread_id: tid.to_string(),
-                reason: reason.clone(),
-            }),
-        );
-        log.append(&event)?;
-        resolved_ids.push(tid.to_string());
-        resolved_count = 1;
+            let event = EventEnvelope::new(
+                &author,
+                Event::ThreadResolved(ThreadResolved {
+                    thread_id: tid.to_string(),
+                    reason: reason.clone(),
+                }),
+            );
+            log.append(&event)?;
+            resolved_ids.push(tid.to_string());
+            resolved_count += 1;
+        }
     }
 
     let result = serde_json::json!({
