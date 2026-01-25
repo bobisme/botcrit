@@ -223,6 +223,19 @@ crit threads resolve --all --file <path>    # Resolve all threads in a file
 crit threads resolve --all <review_id>      # Resolve all threads in a review
 ```
 
+### Utilities
+
+```bash
+crit doctor
+```
+**Action:** Health check - verifies jj is installed, repo is jj-managed, `.crit/` exists, `events.jsonl` is valid, `index.db` is in sync. Outputs pass/fail with remediation hints.
+
+```bash
+crit agents init
+crit agents show
+```
+**Action:** `init` inserts crit usage instructions into `AGENTS.md` (creates file if needed). `show` outputs the instruction block to stdout. Uses HTML comment markers (`<!-- crit-agent-instructions -->`) for idempotent updates.
+
 ## 7. Implementation Roadmap
 
 1. **Core Crate (`botcrit_core`):**
