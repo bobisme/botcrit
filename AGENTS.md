@@ -346,6 +346,32 @@ git push                # Push to remote
 
 <!-- end-br-agent-instructions -->
 
+### Session End Checklist
+
+**IMPORTANT: Always commit your work before ending a session!**
+
+```bash
+# 1. Run tests to verify nothing is broken
+cargo test
+
+# 2. Check what's changed
+jj status
+jj diff --stat
+
+# 3. Commit with a descriptive message
+jj commit -m "feat(scope): description
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+# 4. Sync beads if you modified issues
+br sync --flush-only
+
+# 5. Verify commit history looks good
+jj log --limit 5
+```
+
+Don't leave uncommitted work - it makes handoffs difficult and risks losing progress.
+
 ### Commit Conventions
 
 Use [semantic commits](https://www.conventionalcommits.org/):
