@@ -221,6 +221,10 @@ fn main() -> Result<()> {
         Commands::Diff { review_id } => {
             run_diff(&repo_root, &review_id, format)?;
         }
+
+        Commands::Tui => {
+            crit::tui::run(&repo_root)?;
+        }
     }
 
     Ok(())

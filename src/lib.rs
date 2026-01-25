@@ -6,3 +6,4 @@ pub mod jj;
 pub mod log;
 pub mod output;
 pub mod projection;
+pub mod tui;
