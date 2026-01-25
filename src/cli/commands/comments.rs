@@ -101,7 +101,7 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
     let comments = db.list_comments(thread_id)?;
 
     let formatter = Formatter::new(format);
-    formatter.print(&comments)?;
+    formatter.print_list(&comments, "No comments yet")?;
 
     Ok(())
 }

@@ -87,8 +87,8 @@ pub enum ReviewsCommands {
         title: String,
 
         /// Optional description
-        #[arg(long)]
-        desc: Option<String>,
+        #[arg(long = "description", visible_alias = "desc")]
+        description: Option<String>,
     },
 
     /// List reviews
@@ -122,7 +122,7 @@ pub enum ReviewsCommands {
         review_id: String,
 
         /// Comma-separated list of reviewers
-        #[arg(long)]
+        #[arg(long = "reviewers", visible_alias = "reviewer")]
         reviewers: String,
     },
 
@@ -204,6 +204,10 @@ pub enum ThreadsCommands {
         #[arg(long, default_value = "3")]
         context: u32,
 
+        /// Hide code context (shorthand for --context 0)
+        #[arg(long)]
+        no_context: bool,
+
         /// Show context at current commit instead of original
         #[arg(long)]
         current: bool,
@@ -211,6 +215,10 @@ pub enum ThreadsCommands {
         /// Display as human-readable conversation with timestamps
         #[arg(long)]
         conversation: bool,
+
+        /// Disable colored output
+        #[arg(long)]
+        no_color: bool,
     },
 
     /// Resolve a thread
@@ -259,8 +267,13 @@ pub enum CommentsCommands {
         /// Thread ID
         thread_id: String,
 
-        /// Comment message
-        message: String,
+        /// Comment message (positional or use --message)
+        #[arg(long = "message", visible_alias = "msg")]
+        message: Option<String>,
+
+        /// Comment message (positional argument)
+        #[arg(value_name = "MESSAGE")]
+        message_positional: Option<String>,
 
         /// Request ID for idempotency
         #[arg(long)]

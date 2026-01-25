@@ -77,8 +77,19 @@ pub fn run_reviews_list(
     let db = open_and_sync(repo_root)?;
     let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
 
+    // Build context-aware empty message
+    let empty_msg = if needs_reviewer.is_some() {
+        "No reviews need your attention"
+    } else if has_unresolved {
+        "No reviews have unresolved threads"
+    } else if status.is_some() || author.is_some() {
+        "No reviews match the filters"
+    } else {
+        "No reviews yet"
+    };
+
     let formatter = Formatter::new(format);
-    formatter.print(&reviews)?;
+    formatter.print_list(&reviews, empty_msg)?;
 
     Ok(())
 }

@@ -60,6 +60,24 @@ impl Formatter {
         writeln!(stdout, "{output}")?;
         Ok(())
     }
+
+    /// Format and print a list with a custom empty message
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails
+    pub fn print_list<T: Serialize>(&self, data: &[T], empty_message: &str) -> Result<()> {
+        if data.is_empty() {
+            let mut stdout = io::stdout().lock();
+            match self.format {
+                OutputFormat::Toon => writeln!(stdout, "{empty_message}")?,
+                OutputFormat::Json => writeln!(stdout, "[]")?,
+            }
+            Ok(())
+        } else {
+            self.print(&data)
+        }
+    }
 }
 
 impl Default for Formatter {

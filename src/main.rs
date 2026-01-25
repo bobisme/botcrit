@@ -47,8 +47,14 @@ fn main() -> Result<()> {
         },
 
         Commands::Reviews(cmd) => match cmd {
-            ReviewsCommands::Create { title, desc } => {
-                run_reviews_create(&repo_root, title, desc, cli.author.as_deref(), format)?;
+            ReviewsCommands::Create { title, description } => {
+                run_reviews_create(
+                    &repo_root,
+                    title,
+                    description,
+                    cli.author.as_deref(),
+                    format,
+                )?;
             }
             ReviewsCommands::List {
                 status,
@@ -144,15 +150,20 @@ fn main() -> Result<()> {
             ThreadsCommands::Show {
                 thread_id,
                 context,
+                no_context,
                 current,
                 conversation,
+                no_color,
             } => {
+                // --no-context overrides --context
+                let context_lines = if no_context { 0 } else { context };
                 run_threads_show(
                     &repo_root,
                     &thread_id,
-                    context,
+                    context_lines,
                     current,
                     conversation,
+                    !no_color, // use_color
                     format,
                 )?;
             }
@@ -187,13 +198,18 @@ fn main() -> Result<()> {
             CommentsCommands::Add {
                 thread_id,
                 message,
+                message_positional,
                 request_id,
                 expected_hash,
             } => {
+                // Support both --message and positional argument
+                let msg = message.or(message_positional).ok_or_else(|| {
+                    anyhow::anyhow!("Message is required (use --message or provide as argument)")
+                })?;
                 run_comments_add(
                     &repo_root,
                     &thread_id,
-                    &message,
+                    &msg,
                     request_id,
                     expected_hash,
                     cli.author.as_deref(),

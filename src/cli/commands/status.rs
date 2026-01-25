@@ -143,8 +143,17 @@ pub fn run_status(
         });
     }
 
+    // Build context-aware empty message
+    let empty_msg = if review_id.is_some() {
+        "Review has no threads"
+    } else if unresolved_only {
+        "No open reviews with unresolved threads"
+    } else {
+        "No open reviews"
+    };
+
     let formatter = Formatter::new(format);
-    formatter.print(&statuses)?;
+    formatter.print_list(&statuses, empty_msg)?;
 
     Ok(())
 }

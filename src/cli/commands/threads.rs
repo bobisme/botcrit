@@ -107,8 +107,15 @@ pub fn run_threads_list(
 
     let threads = db.list_threads(review_id, status, file)?;
 
+    // Build context-aware empty message
+    let empty_msg = if status.is_some() || file.is_some() {
+        "No threads match the filters"
+    } else {
+        "No threads yet"
+    };
+
     let formatter = Formatter::new(format);
-    formatter.print(&threads)?;
+    formatter.print_list(&threads, empty_msg)?;
 
     Ok(())
 }
@@ -120,6 +127,7 @@ pub fn run_threads_show(
     context_lines: u32,
     use_current: bool,
     conversation: bool,
+    use_color: bool,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
@@ -164,7 +172,7 @@ pub fn run_threads_show(
             // Build output based on format
             if conversation {
                 // Conversation format: human-readable with timestamps
-                print_conversation(&t, code_context.as_ref());
+                print_conversation(&t, code_context.as_ref(), use_color);
             } else if matches!(format, OutputFormat::Json) {
                 // For JSON, include context as structured data
                 let mut result = serde_json::to_value(&t)?;
@@ -192,16 +200,46 @@ pub fn run_threads_show(
     Ok(())
 }
 
+/// ANSI color codes for terminal output
+mod colors {
+    pub const RESET: &str = "\x1b[0m";
+    pub const BOLD: &str = "\x1b[1m";
+    pub const DIM: &str = "\x1b[2m";
+    pub const GREEN: &str = "\x1b[32m";
+    pub const YELLOW: &str = "\x1b[33m";
+    pub const BLUE: &str = "\x1b[34m";
+    pub const MAGENTA: &str = "\x1b[35m";
+    pub const CYAN: &str = "\x1b[36m";
+}
+
 /// Format and print a thread as a human-readable conversation.
 fn print_conversation(
     thread: &crate::projection::ThreadDetail,
     code_context: Option<&crate::jj::context::CodeContext>,
+    use_color: bool,
 ) {
+    // Color helpers
+    let c = |color: &str, text: &str| -> String {
+        if use_color {
+            format!("{}{}{}", color, text, colors::RESET)
+        } else {
+            text.to_string()
+        }
+    };
+
+    let bold = |text: &str| -> String {
+        if use_color {
+            format!("{}{}{}", colors::BOLD, text, colors::RESET)
+        } else {
+            text.to_string()
+        }
+    };
+
     // Header with thread info
     let status_indicator = if thread.status == "resolved" {
-        "[RESOLVED]"
+        c(colors::GREEN, "[RESOLVED]")
     } else {
-        "[OPEN]"
+        c(colors::YELLOW, "[OPEN]")
     };
 
     let line_range = match thread.selection_end {
@@ -212,8 +250,11 @@ fn print_conversation(
     };
 
     println!(
-        "Thread {} {} on {} ({})",
-        thread.thread_id, status_indicator, thread.file_path, line_range
+        "{} {} on {} ({})",
+        bold(&format!("Thread {}", thread.thread_id)),
+        status_indicator,
+        c(colors::CYAN, &thread.file_path),
+        c(colors::DIM, &line_range)
     );
     println!("{}", "=".repeat(60));
 
@@ -227,8 +268,8 @@ fn print_conversation(
     // Thread creation
     println!(
         "\n{} started this thread ({})",
-        thread.author,
-        format_timestamp(&thread.created_at)
+        c(colors::BLUE, &thread.author),
+        c(colors::DIM, &format_timestamp(&thread.created_at))
     );
 
     // Comments as conversation
@@ -236,8 +277,8 @@ fn print_conversation(
         println!();
         println!(
             "{} ({})",
-            comment.author,
-            format_timestamp(&comment.created_at)
+            c(colors::MAGENTA, &comment.author),
+            c(colors::DIM, &format_timestamp(&comment.created_at))
         );
         // Indent the body for readability
         for line in comment.body.lines() {
@@ -254,7 +295,12 @@ fn print_conversation(
                 .as_deref()
                 .map(format_timestamp)
                 .unwrap_or_else(|| "unknown time".to_string());
-            print!("{} resolved this thread ({})", changed_by, timestamp);
+            print!(
+                "{} {} ({})",
+                c(colors::GREEN, changed_by),
+                c(colors::GREEN, "resolved this thread"),
+                c(colors::DIM, &timestamp)
+            );
             if let Some(ref reason) = thread.resolve_reason {
                 print!(": {}", reason);
             }
