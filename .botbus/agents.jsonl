@@ -1,4 +1,0 @@
-{"ts":"2026-01-25T13:32:27.049414358Z","name":"Orchestrator","description":"Main coordinating agent for botcrit implementation","event":"registered"}
-{"ts":"2026-01-25T14:15:30.434113851Z","name":"AgentDrift","description":"Implementing drift detection","event":"registered"}
-{"ts":"2026-01-25T14:15:36.894655429Z","name":"AgentQuery","description":"Implementing query API","event":"registered"}
-{"ts":"2026-01-25T14:15:46.022221001Z","name":"AgentContext","description":"Implementing context extraction","event":"registered"}
