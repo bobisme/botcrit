@@ -61,8 +61,8 @@ pub enum Commands {
         review_id: String,
     },
 
-    /// Interactive TUI for browsing reviews
-    Tui,
+    /// Interactive UI for browsing reviews
+    Ui,
 }
 
 // ============================================================================

@@ -10,9 +10,18 @@ pub const CRIT_DIR: &str = ".crit";
 /// The event log filename
 pub const EVENTS_FILE: &str = "events.jsonl";
 
+/// The gitignore filename
+pub const GITIGNORE_FILE: &str = ".gitignore";
+
+/// Files to ignore (local caches, not to be tracked)
+const GITIGNORE_CONTENT: &str = "# Local caches (do not track)
+index.db
+index.db-journal
+";
+
 /// Run the init command.
 ///
-/// Creates the .crit directory with an empty events.jsonl file.
+/// Creates the .crit directory with an empty events.jsonl file and .gitignore.
 pub fn run_init(repo_root: &Path) -> Result<()> {
     let crit_dir = repo_root.join(CRIT_DIR);
 
@@ -20,6 +29,8 @@ pub fn run_init(repo_root: &Path) -> Result<()> {
     if crit_dir.exists() {
         let events_file = crit_dir.join(EVENTS_FILE);
         if events_file.exists() {
+            // Ensure gitignore exists even for existing repos
+            ensure_gitignore(&crit_dir)?;
             println!("Already initialized: {}", crit_dir.display());
             return Ok(());
         }
@@ -34,8 +45,35 @@ pub fn run_init(repo_root: &Path) -> Result<()> {
     fs::write(&events_file, "")
         .with_context(|| format!("Failed to create events file: {}", events_file.display()))?;
 
+    // Create gitignore
+    ensure_gitignore(&crit_dir)?;
+
     println!("Initialized crit in {}", crit_dir.display());
     println!("  Created: {}", events_file.display());
+
+    Ok(())
+}
+
+/// Ensure .gitignore exists with required entries.
+fn ensure_gitignore(crit_dir: &Path) -> Result<()> {
+    let gitignore_path = crit_dir.join(GITIGNORE_FILE);
+
+    if gitignore_path.exists() {
+        // Check if index.db is already ignored
+        let content = fs::read_to_string(&gitignore_path)
+            .with_context(|| format!("Failed to read {}", gitignore_path.display()))?;
+
+        if !content.contains("index.db") {
+            // Append to existing gitignore
+            let updated = format!("{}\n{}", content.trim_end(), GITIGNORE_CONTENT);
+            fs::write(&gitignore_path, updated)
+                .with_context(|| format!("Failed to update {}", gitignore_path.display()))?;
+        }
+    } else {
+        // Create new gitignore
+        fs::write(&gitignore_path, GITIGNORE_CONTENT)
+            .with_context(|| format!("Failed to create {}", gitignore_path.display()))?;
+    }
 
     Ok(())
 }
@@ -71,7 +109,13 @@ mod tests {
 
         assert!(repo_root.join(CRIT_DIR).exists());
         assert!(repo_root.join(CRIT_DIR).join(EVENTS_FILE).exists());
+        assert!(repo_root.join(CRIT_DIR).join(GITIGNORE_FILE).exists());
         assert!(is_initialized(repo_root));
+
+        // Check gitignore content
+        let gitignore =
+            std::fs::read_to_string(repo_root.join(CRIT_DIR).join(GITIGNORE_FILE)).unwrap();
+        assert!(gitignore.contains("index.db"));
     }
 
     #[test]

@@ -4,46 +4,16 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::projection::{Comment, ProjectionDb, ReviewSummary, ThreadSummary};
+use super::views::{ReviewDetailView, ReviewListView};
+use crate::projection::ProjectionDb;
 
-/// Which panel has focus
+/// Which view is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panel {
-    Reviews,
-    Threads,
-    Comments,
-}
-
-impl Panel {
-    /// Get the panel number for display
-    #[must_use]
-    pub const fn number(self) -> u8 {
-        match self {
-            Self::Reviews => 1,
-            Self::Threads => 2,
-            Self::Comments => 3,
-        }
-    }
-
-    /// Cycle to next panel
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Reviews => Self::Threads,
-            Self::Threads => Self::Comments,
-            Self::Comments => Self::Reviews,
-        }
-    }
-
-    /// Cycle to previous panel
-    #[must_use]
-    pub const fn prev(self) -> Self {
-        match self {
-            Self::Reviews => Self::Comments,
-            Self::Threads => Self::Reviews,
-            Self::Comments => Self::Threads,
-        }
-    }
+pub enum ViewMode {
+    /// Review list (entry point)
+    ReviewList,
+    /// Review detail (diff with inline comments)
+    ReviewDetail,
 }
 
 /// Messages for the Elm architecture update loop
@@ -55,18 +25,35 @@ pub enum Message {
     JumpToTop,
     /// Jump to bottom of list
     JumpToBottom,
-    /// Focus a specific panel
-    FocusPanel(Panel),
-    /// Cycle to next panel
-    NextPanel,
-    /// Cycle to previous panel
-    PrevPanel,
+    /// Select the current item (Enter/l)
+    Select,
+    /// Go back to previous view (Esc/q in detail, q in list to quit)
+    Back,
     /// Toggle help overlay
     ToggleHelp,
     /// Refresh data from database
     Refresh,
     /// Quit the application
     Quit,
+    // Review detail specific
+    /// Scroll down in diff view
+    ScrollDown(u16),
+    /// Scroll up in diff view
+    ScrollUp(u16),
+    /// Move to next file
+    NextFile,
+    /// Move to previous file
+    PrevFile,
+    /// Toggle collapse current file
+    ToggleCollapse,
+    /// Collapse all files
+    CollapseAll,
+    /// Expand all files
+    ExpandAll,
+    /// Toggle side-by-side mode
+    ToggleSideBySide,
+    /// Select a specific file by index
+    SelectFile(usize),
 }
 
 /// Application state
@@ -74,23 +61,14 @@ pub struct App {
     /// Path to repository root
     pub repo_root: PathBuf,
 
-    /// Currently focused panel
-    pub focused_panel: Panel,
+    /// Current view mode
+    pub view_mode: ViewMode,
 
-    /// List of reviews
-    pub reviews: Vec<ReviewSummary>,
-    /// Selected review index
-    pub review_index: usize,
+    /// Review list view state
+    pub review_list: ReviewListView,
 
-    /// Threads for selected review
-    pub threads: Vec<ThreadSummary>,
-    /// Selected thread index
-    pub thread_index: usize,
-
-    /// Comments for selected thread
-    pub comments: Vec<Comment>,
-    /// Selected comment index
-    pub comment_index: usize,
+    /// Review detail view state (only Some when viewing a review)
+    pub review_detail: Option<ReviewDetailView>,
 
     /// Show help overlay
     pub show_help: bool,
@@ -105,77 +83,43 @@ pub struct App {
 impl App {
     /// Create a new App instance
     pub fn new(repo_root: PathBuf) -> Result<Self> {
+        let db = Self::open_db_static(&repo_root)?;
+        let reviews = db.list_reviews(None, None)?;
+
         let mut app = Self {
             repo_root,
-            focused_panel: Panel::Reviews,
-            reviews: Vec::new(),
-            review_index: 0,
-            threads: Vec::new(),
-            thread_index: 0,
-            comments: Vec::new(),
-            comment_index: 0,
+            view_mode: ViewMode::ReviewList,
+            review_list: ReviewListView::new(reviews),
+            review_detail: None,
             show_help: false,
             should_quit: false,
             status_message: None,
         };
-        app.refresh()?;
+        app.status_message = Some("Ready".to_string());
         Ok(app)
     }
 
     /// Refresh all data from the database
     pub fn refresh(&mut self) -> Result<()> {
         let db = self.open_db()?;
+        self.review_list.reviews = db.list_reviews(None, None)?;
 
-        // Load reviews (open ones first, then others)
-        self.reviews = db.list_reviews(None, None)?;
-
-        // Reset index if out of bounds
-        if self.review_index >= self.reviews.len() {
-            self.review_index = self.reviews.len().saturating_sub(1);
+        // If we're in detail view, refresh that too
+        if let Some(ref mut detail) = self.review_detail {
+            // Reload the review detail
+            if let Some(review) = db.get_review(&detail.review.review_id)? {
+                self.review_detail = Some(ReviewDetailView::new(review, &self.repo_root, &db));
+            }
         }
-
-        // Load threads for selected review
-        self.refresh_threads(&db)?;
 
         self.status_message = Some("Refreshed".to_string());
         Ok(())
     }
 
-    /// Refresh threads for the currently selected review
-    fn refresh_threads(&mut self, db: &ProjectionDb) -> Result<()> {
-        if let Some(review) = self.reviews.get(self.review_index) {
-            self.threads = db.list_threads(&review.review_id, None, None)?;
-        } else {
-            self.threads.clear();
-        }
-
-        if self.thread_index >= self.threads.len() {
-            self.thread_index = self.threads.len().saturating_sub(1);
-        }
-
-        self.refresh_comments(db)?;
-        Ok(())
-    }
-
-    /// Refresh comments for the currently selected thread
-    fn refresh_comments(&mut self, db: &ProjectionDb) -> Result<()> {
-        if let Some(thread) = self.threads.get(self.thread_index) {
-            self.comments = db.list_comments(&thread.thread_id)?;
-        } else {
-            self.comments.clear();
-        }
-
-        if self.comment_index >= self.comments.len() {
-            self.comment_index = self.comments.len().saturating_sub(1);
-        }
-
-        Ok(())
-    }
-
-    /// Open the projection database
-    fn open_db(&self) -> Result<ProjectionDb> {
-        let index_path = self.repo_root.join(".crit").join("index.db");
-        let events_path = self.repo_root.join(".crit").join("events.jsonl");
+    /// Open the projection database (static version for initialization)
+    fn open_db_static(repo_root: &PathBuf) -> Result<ProjectionDb> {
+        let index_path = repo_root.join(".crit").join("index.db");
+        let events_path = repo_root.join(".crit").join("events.jsonl");
         let log = crate::log::open_or_create(&events_path)?;
         let db = ProjectionDb::open(&index_path)?;
         db.init_schema()?;
@@ -183,135 +127,53 @@ impl App {
         Ok(db)
     }
 
-    /// Get the currently selected review (if any)
-    #[must_use]
-    pub fn selected_review(&self) -> Option<&ReviewSummary> {
-        self.reviews.get(self.review_index)
+    /// Open the projection database
+    fn open_db(&self) -> Result<ProjectionDb> {
+        Self::open_db_static(&self.repo_root)
     }
 
-    /// Get the currently selected thread (if any)
-    #[must_use]
-    pub fn selected_thread(&self) -> Option<&ThreadSummary> {
-        self.threads.get(self.thread_index)
-    }
-
-    /// Get the currently selected comment (if any)
-    #[must_use]
-    pub fn selected_comment(&self) -> Option<&Comment> {
-        self.comments.get(self.comment_index)
-    }
-
-    /// Get the current list length for the focused panel
-    fn current_list_len(&self) -> usize {
-        match self.focused_panel {
-            Panel::Reviews => self.reviews.len(),
-            Panel::Threads => self.threads.len(),
-            Panel::Comments => self.comments.len(),
-        }
-    }
-
-    /// Get the current selection index for the focused panel
-    fn current_index(&self) -> usize {
-        match self.focused_panel {
-            Panel::Reviews => self.review_index,
-            Panel::Threads => self.thread_index,
-            Panel::Comments => self.comment_index,
-        }
-    }
-
-    /// Set the current selection index for the focused panel
-    fn set_current_index(&mut self, index: usize) {
-        match self.focused_panel {
-            Panel::Reviews => self.review_index = index,
-            Panel::Threads => self.thread_index = index,
-            Panel::Comments => self.comment_index = index,
-        }
-    }
-
-    /// Move selection by delta, clamping to valid range
-    fn move_selection(&mut self, delta: i32) {
-        let len = self.current_list_len();
-        if len == 0 {
-            return;
-        }
-
-        let current = self.current_index();
-        let new_index = if delta < 0 {
-            current.saturating_sub(delta.unsigned_abs() as usize)
-        } else {
-            (current + delta as usize).min(len - 1)
+    /// Enter review detail view for the selected review
+    fn enter_review_detail(&mut self) -> Result<()> {
+        let Some(review_summary) = self.review_list.selected_review() else {
+            return Ok(());
         };
 
-        self.set_current_index(new_index);
+        let db = self.open_db()?;
+        let Some(review) = db.get_review(&review_summary.review_id)? else {
+            self.status_message = Some("Review not found".to_string());
+            return Ok(());
+        };
 
-        // When review selection changes, refresh threads
-        if self.focused_panel == Panel::Reviews && new_index != current {
-            if let Ok(db) = self.open_db() {
-                let _ = self.refresh_threads(&db);
-            }
-        }
+        self.review_detail = Some(ReviewDetailView::new(review, &self.repo_root, &db));
+        self.view_mode = ViewMode::ReviewDetail;
+        Ok(())
+    }
 
-        // When thread selection changes, refresh comments
-        if self.focused_panel == Panel::Threads && new_index != current {
-            if let Ok(db) = self.open_db() {
-                let _ = self.refresh_comments(&db);
-            }
-        }
+    /// Go back from detail to list view
+    fn leave_review_detail(&mut self) {
+        self.review_detail = None;
+        self.view_mode = ViewMode::ReviewList;
     }
 }
 
 /// Update the model based on a message (Elm architecture)
 pub fn update(app: &mut App, message: Message) -> Option<Message> {
+    // Help overlay takes priority
+    if app.show_help {
+        if let Message::ToggleHelp = message {
+            app.show_help = false;
+        }
+        // Any other key also dismisses help in the event handler
+        return None;
+    }
+
     match message {
-        Message::MoveSelection(delta) => {
-            app.move_selection(delta);
-            None
-        }
-        Message::JumpToTop => {
-            app.set_current_index(0);
-            // Trigger refresh of dependent data
-            if app.focused_panel == Panel::Reviews {
-                if let Ok(db) = app.open_db() {
-                    let _ = app.refresh_threads(&db);
-                }
-            } else if app.focused_panel == Panel::Threads {
-                if let Ok(db) = app.open_db() {
-                    let _ = app.refresh_comments(&db);
-                }
-            }
-            None
-        }
-        Message::JumpToBottom => {
-            let len = app.current_list_len();
-            if len > 0 {
-                app.set_current_index(len - 1);
-                // Trigger refresh of dependent data
-                if app.focused_panel == Panel::Reviews {
-                    if let Ok(db) = app.open_db() {
-                        let _ = app.refresh_threads(&db);
-                    }
-                } else if app.focused_panel == Panel::Threads {
-                    if let Ok(db) = app.open_db() {
-                        let _ = app.refresh_comments(&db);
-                    }
-                }
-            }
-            None
-        }
-        Message::FocusPanel(panel) => {
-            app.focused_panel = panel;
-            None
-        }
-        Message::NextPanel => {
-            app.focused_panel = app.focused_panel.next();
-            None
-        }
-        Message::PrevPanel => {
-            app.focused_panel = app.focused_panel.prev();
-            None
-        }
         Message::ToggleHelp => {
-            app.show_help = !app.show_help;
+            app.show_help = true;
+            None
+        }
+        Message::Quit => {
+            app.should_quit = true;
             None
         }
         Message::Refresh => {
@@ -320,8 +182,127 @@ pub fn update(app: &mut App, message: Message) -> Option<Message> {
             }
             None
         }
-        Message::Quit => {
-            app.should_quit = true;
+        Message::Back => {
+            match app.view_mode {
+                ViewMode::ReviewList => {
+                    // In list view, back means quit
+                    app.should_quit = true;
+                }
+                ViewMode::ReviewDetail => {
+                    app.leave_review_detail();
+                }
+            }
+            None
+        }
+        Message::Select => {
+            if app.view_mode == ViewMode::ReviewList {
+                if let Err(e) = app.enter_review_detail() {
+                    app.status_message = Some(format!("Error: {e}"));
+                }
+            }
+            None
+        }
+        Message::MoveSelection(delta) => {
+            match app.view_mode {
+                ViewMode::ReviewList => {
+                    if delta > 0 {
+                        app.review_list.move_down();
+                    } else {
+                        app.review_list.move_up();
+                    }
+                }
+                ViewMode::ReviewDetail => {
+                    // In detail view, j/k scrolls
+                    if let Some(ref mut detail) = app.review_detail {
+                        if delta > 0 {
+                            detail.scroll_down(1);
+                        } else {
+                            detail.scroll_up(1);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Message::JumpToTop => {
+            match app.view_mode {
+                ViewMode::ReviewList => {
+                    app.review_list.jump_to_top();
+                }
+                ViewMode::ReviewDetail => {
+                    if let Some(ref mut detail) = app.review_detail {
+                        detail.scroll_offset = 0;
+                    }
+                }
+            }
+            None
+        }
+        Message::JumpToBottom => {
+            match app.view_mode {
+                ViewMode::ReviewList => {
+                    app.review_list.jump_to_bottom();
+                }
+                ViewMode::ReviewDetail => {
+                    if let Some(ref mut detail) = app.review_detail {
+                        let max = detail.content_height.saturating_sub(detail.visible_height);
+                        detail.scroll_offset = max;
+                    }
+                }
+            }
+            None
+        }
+        Message::ScrollDown(amount) => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.scroll_down(amount);
+            }
+            None
+        }
+        Message::ScrollUp(amount) => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.scroll_up(amount);
+            }
+            None
+        }
+        Message::NextFile => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.next_file();
+            }
+            None
+        }
+        Message::PrevFile => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.prev_file();
+            }
+            None
+        }
+        Message::ToggleCollapse => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.toggle_collapse();
+            }
+            None
+        }
+        Message::CollapseAll => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.collapse_all();
+            }
+            None
+        }
+        Message::ExpandAll => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.expand_all();
+            }
+            None
+        }
+        Message::ToggleSideBySide => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.toggle_side_by_side();
+            }
+            None
+        }
+        Message::SelectFile(index) => {
+            if let Some(ref mut detail) = app.review_detail {
+                detail.select_file(index);
+            }
             None
         }
     }

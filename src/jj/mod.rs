@@ -108,6 +108,19 @@ impl JjRepo {
         Ok(output.trim().to_string())
     }
 
+    /// Get the `commit_id` (Git SHA) for a given revset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the jj command fails or the revset is invalid.
+    pub fn get_commit_for_rev(&self, rev: &str) -> Result<String> {
+        let output = self
+            .run_jj(&["log", "-r", rev, "--no-graph", "-T", "commit_id"])
+            .with_context(|| format!("Failed to get commit_id for {rev}"))?;
+
+        Ok(output.trim().to_string())
+    }
+
     /// Get a git-format diff between two revisions.
     ///
     /// Both `from` and `to` should be valid jj revsets (e.g., "@", `root()`, `change_id`).
@@ -165,6 +178,23 @@ impl JjRepo {
         let output = self
             .run_jj(&["diff", "-r", rev, "--name-only"])
             .with_context(|| format!("Failed to list changed files for {rev}"))?;
+
+        Ok(output
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect())
+    }
+
+    /// List files changed between two revisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the jj command fails or the revsets are invalid.
+    pub fn changed_files_between(&self, from: &str, to: &str) -> Result<Vec<String>> {
+        let output = self
+            .run_jj(&["diff", "--from", from, "--to", to, "--name-only"])
+            .with_context(|| format!("Failed to list changed files from {from} to {to}"))?;
 
         Ok(output
             .lines()

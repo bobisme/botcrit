@@ -5,6 +5,7 @@
 mod app;
 mod theme;
 mod ui;
+mod views;
 
 use std::io::{self, Stdout};
 use std::path::Path;
@@ -12,7 +13,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -20,7 +24,7 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{update, App, Message, Panel};
+use app::{update, App, Message, ViewMode};
 
 /// Run the TUI application
 pub fn run(repo_root: &Path) -> Result<()> {
@@ -67,9 +71,6 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                 }
             }
         }
-
-        // Clear status message after a bit
-        // (In a real app, we'd track time and clear after delay)
     }
 
     Ok(())
@@ -83,10 +84,7 @@ fn handle_event(
 ) -> Result<Option<Message>> {
     match event {
         Event::Key(key) => Ok(handle_key(key.code, key.modifiers, terminal, app)?),
-        Event::Mouse(_mouse) => {
-            // Mouse support can be added later
-            Ok(None)
-        }
+        Event::Mouse(mouse) => Ok(handle_mouse(mouse, app)),
         _ => Ok(None),
     }
 }
@@ -106,15 +104,32 @@ fn handle_key(
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let shift = modifiers.contains(KeyModifiers::SHIFT);
 
+    // Global keys
     match code {
-        // Quit
-        KeyCode::Char('q') => Ok(Some(Message::Quit)),
-
         // Suspend (Ctrl+Z)
         KeyCode::Char('z') if ctrl => {
             suspend(terminal)?;
-            Ok(None)
+            return Ok(None);
         }
+        // Help
+        KeyCode::Char('?') => return Ok(Some(Message::ToggleHelp)),
+        // Refresh
+        KeyCode::Char('R') => return Ok(Some(Message::Refresh)),
+        _ => {}
+    }
+
+    // View-specific keys
+    match app.view_mode {
+        ViewMode::ReviewList => handle_list_key(code, modifiers),
+        ViewMode::ReviewDetail => handle_detail_key(code, shift),
+    }
+}
+
+/// Handle keys in review list view
+fn handle_list_key(code: KeyCode, _modifiers: KeyModifiers) -> Result<Option<Message>> {
+    match code {
+        // Quit
+        KeyCode::Char('q') => Ok(Some(Message::Quit)),
 
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => Ok(Some(Message::MoveSelection(1))),
@@ -122,22 +137,68 @@ fn handle_key(
         KeyCode::Char('g') => Ok(Some(Message::JumpToTop)),
         KeyCode::Char('G') => Ok(Some(Message::JumpToBottom)),
 
-        // Panel switching
-        KeyCode::Tab if shift => Ok(Some(Message::PrevPanel)),
-        KeyCode::Tab => Ok(Some(Message::NextPanel)),
-        KeyCode::BackTab => Ok(Some(Message::PrevPanel)),
-        KeyCode::Char('1') => Ok(Some(Message::FocusPanel(Panel::Reviews))),
-        KeyCode::Char('2') => Ok(Some(Message::FocusPanel(Panel::Threads))),
-        KeyCode::Char('3') => Ok(Some(Message::FocusPanel(Panel::Comments))),
-
-        // Help
-        KeyCode::Char('?') => Ok(Some(Message::ToggleHelp)),
-
-        // Refresh
-        KeyCode::Char('R') => Ok(Some(Message::Refresh)),
+        // Select review
+        KeyCode::Enter | KeyCode::Char('l') => Ok(Some(Message::Select)),
 
         _ => Ok(None),
     }
+}
+
+/// Handle keys in review detail view
+fn handle_detail_key(code: KeyCode, shift: bool) -> Result<Option<Message>> {
+    match code {
+        // Back
+        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => Ok(Some(Message::Back)),
+
+        // Scroll
+        KeyCode::Char('j') | KeyCode::Down => Ok(Some(Message::ScrollDown(1))),
+        KeyCode::Char('k') | KeyCode::Up => Ok(Some(Message::ScrollUp(1))),
+        KeyCode::Char('d') => Ok(Some(Message::ScrollDown(10))), // Half page
+        KeyCode::Char('u') => Ok(Some(Message::ScrollUp(10))),   // Half page
+        KeyCode::Char('g') => Ok(Some(Message::JumpToTop)),
+        KeyCode::Char('G') => Ok(Some(Message::JumpToBottom)),
+
+        // File navigation
+        KeyCode::Tab => Ok(Some(Message::NextFile)),
+        KeyCode::BackTab => Ok(Some(Message::PrevFile)),
+        KeyCode::Char(']') => Ok(Some(Message::NextFile)),
+        KeyCode::Char('[') => Ok(Some(Message::PrevFile)),
+
+        // Collapse
+        KeyCode::Char('c') if !shift => Ok(Some(Message::ToggleCollapse)),
+        KeyCode::Char('C') => Ok(Some(Message::CollapseAll)),
+        KeyCode::Char('e') => Ok(Some(Message::ExpandAll)),
+
+        // Side-by-side toggle
+        KeyCode::Char('s') => Ok(Some(Message::ToggleSideBySide)),
+
+        _ => Ok(None),
+    }
+}
+
+/// Handle mouse events
+fn handle_mouse(mouse: crossterm::event::MouseEvent, app: &App) -> Option<Message> {
+    // Only handle left clicks
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return None;
+    }
+
+    // In review detail view, check if click is in the file list area
+    if app.view_mode == ViewMode::ReviewDetail {
+        // File list is in the left panel (first 30 columns when width > 80)
+        // The file list starts at row 3 (after header) and column 1-29
+        if mouse.column < 30 && mouse.row >= 3 {
+            // Calculate which file was clicked (subtract header rows, borders)
+            let file_row = mouse.row.saturating_sub(4) as usize;
+            if let Some(ref detail) = app.review_detail {
+                if file_row < detail.files.len() {
+                    return Some(Message::SelectFile(file_row));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Suspend the TUI (Ctrl+Z support)

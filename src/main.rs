@@ -222,7 +222,7 @@ fn main() -> Result<()> {
             run_diff(&repo_root, &review_id, format)?;
         }
 
-        Commands::Tui => {
+        Commands::Ui => {
             crit::tui::run(&repo_root)?;
         }
     }
