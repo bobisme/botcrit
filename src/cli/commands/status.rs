@@ -192,11 +192,17 @@ pub fn run_diff(
         .get_parent_commit(&review.initial_commit)
         .unwrap_or_else(|_| review.initial_commit.clone());
 
-    // Get current commit (target for the diff)
-    let current_commit = jj.get_current_commit()?;
+    // Get target commit: resolve the review's change_id to its current commit
+    // - For merged reviews: use final_commit
+    // - For open/approved: resolve jj_change_id to current commit
+    let target_commit = review
+        .final_commit
+        .clone()
+        .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
+        .unwrap_or_else(|| jj.get_current_commit().unwrap_or_default());
 
-    // Get the diff between base and current
-    let diff = jj.diff_git(&base_commit, &current_commit)?;
+    // Get the diff between base and target
+    let diff = jj.diff_git(&base_commit, &target_commit)?;
 
     // Get changed files from the diff
     let changed_files = extract_changed_files_from_diff(&diff);
@@ -209,7 +215,7 @@ pub fn run_diff(
         "review_id": review_id,
         "base_commit": base_commit,
         "initial_commit": review.initial_commit,
-        "current_commit": current_commit,
+        "target_commit": target_commit,
         "changed_files": changed_files,
         "thread_count": threads.len(),
         "threads_by_file": group_threads_by_file(&threads),

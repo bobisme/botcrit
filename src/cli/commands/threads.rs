@@ -513,7 +513,7 @@ fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
 }
 
 /// Parse a line selection string like "42" or "10-20".
-fn parse_line_selection(lines: &str) -> Result<CodeSelection> {
+pub fn parse_line_selection(lines: &str) -> Result<CodeSelection> {
     if lines.contains('-') {
         let parts: Vec<&str> = lines.split('-').collect();
         if parts.len() != 2 {

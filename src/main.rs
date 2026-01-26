@@ -5,10 +5,11 @@ use clap::Parser;
 use std::env;
 
 use crit::cli::commands::{
-    run_agents_init, run_agents_show, run_comments_add, run_comments_list, run_diff, run_doctor,
-    run_init, run_reviews_abandon, run_reviews_approve, run_reviews_create, run_reviews_list,
-    run_reviews_merge, run_reviews_request, run_reviews_show, run_status, run_threads_create,
-    run_threads_list, run_threads_reopen, run_threads_resolve, run_threads_show,
+    run_agents_init, run_agents_show, run_comment, run_comments_add, run_comments_list, run_diff,
+    run_doctor, run_init, run_reviews_abandon, run_reviews_approve, run_reviews_create,
+    run_reviews_list, run_reviews_merge, run_reviews_request, run_reviews_show, run_status,
+    run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
+    run_threads_show,
 };
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
@@ -243,6 +244,24 @@ fn main() -> Result<()> {
 
         Commands::Ui => {
             crit::tui::run(&crit_root)?;
+        }
+
+        Commands::Comment {
+            review_id,
+            file,
+            line,
+            message,
+        } => {
+            run_comment(
+                &crit_root,
+                &workspace_root,
+                &review_id,
+                &file,
+                &line,
+                &message,
+                cli.author.as_deref(),
+                format,
+            )?;
         }
     }
 

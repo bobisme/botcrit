@@ -284,6 +284,31 @@ impl ProjectionDb {
         Ok(results)
     }
 
+    /// Find an existing open thread at a specific file and line.
+    ///
+    /// Returns the thread_id if a thread exists at the exact location, or None.
+    /// Only returns open threads (not resolved ones).
+    pub fn find_thread_at_location(
+        &self,
+        review_id: &str,
+        file_path: &str,
+        line: i64,
+    ) -> Result<Option<String>> {
+        let result: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT thread_id FROM threads
+                 WHERE review_id = ? AND file_path = ? AND selection_start = ? AND status = 'open'
+                 LIMIT 1",
+                rusqlite::params![review_id, file_path, line],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to query for existing thread")?;
+
+        Ok(result)
+    }
+
     /// Get detailed information about a single thread with its comments.
     ///
     /// Returns `None` if the thread doesn't exist.

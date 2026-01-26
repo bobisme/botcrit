@@ -33,39 +33,64 @@ crit reviews create --title "Add feature X"
 # List open reviews
 crit reviews list
 
+# Check reviews needing your attention
+crit reviews list --needs-review --author $BOTBUS_AGENT
+
 # Show review details
 crit reviews show <review_id>
 ```
 
-### Reviewing Code
+### Adding Comments (Recommended)
+
+The simplest way to comment on code - auto-creates threads:
 
 ```bash
-# Create a comment thread on specific lines
-crit threads create <review_id> --file src/main.rs --lines 42-50
+# Add a comment on a specific line (creates thread automatically)
+crit comment <review_id> --file src/main.rs --line 42 "Consider using Option here"
 
-# Add a comment to a thread
-crit comments add <thread_id> "This buffer should be cleared after use"
+# Add another comment on same line (reuses existing thread)
+crit comment <review_id> --file src/main.rs --line 42 "Good point, will fix"
 
+# Comment on a line range
+crit comment <review_id> --file src/main.rs --line 10-20 "This block needs refactoring"
+```
+
+### Managing Threads
+
+```bash
 # List threads on a review
 crit threads list <review_id>
 
+# Show thread with context
+crit threads show <thread_id>
+
 # Resolve a thread
-crit threads resolve <thread_id>
+crit threads resolve <thread_id> --reason "Fixed in latest commit"
+```
+
+### Approving and Merging
+
+```bash
+# Approve a review
+crit reviews approve <review_id>
+
+# Mark as merged (after jj squash/merge)
+crit reviews merge <review_id>
 ```
 
 ### Agent Best Practices
 
-1. **Use optimistic locking** to avoid stale comments:
+1. **Set your identity** via environment:
    ```bash
-   crit comments add <thread_id> "message" --expected-hash <hash>
+   export BOTBUS_AGENT=my-agent-name
    ```
 
-2. **Use request IDs** for idempotent retries:
+2. **Check for pending reviews** at session start:
    ```bash
-   crit comments add <thread_id> "message" --request-id <uuid>
+   crit reviews list --needs-review --author $BOTBUS_AGENT
    ```
 
-3. **Check status before acting**:
+3. **Check status** to see unresolved threads:
    ```bash
    crit status <review_id> --unresolved-only
    ```
@@ -83,8 +108,9 @@ crit threads resolve <thread_id>
 ### Key Concepts
 
 - **Reviews** are anchored to jj Change IDs (survive rebases)
-- **Threads** are anchored to specific commit hashes (snapshots)
-- **Drift detection** maps comments to current line numbers automatically"#
+- **Threads** group comments on specific file locations
+- **crit comment** is the simple way to leave feedback (auto-creates threads)
+- Works across jj workspaces (shared .crit/ in main repo)"#
 }
 
 /// Run the `crit agents init` command.

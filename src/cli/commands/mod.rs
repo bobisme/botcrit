@@ -9,7 +9,7 @@ pub mod status;
 pub mod threads;
 
 pub use agents::{get_crit_instructions, run_agents_init, run_agents_show};
-pub use comments::{run_comments_add, run_comments_list};
+pub use comments::{run_comment, run_comments_add, run_comments_list};
 pub use doctor::run_doctor;
 pub use init::run_init;
 pub use reviews::{

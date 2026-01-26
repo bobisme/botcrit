@@ -63,6 +63,24 @@ pub enum Commands {
 
     /// Interactive UI for browsing reviews
     Ui,
+
+    /// Add a comment to a review (auto-creates thread if needed)
+    Comment {
+        /// Review ID
+        review_id: String,
+
+        /// File path
+        #[arg(long)]
+        file: String,
+
+        /// Line number or range (e.g., "42" or "10-20")
+        #[arg(long, visible_alias = "lines")]
+        line: String,
+
+        /// Comment message
+        #[arg(value_name = "MESSAGE")]
+        message: String,
+    },
 }
 
 // ============================================================================
