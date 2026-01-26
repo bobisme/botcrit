@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::cli::commands::init::{events_path, index_path, is_initialized};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
-    ReviewCreated, ReviewMerged, ReviewersRequested,
+    ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
 };
 use crate::jj::JjRepo;
 use crate::log::{open_or_create, AppendLog};
@@ -299,6 +299,28 @@ pub fn run_reviews_merge(
         _ => {}
     }
 
+    // Check for blocking votes
+    if db.has_blocking_votes(review_id)? {
+        let votes = db.get_votes(review_id)?;
+        let blockers: Vec<_> = votes
+            .iter()
+            .filter(|v| v.vote == "block")
+            .map(|v| {
+                if let Some(reason) = &v.reason {
+                    format!("  - {} ({})", v.reviewer, reason)
+                } else {
+                    format!("  - {}", v.reviewer)
+                }
+            })
+            .collect();
+
+        bail!(
+            "Cannot merge review with blocking votes:\n{}\n\nReviewers must change their vote with 'crit lgtm {}' before merging.",
+            blockers.join("\n"),
+            review_id
+        );
+    }
+
     // Get final commit hash - either provided or auto-detect from @
     // Use workspace_root for jj commands so @ resolves correctly
     let jj = JjRepo::new(workspace_root);
@@ -325,6 +347,94 @@ pub fn run_reviews_merge(
         "review_id": review_id,
         "status": "merged",
         "final_commit": final_commit,
+    });
+
+    let formatter = Formatter::new(format);
+    formatter.print(&result)?;
+
+    Ok(())
+}
+
+/// Vote LGTM on a review.
+pub fn run_lgtm(
+    repo_root: &Path,
+    review_id: &str,
+    message: Option<String>,
+    author: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    run_vote(
+        repo_root,
+        review_id,
+        VoteType::Lgtm,
+        message,
+        author,
+        format,
+    )
+}
+
+/// Block a review (request changes).
+pub fn run_block(
+    repo_root: &Path,
+    review_id: &str,
+    reason: String,
+    author: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    run_vote(
+        repo_root,
+        review_id,
+        VoteType::Block,
+        Some(reason),
+        author,
+        format,
+    )
+}
+
+/// Internal vote handler.
+fn run_vote(
+    repo_root: &Path,
+    review_id: &str,
+    vote: VoteType,
+    reason: Option<String>,
+    author: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    ensure_initialized(repo_root)?;
+
+    // Verify review exists and is open or approved (approved reviews can still
+    // receive votes, e.g., to change a block to lgtm after issues are fixed)
+    let db = open_and_sync(repo_root)?;
+    let review = db.get_review(review_id)?;
+    match &review {
+        None => bail!("Review not found: {}", review_id),
+        Some(r) if r.status == "merged" => {
+            bail!("Cannot vote on merged review: {}", review_id);
+        }
+        Some(r) if r.status == "abandoned" => {
+            bail!("Cannot vote on abandoned review: {}", review_id);
+        }
+        _ => {}
+    }
+
+    let author = get_agent_identity(author);
+    let event = EventEnvelope::new(
+        &author,
+        Event::ReviewerVoted(ReviewerVoted {
+            review_id: review_id.to_string(),
+            vote,
+            reason: reason.clone(),
+        }),
+    );
+
+    let log = open_or_create(&events_path(repo_root))?;
+    log.append(&event)?;
+
+    let result = serde_json::json!({
+        "review_id": review_id,
+        "vote": vote.to_string(),
+        "reason": reason,
+        "voter": author,
     });
 
     let formatter = Formatter::new(format);

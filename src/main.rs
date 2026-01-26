@@ -5,10 +5,10 @@ use clap::Parser;
 use std::env;
 
 use crit::cli::commands::{
-    run_agents_init, run_agents_show, run_comment, run_comments_add, run_comments_list, run_diff,
-    run_doctor, run_init, run_reviews_abandon, run_reviews_approve, run_reviews_create,
-    run_reviews_list, run_reviews_merge, run_reviews_request, run_reviews_show, run_status,
-    run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
+    run_agents_init, run_agents_show, run_block, run_comment, run_comments_add, run_comments_list,
+    run_diff, run_doctor, run_init, run_lgtm, run_reviews_abandon, run_reviews_approve,
+    run_reviews_create, run_reviews_list, run_reviews_merge, run_reviews_request, run_reviews_show,
+    run_status, run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
     run_threads_show,
 };
 use crit::cli::{
@@ -259,6 +259,26 @@ fn main() -> Result<()> {
                 &file,
                 &line,
                 &message,
+                cli.author.as_deref(),
+                format,
+            )?;
+        }
+
+        Commands::Lgtm { review_id, message } => {
+            run_lgtm(
+                &crit_root,
+                &review_id,
+                message,
+                cli.author.as_deref(),
+                format,
+            )?;
+        }
+
+        Commands::Block { review_id, reason } => {
+            run_block(
+                &crit_root,
+                &review_id,
+                reason,
                 cli.author.as_deref(),
                 format,
             )?;

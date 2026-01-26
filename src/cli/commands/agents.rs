@@ -68,13 +68,24 @@ crit threads show <thread_id>
 crit threads resolve <thread_id> --reason "Fixed in latest commit"
 ```
 
+### Voting on Reviews
+
+```bash
+# Approve a review (LGTM)
+crit lgtm <review_id> -m "Looks good!"
+
+# Block a review (request changes)
+crit block <review_id> -r "Need more test coverage"
+```
+
 ### Approving and Merging
 
 ```bash
-# Approve a review
+# Approve a review (changes status to approved)
 crit reviews approve <review_id>
 
 # Mark as merged (after jj squash/merge)
+# Note: Will fail if there are blocking votes
 crit reviews merge <review_id>
 ```
 

@@ -31,6 +31,8 @@ pub enum Event {
     ReviewCreated(ReviewCreated),
     /// Reviewers were requested for a review
     ReviewersRequested(ReviewersRequested),
+    /// A reviewer voted on a review (LGTM or block)
+    ReviewerVoted(ReviewerVoted),
     /// A review was approved
     ReviewApproved(ReviewApproved),
     /// A review was merged
@@ -70,6 +72,34 @@ pub struct ReviewCreated {
 pub struct ReviewersRequested {
     pub review_id: String,
     pub reviewers: Vec<String>,
+}
+
+/// Vote type for reviewer decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoteType {
+    /// Looks Good To Me - approval
+    Lgtm,
+    /// Request changes - blocks merge
+    Block,
+}
+
+impl std::fmt::Display for VoteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lgtm => write!(f, "lgtm"),
+            Self::Block => write!(f, "block"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewerVoted {
+    pub review_id: String,
+    pub vote: VoteType,
+    /// Optional reason (typically used for blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

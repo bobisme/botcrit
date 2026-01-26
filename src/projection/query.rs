@@ -43,6 +43,16 @@ pub struct ReviewDetail {
     pub thread_count: i64,
     pub open_thread_count: i64,
     pub reviewers: Vec<String>,
+    pub votes: Vec<ReviewerVote>,
+}
+
+/// A reviewer's vote on a review.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewerVote {
+    pub reviewer: String,
+    pub vote: String,
+    pub reason: Option<String>,
+    pub voted_at: String,
 }
 
 /// Summary of a thread for list views.
@@ -210,6 +220,9 @@ impl ProjectionDb {
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to read reviewers")?;
 
+        // Get the votes
+        let votes = self.get_votes(review_id)?;
+
         Ok(Some(ReviewDetail {
             review_id: row.review_id,
             jj_change_id: row.jj_change_id,
@@ -226,6 +239,7 @@ impl ProjectionDb {
             thread_count: row.thread_count,
             open_thread_count: row.open_thread_count,
             reviewers,
+            votes,
         }))
     }
 
@@ -353,6 +367,54 @@ impl ProjectionDb {
             reopen_reason: row.reopen_reason,
             comments,
         }))
+    }
+
+    /// Get all votes for a review.
+    ///
+    /// Returns votes sorted by vote time (oldest first).
+    pub fn get_votes(&self, review_id: &str) -> Result<Vec<ReviewerVote>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT reviewer, vote, reason, voted_at
+                 FROM reviewer_votes
+                 WHERE review_id = ?
+                 ORDER BY voted_at ASC",
+            )
+            .context("Failed to prepare get_votes query")?;
+
+        let rows = stmt
+            .query_map(params![review_id], |row| {
+                Ok(ReviewerVote {
+                    reviewer: row.get(0)?,
+                    vote: row.get(1)?,
+                    reason: row.get(2)?,
+                    voted_at: row.get(3)?,
+                })
+            })
+            .context("Failed to execute get_votes query")?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.context("Failed to read vote row")?);
+        }
+        Ok(results)
+    }
+
+    /// Check if a review has any blocking votes.
+    ///
+    /// Returns true if there is at least one "block" vote.
+    pub fn has_blocking_votes(&self, review_id: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviewer_votes WHERE review_id = ? AND vote = 'block'",
+                params![review_id],
+                |row| row.get(0),
+            )
+            .context("Failed to check for blocking votes")?;
+
+        Ok(count > 0)
     }
 
     /// List all comments for a thread.

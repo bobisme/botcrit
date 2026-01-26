@@ -81,6 +81,26 @@ pub enum Commands {
         #[arg(value_name = "MESSAGE")]
         message: String,
     },
+
+    /// Approve a review (LGTM - Looks Good To Me)
+    Lgtm {
+        /// Review ID
+        review_id: String,
+
+        /// Optional approval message
+        #[arg(long = "message", short = 'm')]
+        message: Option<String>,
+    },
+
+    /// Block a review (request changes before merge)
+    Block {
+        /// Review ID
+        review_id: String,
+
+        /// Reason for blocking (required)
+        #[arg(long = "reason", short = 'r')]
+        reason: String,
+    },
 }
 
 // ============================================================================

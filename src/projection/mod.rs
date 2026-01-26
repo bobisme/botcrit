@@ -11,7 +11,7 @@
 
 mod query;
 
-pub use query::{Comment, ReviewDetail, ReviewSummary, ThreadDetail, ThreadSummary};
+pub use query::{Comment, ReviewDetail, ReviewSummary, ReviewerVote, ThreadDetail, ThreadSummary};
 
 use std::path::Path;
 
@@ -21,7 +21,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::events::{
     CodeSelection, CommentAdded, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
-    ReviewCreated, ReviewMerged, ReviewersRequested, ThreadCreated, ThreadReopened, ThreadResolved,
+    ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, ThreadCreated, ThreadReopened,
+    ThreadResolved,
 };
 use crate::log::AppendLog;
 
@@ -166,6 +167,7 @@ fn apply_event_inner(conn: &Connection, envelope: &EventEnvelope) -> Result<()> 
     match &envelope.event {
         Event::ReviewCreated(e) => apply_review_created(conn, e, author, ts),
         Event::ReviewersRequested(e) => apply_reviewers_requested(conn, e, author, ts),
+        Event::ReviewerVoted(e) => apply_reviewer_voted(conn, e, author, ts),
         Event::ReviewApproved(e) => apply_review_approved(conn, e, author, ts),
         Event::ReviewMerged(e) => apply_review_merged(conn, e, author, ts),
         Event::ReviewAbandoned(e) => apply_review_abandoned(conn, e, author, ts),
@@ -219,6 +221,31 @@ fn apply_reviewers_requested(
             params![event.review_id, reviewer, ts_str, author],
         )?;
     }
+    Ok(())
+}
+
+fn apply_reviewer_voted(
+    conn: &Connection,
+    event: &ReviewerVoted,
+    author: &str,
+    ts: &DateTime<Utc>,
+) -> Result<()> {
+    // Insert or replace vote (a reviewer can change their vote)
+    conn.execute(
+        "INSERT INTO reviewer_votes (review_id, reviewer, vote, reason, voted_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (review_id, reviewer) DO UPDATE SET
+             vote = excluded.vote,
+             reason = excluded.reason,
+             voted_at = excluded.voted_at",
+        params![
+            event.review_id,
+            author,
+            event.vote.to_string(),
+            event.reason,
+            ts.to_rfc3339(),
+        ],
+    )?;
     Ok(())
 }
 
@@ -380,6 +407,7 @@ const fn event_type_name(event: &Event) -> &'static str {
     match event {
         Event::ReviewCreated(_) => "ReviewCreated",
         Event::ReviewersRequested(_) => "ReviewersRequested",
+        Event::ReviewerVoted(_) => "ReviewerVoted",
         Event::ReviewApproved(_) => "ReviewApproved",
         Event::ReviewMerged(_) => "ReviewMerged",
         Event::ReviewAbandoned(_) => "ReviewAbandoned",
@@ -436,6 +464,19 @@ CREATE TABLE IF NOT EXISTS review_reviewers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviewers_reviewer ON review_reviewers(reviewer);
+
+-- REVIEWER VOTES
+CREATE TABLE IF NOT EXISTS reviewer_votes (
+    review_id TEXT NOT NULL REFERENCES reviews(review_id),
+    reviewer TEXT NOT NULL,
+    vote TEXT NOT NULL CHECK (vote IN ('lgtm', 'block')),
+    reason TEXT,
+    voted_at TEXT NOT NULL,
+    PRIMARY KEY (review_id, reviewer)
+);
+
+CREATE INDEX IF NOT EXISTS idx_votes_review ON reviewer_votes(review_id);
+CREATE INDEX IF NOT EXISTS idx_votes_vote ON reviewer_votes(vote);
 
 -- THREADS
 CREATE TABLE IF NOT EXISTS threads (
