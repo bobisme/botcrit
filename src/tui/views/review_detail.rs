@@ -121,9 +121,15 @@ impl ReviewDetailView {
         threads: &[ThreadSummary],
         db: &ProjectionDb,
     ) -> Vec<FileSection> {
-        // Get changed files between the review's initial and target commits
+        // Get the base commit for the diff: the parent of the initial commit.
+        // This shows ALL files changed in the review, not just changes since creation.
+        let base_commit = jj
+            .get_parent_commit(&review.initial_commit)
+            .unwrap_or_else(|_| review.initial_commit.clone());
+
+        // Get changed files between base and target commits
         let changed_files: Vec<String> = jj
-            .changed_files_between(&review.initial_commit, target_commit)
+            .changed_files_between(&base_commit, target_commit)
             .unwrap_or_default()
             .into_iter()
             // Filter out .crit/ metadata files - they're not part of the code review
@@ -135,7 +141,7 @@ impl ReviewDetailView {
         for file_path in changed_files {
             // Get diff for this specific file
             let diff_output = jj
-                .diff_git_file(&review.initial_commit, target_commit, &file_path)
+                .diff_git_file(&base_commit, target_commit, &file_path)
                 .unwrap_or_default();
 
             // Get threads for this file with their comments

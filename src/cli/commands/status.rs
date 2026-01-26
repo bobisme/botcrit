@@ -186,12 +186,19 @@ pub fn run_diff(
         None => bail!("Review not found: {}", review_id),
     };
 
-    // Get the diff between initial_commit and current
-    let current_commit = jj.get_current_commit()?;
-    let diff = jj.diff_git(&review.initial_commit, &current_commit)?;
+    // Get the base commit: parent of initial_commit
+    // This shows ALL files changed in the review, not just changes since creation
+    let base_commit = jj
+        .get_parent_commit(&review.initial_commit)
+        .unwrap_or_else(|_| review.initial_commit.clone());
 
-    // Get changed files between initial and current
-    // We use diff_git to get the actual diff, and extract file names from there
+    // Get current commit (target for the diff)
+    let current_commit = jj.get_current_commit()?;
+
+    // Get the diff between base and current
+    let diff = jj.diff_git(&base_commit, &current_commit)?;
+
+    // Get changed files from the diff
     let changed_files = extract_changed_files_from_diff(&diff);
 
     // Get threads for context
@@ -200,6 +207,7 @@ pub fn run_diff(
     // Build structured output
     let result = serde_json::json!({
         "review_id": review_id,
+        "base_commit": base_commit,
         "initial_commit": review.initial_commit,
         "current_commit": current_commit,
         "changed_files": changed_files,

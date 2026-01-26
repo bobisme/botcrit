@@ -181,6 +181,28 @@ impl JjRepo {
         Ok(output.trim().to_string())
     }
 
+    /// Get the parent commit_id for a given commit.
+    ///
+    /// Uses jj's `parents()` revset function to find the parent.
+    /// For commits with multiple parents (merges), returns the first parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the commit has no parents (root) or the command fails.
+    pub fn get_parent_commit(&self, commit: &str) -> Result<String> {
+        let revset = format!("parents({})", commit);
+        let output = self
+            .run_jj(&["log", "-r", &revset, "--no-graph", "-T", "commit_id"])
+            .with_context(|| format!("Failed to get parent of {commit}"))?;
+
+        let parent = output.trim();
+        if parent.is_empty() {
+            bail!("Commit {} has no parent (root commit)", commit);
+        }
+        // If multiple parents, take the first one
+        Ok(parent.lines().next().unwrap_or(parent).to_string())
+    }
+
     /// Get a git-format diff between two revisions.
     ///
     /// Both `from` and `to` should be valid jj revsets (e.g., "@", `root()`, `change_id`).
