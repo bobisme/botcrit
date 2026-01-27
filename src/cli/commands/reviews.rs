@@ -534,7 +534,7 @@ pub fn run_review(
     if !review.votes.is_empty() {
         println!("\n  Votes:");
         for vote in &review.votes {
-            let icon = if vote.vote == "lgtm" { "👍" } else { "🚫" };
+            let icon = if vote.vote == "lgtm" { "✓" } else { "✗" };
             let reason = vote.reason.as_deref().unwrap_or("");
             if reason.is_empty() {
                 println!("    {} {} ({})", icon, vote.reviewer, vote.vote);
@@ -611,7 +611,7 @@ pub fn run_review(
             let comments = db.list_comments(&thread.thread_id)?;
             for comment in comments {
                 println!(
-                    "\n    💬 {} ({}):",
+                    "\n    ▸ {} ({}):",
                     comment.author,
                     &comment.created_at[..10]
                 );
