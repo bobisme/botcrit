@@ -40,6 +40,19 @@ pub struct FileSection {
     pub raw_diff: String,
     /// Threads on this file (with their comments)
     pub threads: Vec<ThreadWithComments>,
+    /// Cached rendered output (avoids re-running delta on every frame)
+    pub cached_render: Option<CachedRender>,
+}
+
+/// Cached rendered diff output
+#[derive(Debug, Clone)]
+pub struct CachedRender {
+    /// The rendered text
+    pub text: Text<'static>,
+    /// Width it was rendered at
+    pub width: u16,
+    /// Whether it was side-by-side
+    pub side_by_side: bool,
 }
 
 /// State for the review detail view
@@ -162,6 +175,7 @@ impl ReviewDetailView {
                 collapsed: false,
                 raw_diff: diff_output,
                 threads: file_threads,
+                cached_render: None, // Will be populated on first render
             });
         }
 
@@ -376,6 +390,8 @@ impl ReviewDetailView {
         let mut lines: Vec<Line<'static>> = Vec::new();
         // Track the line offset for each file section
         let mut file_offsets: Vec<u16> = Vec::with_capacity(self.files.len());
+        // Track files that need their cache updated
+        let mut files_to_cache: Vec<(usize, Text<'static>, u16, bool)> = Vec::new();
 
         for (i, section) in self.files.iter().enumerate() {
             // Record the starting line for this file
@@ -424,16 +440,36 @@ impl ReviewDetailView {
 
             // File content (if not collapsed)
             if !section.collapsed {
-                // Render diff through delta (or raw fallback)
-                let rendered = if self.has_delta && !section.raw_diff.is_empty() {
-                    render_with_delta(&section.raw_diff, self.side_by_side, inner.width)
+                // Check if we have a valid cached render
+                let needs_render = match &section.cached_render {
+                    Some(cache) => {
+                        cache.width != inner.width || cache.side_by_side != self.side_by_side
+                    }
+                    None => true,
+                };
+
+                // Get rendered text (from cache or by rendering)
+                let rendered = if needs_render {
+                    // Render diff through delta (or raw fallback)
+                    if self.has_delta && !section.raw_diff.is_empty() {
+                        render_with_delta(&section.raw_diff, self.side_by_side, inner.width)
+                    } else {
+                        Text::raw(section.raw_diff.clone())
+                    }
                 } else {
-                    Text::raw(section.raw_diff.clone())
+                    // Use cached version
+                    section.cached_render.as_ref().unwrap().text.clone()
                 };
 
                 // Add the diff content
-                for line in rendered.lines {
-                    lines.push(line);
+                for line in rendered.lines.iter() {
+                    lines.push(line.clone());
+                }
+
+                // Store in cache if we just rendered
+                if needs_render {
+                    // We need to store this - will do via index after the loop
+                    files_to_cache.push((i, rendered, inner.width, self.side_by_side));
                 }
 
                 // Add thread comments inline
@@ -493,6 +529,15 @@ impl ReviewDetailView {
         self.content_height = lines.len() as u16;
         // Store file offsets for scroll-to-file functionality
         self.file_offsets = file_offsets;
+
+        // Update caches for files that were rendered
+        for (idx, text, width, side_by_side) in files_to_cache {
+            self.files[idx].cached_render = Some(CachedRender {
+                text,
+                width,
+                side_by_side,
+            });
+        }
 
         // Apply scroll offset
         let visible_lines: Vec<Line> = lines
