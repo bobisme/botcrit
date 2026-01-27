@@ -13,9 +13,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Override agent identity (default: $CRIT_AGENT or $BOTBUS_AGENT or $USER)
+    /// Override agent identity (requires CRIT_AGENT or BOTBUS_AGENT by default)
     #[arg(long, global = true)]
     pub author: Option<String>,
+
+    /// Use $USER as identity (for human usage)
+    #[arg(long, global = true)]
+    pub user: bool,
 
     #[command(subcommand)]
     pub command: Commands,

@@ -60,7 +60,7 @@ pub fn run_threads_create(
     }
 
     let thread_id = new_thread_id();
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
 
     let event = EventEnvelope::new(
         &author,
@@ -429,7 +429,7 @@ pub fn run_threads_resolve(
     }
 
     let db = open_and_sync(repo_root)?;
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let log = open_or_create(&events_path(repo_root))?;
 
     let mut resolved_count = 0;
@@ -518,7 +518,7 @@ pub fn run_threads_reopen(
         _ => {}
     }
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ThreadReopened(ThreadReopened {

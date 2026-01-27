@@ -33,7 +33,7 @@ pub fn run_comments_add(
     }
 
     let comment_id = new_comment_id();
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
 
     let event = EventEnvelope::new(
         &author,
@@ -120,7 +120,7 @@ pub fn run_comment(
             }
 
             let new_thread_id = new_thread_id();
-            let author_str = get_agent_identity(author);
+            let author_str = get_agent_identity(author)?;
 
             let thread_event = EventEnvelope::new(
                 &author_str,
@@ -142,7 +142,7 @@ pub fn run_comment(
 
     // Now add the comment to the thread
     let comment_id = new_comment_id();
-    let author_str = get_agent_identity(author);
+    let author_str = get_agent_identity(author)?;
 
     let comment_event = EventEnvelope::new(
         &author_str,

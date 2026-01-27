@@ -47,7 +47,8 @@ crit reviews merge <id> --self-approve   # Approve + merge (solo workflow)
 - Reviews anchor to jj Change IDs (survive rebases)
 - `crit comment` auto-creates threads - preferred over `threads create` + `comments add`
 - Use `--json` for machine-parseable output
-- Set identity: `export BOTBUS_AGENT=my-agent-name`"#
+- **Identity required**: Set `CRIT_AGENT` or `BOTBUS_AGENT` env var
+- Use `--user` flag for human identity (uses $USER)"#
 }
 
 /// Run the `crit agents init` command.

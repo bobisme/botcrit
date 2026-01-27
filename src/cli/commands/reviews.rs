@@ -38,7 +38,7 @@ pub fn run_reviews_create(
         .context("Failed to get current commit")?;
 
     let review_id = new_review_id();
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
 
     let event = EventEnvelope::new(
         &author,
@@ -147,7 +147,7 @@ pub fn run_reviews_request(
         bail!("No reviewers specified");
     }
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewersRequested(ReviewersRequested {
@@ -194,7 +194,7 @@ pub fn run_reviews_approve(
         _ => {}
     }
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewApproved(ReviewApproved {
@@ -240,7 +240,7 @@ pub fn run_reviews_abandon(
         _ => {}
     }
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewAbandoned(ReviewAbandoned {
@@ -300,7 +300,7 @@ pub fn run_reviews_merge(
         }
         Some(r) if r.status == "open" && self_approve => {
             // Auto-approve the review first
-            let author_str = get_agent_identity(author);
+            let author_str = get_agent_identity(author)?;
             let approve_event = EventEnvelope::new(
                 &author_str,
                 Event::ReviewApproved(ReviewApproved {
@@ -345,7 +345,7 @@ pub fn run_reviews_merge(
             .context("Failed to get current commit for merge")?,
     };
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewMerged(ReviewMerged {
@@ -431,7 +431,7 @@ fn run_vote(
         _ => {}
     }
 
-    let author = get_agent_identity(author);
+    let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewerVoted(ReviewerVoted {

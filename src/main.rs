@@ -14,8 +14,22 @@ use crit::cli::commands::{
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
 };
+use crit::events::{get_agent_identity, get_user_identity};
 use crit::jj::resolve_repo_root;
 use crit::output::OutputFormat;
+
+/// Resolve identity based on CLI flags.
+/// Priority: --author > --user > CRIT_AGENT/BOTBUS_AGENT (required)
+fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
+    if let Some(ref author) = cli.author {
+        return Ok(Some(author.clone()));
+    }
+    if cli.user {
+        return Ok(Some(get_user_identity()?));
+    }
+    // Will be resolved lazily by get_agent_identity when needed
+    Ok(None)
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -32,6 +46,9 @@ fn main() -> Result<()> {
     } else {
         OutputFormat::Toon
     };
+
+    // Resolve identity (--author or --user override, otherwise deferred to env vars)
+    let identity = resolve_identity(&cli)?;
 
     match cli.command {
         Commands::Init => {
@@ -58,7 +75,7 @@ fn main() -> Result<()> {
                     &workspace_root,
                     title,
                     description,
-                    cli.author.as_deref(),
+                    identity.as_deref(),
                     format,
                 )?;
             }
@@ -75,12 +92,12 @@ fn main() -> Result<()> {
                     crit::cli::ReviewStatus::Abandoned => "abandoned",
                 });
                 // For --needs-review, use the subcommand --author as identity (if provided),
-                // falling back to global --author, then env vars.
+                // falling back to resolved identity.
                 // When --needs-review is used, --author should NOT also filter by review author.
                 let (author_filter, needs_reviewer) = if needs_review {
                     // Use --author for identity, not filtering
-                    let identity = author.as_deref().or(cli.author.as_deref());
-                    (None, Some(crit::events::get_agent_identity(identity)))
+                    let id = author.as_deref().or(identity.as_deref());
+                    (None, Some(get_agent_identity(id)?))
                 } else {
                     // Normal case: --author filters by review author
                     (author.as_deref().map(String::from), None)
@@ -105,21 +122,15 @@ fn main() -> Result<()> {
                     &crit_root,
                     &review_id,
                     &reviewers,
-                    cli.author.as_deref(),
+                    identity.as_deref(),
                     format,
                 )?;
             }
             ReviewsCommands::Approve { review_id } => {
-                run_reviews_approve(&crit_root, &review_id, cli.author.as_deref(), format)?;
+                run_reviews_approve(&crit_root, &review_id, identity.as_deref(), format)?;
             }
             ReviewsCommands::Abandon { review_id, reason } => {
-                run_reviews_abandon(
-                    &crit_root,
-                    &review_id,
-                    reason,
-                    cli.author.as_deref(),
-                    format,
-                )?;
+                run_reviews_abandon(&crit_root, &review_id, reason, identity.as_deref(), format)?;
             }
             ReviewsCommands::Merge {
                 review_id,
@@ -132,7 +143,7 @@ fn main() -> Result<()> {
                     &review_id,
                     commit,
                     self_approve,
-                    cli.author.as_deref(),
+                    identity.as_deref(),
                     format,
                 )?;
             }
@@ -150,7 +161,7 @@ fn main() -> Result<()> {
                     &review_id,
                     &file,
                     &lines,
-                    cli.author.as_deref(),
+                    identity.as_deref(),
                     format,
                 )?;
             }
@@ -206,18 +217,12 @@ fn main() -> Result<()> {
                     all,
                     file.as_deref(),
                     reason,
-                    cli.author.as_deref(),
+                    identity.as_deref(),
                     format,
                 )?;
             }
             ThreadsCommands::Reopen { thread_id, reason } => {
-                run_threads_reopen(
-                    &crit_root,
-                    &thread_id,
-                    reason,
-                    cli.author.as_deref(),
-                    format,
-                )?;
+                run_threads_reopen(&crit_root, &thread_id, reason, identity.as_deref(), format)?;
             }
         },
 
@@ -231,7 +236,7 @@ fn main() -> Result<()> {
                 let msg = message.or(message_positional).ok_or_else(|| {
                     anyhow::anyhow!("Message is required (use --message or provide as argument)")
                 })?;
-                run_comments_add(&crit_root, &thread_id, &msg, cli.author.as_deref(), format)?;
+                run_comments_add(&crit_root, &thread_id, &msg, identity.as_deref(), format)?;
             }
             CommentsCommands::List { thread_id } => {
                 run_comments_list(&crit_root, &thread_id, format)?;
@@ -272,29 +277,17 @@ fn main() -> Result<()> {
                 &file,
                 &line,
                 &message,
-                cli.author.as_deref(),
+                identity.as_deref(),
                 format,
             )?;
         }
 
         Commands::Lgtm { review_id, message } => {
-            run_lgtm(
-                &crit_root,
-                &review_id,
-                message,
-                cli.author.as_deref(),
-                format,
-            )?;
+            run_lgtm(&crit_root, &review_id, message, identity.as_deref(), format)?;
         }
 
         Commands::Block { review_id, reason } => {
-            run_block(
-                &crit_root,
-                &review_id,
-                reason,
-                cli.author.as_deref(),
-                format,
-            )?;
+            run_block(&crit_root, &review_id, reason, identity.as_deref(), format)?;
         }
 
         Commands::Review {

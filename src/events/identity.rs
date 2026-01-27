@@ -3,6 +3,7 @@
 //! Determines the author field for events based on environment variables
 //! or explicit override.
 
+use anyhow::{bail, Result};
 use std::env;
 
 /// Environment variable for crit-specific agent identity
@@ -20,32 +21,37 @@ const USER_VAR: &str = "USER";
 /// 1. Explicit override (if provided)
 /// 2. CRIT_AGENT environment variable
 /// 3. BOTBUS_AGENT environment variable
-/// 4. USER environment variable
-/// 5. "unknown" as final fallback
-pub fn get_agent_identity(explicit: Option<&str>) -> String {
+///
+/// Returns error if no identity is set - agents must identify themselves.
+/// Use `--user` flag to explicitly use $USER for human usage.
+pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
     if let Some(name) = explicit {
-        return name.to_string();
+        return Ok(name.to_string());
     }
 
     if let Ok(name) = env::var(CRIT_AGENT_VAR) {
         if !name.is_empty() {
-            return name;
+            return Ok(name);
         }
     }
 
     if let Ok(name) = env::var(BOTBUS_AGENT_VAR) {
         if !name.is_empty() {
-            return name;
+            return Ok(name);
         }
     }
 
-    if let Ok(name) = env::var(USER_VAR) {
-        if !name.is_empty() {
-            return name;
-        }
-    }
+    bail!(
+        "Agent identity required. Set CRIT_AGENT or BOTBUS_AGENT, or use --user for human identity."
+    )
+}
 
-    "unknown".to_string()
+/// Get the system user identity (for --user flag).
+pub fn get_user_identity() -> Result<String> {
+    env::var(USER_VAR)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("$USER not set"))
 }
 
 #[cfg(test)]
@@ -54,16 +60,17 @@ mod tests {
 
     #[test]
     fn test_explicit_override() {
-        let identity = get_agent_identity(Some("explicit_agent"));
+        let identity = get_agent_identity(Some("explicit_agent")).unwrap();
         assert_eq!(identity, "explicit_agent");
     }
 
     #[test]
-    fn test_fallback_to_user() {
+    fn test_user_identity() {
         // USER should be set on most systems
-        // We can't safely clear env vars in tests, so just check explicit override works
-        let identity = get_agent_identity(None);
-        // Just verify we get something, not empty
-        assert!(!identity.is_empty());
+        let identity = get_user_identity();
+        // May or may not be set depending on environment
+        if let Ok(id) = identity {
+            assert!(!id.is_empty());
+        }
     }
 }
