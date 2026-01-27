@@ -21,123 +21,33 @@ pub fn get_crit_instructions() -> &'static str {
 
 This project uses [crit](https://github.com/anomalyco/botcrit) for distributed code reviews optimized for AI agents.
 
-### Quick Start
+### Essential Commands
 
 ```bash
-# Initialize crit in the repository (once)
-crit init
-
-# Create a review for current change
-crit reviews create --title "Add feature X"
-
-# List open reviews
-crit reviews list
-
-# Check reviews needing your attention
-crit reviews list --needs-review --author $BOTBUS_AGENT
-
-# Show review details
-crit reviews show <review_id>
+crit reviews list                        # List reviews
+crit reviews create --title "..."        # Create review for current change
+crit review <id>                         # Show full review with threads/comments
+crit comment <id> --file F --line L "M"  # Add comment (auto-creates thread)
+crit lgtm <id> -m "..."                  # Approve (LGTM)
+crit block <id> -r "..."                 # Request changes
+crit threads resolve <id> --reason "..." # Resolve a thread
+crit reviews merge <id> --self-approve   # Approve + merge (solo workflow)
 ```
 
-### Adding Comments (Recommended)
+### Workflow
 
-The simplest way to comment on code - auto-creates threads:
+1. **Review code**: `crit review <id>` or `crit threads list <id> -v`
+2. **Add feedback**: `crit comment <id> --file <path> --line <n> "comment"`
+3. **Vote**: `crit lgtm <id>` or `crit block <id> -r "reason"`
+4. **Resolve threads**: `crit threads resolve <id>` after addressing feedback
+5. **Merge**: `crit reviews merge <id>` (fails if blocking votes exist)
 
-```bash
-# Add a comment on a specific line (creates thread automatically)
-crit comment <review_id> --file src/main.rs --line 42 "Consider using Option here"
+### Key Points
 
-# Add another comment on same line (reuses existing thread)
-crit comment <review_id> --file src/main.rs --line 42 "Good point, will fix"
-
-# Comment on a line range
-crit comment <review_id> --file src/main.rs --line 10-20 "This block needs refactoring"
-```
-
-### Managing Threads
-
-```bash
-# List threads on a review
-crit threads list <review_id>
-
-# Show thread with context
-crit threads show <thread_id>
-
-# Resolve a thread
-crit threads resolve <thread_id> --reason "Fixed in latest commit"
-```
-
-### Voting on Reviews
-
-```bash
-# Approve a review (LGTM)
-crit lgtm <review_id> -m "Looks good!"
-
-# Block a review (request changes)
-crit block <review_id> -r "Need more test coverage"
-```
-
-### Viewing Full Reviews
-
-```bash
-# Show full review with all threads and comments
-crit review <review_id>
-
-# Show with more context lines
-crit review <review_id> --context 5
-
-# List threads with first comment preview
-crit threads list <review_id> -v
-```
-
-### Approving and Merging
-
-```bash
-# Approve a review (changes status to approved)
-crit reviews approve <review_id>
-
-# Mark as merged (after jj squash/merge)
-# Note: Will fail if there are blocking votes
-crit reviews merge <review_id>
-
-# Self-approve and merge in one step (solo workflows)
-crit reviews merge <review_id> --self-approve
-```
-
-### Agent Best Practices
-
-1. **Set your identity** via environment:
-   ```bash
-   export BOTBUS_AGENT=my-agent-name
-   ```
-
-2. **Check for pending reviews** at session start:
-   ```bash
-   crit reviews list --needs-review --author $BOTBUS_AGENT
-   ```
-
-3. **Check status** to see unresolved threads:
-   ```bash
-   crit status <review_id> --unresolved-only
-   ```
-
-4. **Run doctor** to verify setup:
-   ```bash
-   crit doctor
-   ```
-
-### Output Formats
-
-- Default output is TOON (token-optimized, human-readable)
-- Use `--json` flag for machine-parseable JSON output
-
-### Key Concepts
-
-- **Reviews** are anchored to jj Change IDs (survive rebases)
-- **Threads** group comments on specific file locations
-- **crit comment** is the simple way to leave feedback (auto-creates threads)
-- Works across jj workspaces (shared .crit/ in main repo)"#
+- Reviews anchor to jj Change IDs (survive rebases)
+- `crit comment` auto-creates threads - preferred over `threads create` + `comments add`
+- Use `--json` for machine-parseable output
+- Set identity: `export BOTBUS_AGENT=my-agent-name`"#
 }
 
 /// Run the `crit agents init` command.
