@@ -6,7 +6,7 @@ use std::env;
 
 use crit::cli::commands::{
     run_agents_init, run_agents_show, run_block, run_comment, run_comments_add, run_comments_list,
-    run_diff, run_doctor, run_init, run_lgtm, run_reviews_abandon, run_reviews_approve,
+    run_diff, run_doctor, run_init, run_lgtm, run_review, run_reviews_abandon, run_reviews_approve,
     run_reviews_create, run_reviews_list, run_reviews_merge, run_reviews_request, run_reviews_show,
     run_status, run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
     run_threads_show,
@@ -121,12 +121,17 @@ fn main() -> Result<()> {
                     format,
                 )?;
             }
-            ReviewsCommands::Merge { review_id, commit } => {
+            ReviewsCommands::Merge {
+                review_id,
+                commit,
+                self_approve,
+            } => {
                 run_reviews_merge(
                     &crit_root,
                     &workspace_root,
                     &review_id,
                     commit,
+                    self_approve,
                     cli.author.as_deref(),
                     format,
                 )?;
@@ -153,12 +158,20 @@ fn main() -> Result<()> {
                 review_id,
                 status,
                 file,
+                verbose,
             } => {
                 let status_str = status.map(|s| match s {
                     crit::cli::ThreadStatus::Open => "open",
                     crit::cli::ThreadStatus::Resolved => "resolved",
                 });
-                run_threads_list(&crit_root, &review_id, status_str, file.as_deref(), format)?;
+                run_threads_list(
+                    &crit_root,
+                    &review_id,
+                    status_str,
+                    file.as_deref(),
+                    verbose,
+                    format,
+                )?;
             }
             ThreadsCommands::Show {
                 thread_id,
@@ -280,6 +293,21 @@ fn main() -> Result<()> {
                 &review_id,
                 reason,
                 cli.author.as_deref(),
+                format,
+            )?;
+        }
+
+        Commands::Review {
+            review_id,
+            context,
+            no_context,
+        } => {
+            let context_lines = if no_context { 0 } else { context };
+            run_review(
+                &crit_root,
+                &workspace_root,
+                &review_id,
+                context_lines,
                 format,
             )?;
         }

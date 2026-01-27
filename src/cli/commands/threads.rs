@@ -99,6 +99,7 @@ pub fn run_threads_list(
     review_id: &str,
     status: Option<&str>,
     file: Option<&str>,
+    verbose: bool,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
@@ -119,8 +120,56 @@ pub fn run_threads_list(
         "No threads yet"
     };
 
-    let formatter = Formatter::new(format);
-    formatter.print_list(&threads, empty_msg)?;
+    if verbose && !threads.is_empty() {
+        // Verbose mode: show first comment for each thread
+        for thread in &threads {
+            let line_range = match thread.selection_end {
+                Some(end) if end != thread.selection_start => {
+                    format!("{}:{}-{}", thread.file_path, thread.selection_start, end)
+                }
+                _ => format!("{}:{}", thread.file_path, thread.selection_start),
+            };
+
+            let status_icon = if thread.status == "open" {
+                "○"
+            } else {
+                "✓"
+            };
+
+            println!(
+                "{} {} {} ({}, {} comment{})",
+                status_icon,
+                thread.thread_id,
+                line_range,
+                thread.status,
+                thread.comment_count,
+                if thread.comment_count == 1 { "" } else { "s" }
+            );
+
+            // Get first comment if any
+            let comments = db.list_comments(&thread.thread_id)?;
+            if let Some(first) = comments.first() {
+                // Truncate body to first line or 80 chars
+                let preview: String = first
+                    .body
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
+                let ellipsis = if first.body.len() > 80 || first.body.contains('\n') {
+                    "..."
+                } else {
+                    ""
+                };
+                println!("    {}: {}{}", first.author, preview, ellipsis);
+            }
+        }
+    } else {
+        let formatter = Formatter::new(format);
+        formatter.print_list(&threads, empty_msg)?;
+    }
 
     Ok(())
 }

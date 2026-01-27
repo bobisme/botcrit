@@ -101,6 +101,20 @@ pub enum Commands {
         #[arg(long = "reason", short = 'r')]
         reason: String,
     },
+
+    /// Show full review with all threads and comments
+    Review {
+        /// Review ID
+        review_id: String,
+
+        /// Number of context lines around each thread (default: 3)
+        #[arg(long, default_value = "3")]
+        context: u32,
+
+        /// Hide code context
+        #[arg(long)]
+        no_context: bool,
+    },
 }
 
 // ============================================================================
@@ -191,6 +205,10 @@ pub enum ReviewsCommands {
         /// Final commit hash (auto-detected from @ if not provided)
         #[arg(long)]
         commit: Option<String>,
+
+        /// Auto-approve before merging (for solo/self-review workflows)
+        #[arg(long)]
+        self_approve: bool,
     },
 }
 
@@ -234,6 +252,10 @@ pub enum ThreadsCommands {
         /// Filter by file path
         #[arg(long)]
         file: Option<String>,
+
+        /// Show first comment body for each thread
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
 
     /// Show thread details with context

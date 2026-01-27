@@ -269,17 +269,19 @@ pub fn run_reviews_abandon(
 /// # Arguments
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
+/// * `self_approve` - If true, auto-approve open reviews before merging
 pub fn run_reviews_merge(
     crit_root: &Path,
     workspace_root: &Path,
     review_id: &str,
     commit: Option<String>,
+    self_approve: bool,
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    // Verify review exists and is approved
+    // Verify review exists
     let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
@@ -290,11 +292,23 @@ pub fn run_reviews_merge(
         Some(r) if r.status == "abandoned" => {
             bail!("Cannot merge abandoned review: {}", review_id);
         }
-        Some(r) if r.status == "open" => {
+        Some(r) if r.status == "open" && !self_approve => {
             bail!(
-                "Cannot merge unapproved review: {}. Approve it first.",
+                "Cannot merge unapproved review: {}. Approve it first, or use --self-approve.",
                 review_id
             );
+        }
+        Some(r) if r.status == "open" && self_approve => {
+            // Auto-approve the review first
+            let author_str = get_agent_identity(author);
+            let approve_event = EventEnvelope::new(
+                &author_str,
+                Event::ReviewApproved(ReviewApproved {
+                    review_id: review_id.to_string(),
+                }),
+            );
+            let log = open_or_create(&events_path(crit_root))?;
+            log.append(&approve_event)?;
         }
         _ => {}
     }
@@ -440,6 +454,175 @@ fn run_vote(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
+    Ok(())
+}
+
+/// Show full review with all threads and comments.
+///
+/// # Arguments
+/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `workspace_root` - Path to current workspace (for jj @ resolution)
+pub fn run_review(
+    crit_root: &Path,
+    workspace_root: &Path,
+    review_id: &str,
+    context_lines: u32,
+    format: OutputFormat,
+) -> Result<()> {
+    use crate::jj::context::{extract_context, format_context};
+
+    ensure_initialized(crit_root)?;
+
+    let db = open_and_sync(crit_root)?;
+    let review = db.get_review(review_id)?;
+
+    let Some(review) = review else {
+        bail!("Review not found: {}", review_id);
+    };
+
+    let jj = JjRepo::new(workspace_root);
+
+    // For JSON output, build a complete structure
+    if matches!(format, OutputFormat::Json) {
+        let threads = db.list_threads(review_id, None, None)?;
+        let mut threads_with_comments = Vec::new();
+
+        for thread in threads {
+            let comments = db.list_comments(&thread.thread_id)?;
+            threads_with_comments.push(serde_json::json!({
+                "thread_id": thread.thread_id,
+                "file_path": thread.file_path,
+                "selection_start": thread.selection_start,
+                "selection_end": thread.selection_end,
+                "status": thread.status,
+                "comments": comments,
+            }));
+        }
+
+        let result = serde_json::json!({
+            "review": review,
+            "threads": threads_with_comments,
+        });
+
+        let formatter = Formatter::new(format);
+        formatter.print(&result)?;
+        return Ok(());
+    }
+
+    // TOON output: human-readable format
+    let status_symbol = match review.status.as_str() {
+        "open" => "○",
+        "approved" => "◐",
+        "merged" => "●",
+        "abandoned" => "✗",
+        _ => "?",
+    };
+
+    println!("{} {} · {}", status_symbol, review.review_id, review.title);
+    println!(
+        "  Status: {} | Author: {} | Created: {}",
+        review.status,
+        review.author,
+        &review.created_at[..10]
+    );
+
+    if let Some(desc) = &review.description {
+        println!("\n  {}", desc);
+    }
+
+    // Show votes if any
+    if !review.votes.is_empty() {
+        println!("\n  Votes:");
+        for vote in &review.votes {
+            let icon = if vote.vote == "lgtm" { "👍" } else { "🚫" };
+            let reason = vote.reason.as_deref().unwrap_or("");
+            if reason.is_empty() {
+                println!("    {} {} ({})", icon, vote.reviewer, vote.vote);
+            } else {
+                println!("    {} {} ({}): {}", icon, vote.reviewer, vote.vote, reason);
+            }
+        }
+    }
+
+    // Get threads grouped by file
+    let threads = db.list_threads(review_id, None, None)?;
+
+    if threads.is_empty() {
+        println!("\n  No threads.");
+        return Ok(());
+    }
+
+    // Group threads by file
+    let mut threads_by_file: std::collections::BTreeMap<String, Vec<_>> =
+        std::collections::BTreeMap::new();
+    for thread in threads {
+        threads_by_file
+            .entry(thread.file_path.clone())
+            .or_default()
+            .push(thread);
+    }
+
+    // Determine commit for context
+    let commit_ref = review
+        .final_commit
+        .clone()
+        .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
+        .unwrap_or_else(|| "@".to_string());
+
+    for (file, file_threads) in threads_by_file {
+        println!("\n━━━ {} ━━━", file);
+
+        for thread in file_threads {
+            let status_icon = if thread.status == "open" {
+                "○"
+            } else {
+                "✓"
+            };
+            let line_info = match thread.selection_end {
+                Some(end) if end != thread.selection_start => {
+                    format!("lines {}-{}", thread.selection_start, end)
+                }
+                _ => format!("line {}", thread.selection_start),
+            };
+
+            println!("\n  {} {} ({})", status_icon, thread.thread_id, line_info);
+
+            // Show code context if requested
+            if context_lines > 0 {
+                let anchor_start = thread.selection_start as u32;
+                let anchor_end = thread.selection_end.unwrap_or(thread.selection_start) as u32;
+
+                if let Ok(ctx) = extract_context(
+                    &jj,
+                    &file,
+                    &commit_ref,
+                    anchor_start,
+                    anchor_end,
+                    context_lines,
+                ) {
+                    // Indent the context
+                    for line in format_context(&ctx).lines() {
+                        println!("  {}", line);
+                    }
+                }
+            }
+
+            // Show comments
+            let comments = db.list_comments(&thread.thread_id)?;
+            for comment in comments {
+                println!(
+                    "\n    💬 {} ({}):",
+                    comment.author,
+                    &comment.created_at[..10]
+                );
+                for line in comment.body.lines() {
+                    println!("       {}", line);
+                }
+            }
+        }
+    }
+
+    println!();
     Ok(())
 }
 
