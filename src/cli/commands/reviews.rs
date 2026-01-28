@@ -1,6 +1,7 @@
 //! Implementation of `crit reviews` subcommands.
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
 use crate::cli::commands::init::{events_path, index_path, is_initialized};
@@ -12,6 +13,40 @@ use crate::jj::JjRepo;
 use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
+
+/// Parse a --since value into a DateTime.
+/// Supports:
+/// - ISO 8601 timestamps: "2026-01-27T23:00:00Z"
+/// - Relative durations: "1h", "2d", "30m", "1w"
+pub fn parse_since(value: &str) -> Result<DateTime<Utc>> {
+    // Try ISO 8601 first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // Try relative duration
+    let value = value.trim().to_lowercase();
+    if let Some(num_str) = value.strip_suffix('h') {
+        let hours: i64 = num_str.parse().context("Invalid hours")?;
+        return Ok(Utc::now() - Duration::hours(hours));
+    }
+    if let Some(num_str) = value.strip_suffix('d') {
+        let days: i64 = num_str.parse().context("Invalid days")?;
+        return Ok(Utc::now() - Duration::days(days));
+    }
+    if let Some(num_str) = value.strip_suffix('m') {
+        let mins: i64 = num_str.parse().context("Invalid minutes")?;
+        return Ok(Utc::now() - Duration::minutes(mins));
+    }
+    if let Some(num_str) = value.strip_suffix('w') {
+        let weeks: i64 = num_str.parse().context("Invalid weeks")?;
+        return Ok(Utc::now() - Duration::weeks(weeks));
+    }
+
+    bail!(
+        "Invalid --since format. Use ISO 8601 (2026-01-27T23:00:00Z) or relative (1h, 2d, 30m, 1w)"
+    )
+}
 
 /// Create a new review for the current jj change.
 ///
@@ -462,11 +497,13 @@ fn run_vote(
 /// # Arguments
 /// * `crit_root` - Path to main repo (where .crit/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
+/// * `since` - Optional filter to only show activity after this time
 pub fn run_review(
     crit_root: &Path,
     workspace_root: &Path,
     review_id: &str,
     context_lines: u32,
+    since: Option<DateTime<Utc>>,
     format: OutputFormat,
 ) -> Result<()> {
     use crate::jj::context::{extract_context, format_context};
@@ -489,13 +526,32 @@ pub fn run_review(
 
         for thread in threads {
             let comments = db.list_comments(&thread.thread_id)?;
+            // Filter comments by since if provided
+            let filtered_comments: Vec<_> = if let Some(since_dt) = since {
+                comments
+                    .into_iter()
+                    .filter(|c| {
+                        DateTime::parse_from_rfc3339(&c.created_at)
+                            .map(|dt| dt.with_timezone(&Utc) >= since_dt)
+                            .unwrap_or(true)
+                    })
+                    .collect()
+            } else {
+                comments
+            };
+
+            // Skip threads with no activity since the cutoff
+            if since.is_some() && filtered_comments.is_empty() {
+                continue;
+            }
+
             threads_with_comments.push(serde_json::json!({
                 "thread_id": thread.thread_id,
                 "file_path": thread.file_path,
                 "selection_start": thread.selection_start,
                 "selection_end": thread.selection_end,
                 "status": thread.status,
-                "comments": comments,
+                "comments": filtered_comments,
             }));
         }
 
@@ -552,14 +608,50 @@ pub fn run_review(
         return Ok(());
     }
 
-    // Group threads by file
+    // Show filter notice if --since is active
+    if let Some(since_dt) = since {
+        println!(
+            "\n  [Showing activity since {}]",
+            since_dt.format("%Y-%m-%d %H:%M")
+        );
+    }
+
+    // Group threads by file, filtering by since if provided
     let mut threads_by_file: std::collections::BTreeMap<String, Vec<_>> =
         std::collections::BTreeMap::new();
+    let mut total_new_comments = 0;
+
     for thread in threads {
+        // Get comments and filter by since
+        let comments = db.list_comments(&thread.thread_id)?;
+        let filtered_comments: Vec<_> = if let Some(since_dt) = since {
+            comments
+                .into_iter()
+                .filter(|c| {
+                    DateTime::parse_from_rfc3339(&c.created_at)
+                        .map(|dt| dt.with_timezone(&Utc) >= since_dt)
+                        .unwrap_or(true)
+                })
+                .collect()
+        } else {
+            comments
+        };
+
+        // Skip threads with no new activity when filtering
+        if since.is_some() && filtered_comments.is_empty() {
+            continue;
+        }
+
+        total_new_comments += filtered_comments.len();
         threads_by_file
             .entry(thread.file_path.clone())
             .or_default()
-            .push(thread);
+            .push((thread, filtered_comments));
+    }
+
+    if since.is_some() && threads_by_file.is_empty() {
+        println!("\n  No new activity since the specified time.");
+        return Ok(());
     }
 
     // Determine commit for context
@@ -572,7 +664,7 @@ pub fn run_review(
     for (file, file_threads) in threads_by_file {
         println!("\n━━━ {} ━━━", file);
 
-        for thread in file_threads {
+        for (thread, comments) in file_threads {
             let status_icon = if thread.status == "open" {
                 "○"
             } else {
@@ -585,7 +677,16 @@ pub fn run_review(
                 _ => format!("line {}", thread.selection_start),
             };
 
-            println!("\n  {} {} ({})", status_icon, thread.thread_id, line_info);
+            let new_indicator = if since.is_some() {
+                format!(" [+{}]", comments.len())
+            } else {
+                String::new()
+            };
+
+            println!(
+                "\n  {} {} ({}){}",
+                status_icon, thread.thread_id, line_info, new_indicator
+            );
 
             // Show code context if requested
             if context_lines > 0 {
@@ -607,8 +708,7 @@ pub fn run_review(
                 }
             }
 
-            // Show comments
-            let comments = db.list_comments(&thread.thread_id)?;
+            // Show comments (already filtered)
             for comment in comments {
                 println!(
                     "\n    ▸ {} ({}):",
@@ -620,6 +720,10 @@ pub fn run_review(
                 }
             }
         }
+    }
+
+    if let Some(_) = since {
+        println!("\n  [{} new comment(s)]", total_new_comments);
     }
 
     println!();

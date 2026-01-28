@@ -100,6 +100,7 @@ pub fn run_threads_list(
     status: Option<&str>,
     file: Option<&str>,
     verbose: bool,
+    since: Option<chrono::DateTime<chrono::Utc>>,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(repo_root)?;
@@ -113,8 +114,27 @@ pub fn run_threads_list(
 
     let threads = db.list_threads(review_id, status, file)?;
 
+    // Filter threads by --since (only those with recent comments)
+    let threads: Vec<_> = if let Some(since_dt) = since {
+        threads
+            .into_iter()
+            .filter(|t| {
+                let comments = db.list_comments(&t.thread_id).unwrap_or_default();
+                comments.iter().any(|c| {
+                    chrono::DateTime::parse_from_rfc3339(&c.created_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc) >= since_dt)
+                        .unwrap_or(true)
+                })
+            })
+            .collect()
+    } else {
+        threads
+    };
+
     // Build context-aware empty message
-    let empty_msg = if status.is_some() || file.is_some() {
+    let empty_msg = if since.is_some() {
+        "No threads with activity since the specified time"
+    } else if status.is_some() || file.is_some() {
         "No threads match the filters"
     } else {
         "No threads yet"

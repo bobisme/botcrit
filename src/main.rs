@@ -170,17 +170,22 @@ fn main() -> Result<()> {
                 status,
                 file,
                 verbose,
+                since,
             } => {
                 let status_str = status.map(|s| match s {
                     crit::cli::ThreadStatus::Open => "open",
                     crit::cli::ThreadStatus::Resolved => "resolved",
                 });
+                let since_dt = since
+                    .map(|s| crit::cli::commands::reviews::parse_since(&s))
+                    .transpose()?;
                 run_threads_list(
                     &crit_root,
                     &review_id,
                     status_str,
                     file.as_deref(),
                     verbose,
+                    since_dt,
                     format,
                 )?;
             }
@@ -294,13 +299,18 @@ fn main() -> Result<()> {
             review_id,
             context,
             no_context,
+            since,
         } => {
             let context_lines = if no_context { 0 } else { context };
+            let since_dt = since
+                .map(|s| crit::cli::commands::reviews::parse_since(&s))
+                .transpose()?;
             run_review(
                 &crit_root,
                 &workspace_root,
                 &review_id,
                 context_lines,
+                since_dt,
                 format,
             )?;
         }

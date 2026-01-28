@@ -118,6 +118,10 @@ pub enum Commands {
         /// Hide code context
         #[arg(long)]
         no_context: bool,
+
+        /// Only show activity since this timestamp (ISO 8601 or relative like "1h", "2d")
+        #[arg(long)]
+        since: Option<String>,
     },
 }
 
@@ -260,6 +264,10 @@ pub enum ThreadsCommands {
         /// Show first comment body for each thread
         #[arg(long, short = 'v')]
         verbose: bool,
+
+        /// Only show threads with activity since this timestamp
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Show thread details with context
