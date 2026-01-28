@@ -645,3 +645,52 @@ crit reviews merge <review_id> --self-approve
 - Works across jj workspaces (shared .crit/ in main repo)
 
 <!-- end-crit-agent-instructions -->
+
+## Release Process
+
+### Version Bumps
+
+Use semantic versioning:
+- **MAJOR** (1.0.0): Breaking changes
+- **MINOR** (0.X.0): New features, backward compatible  
+- **PATCH** (0.0.X): Bug fixes, minor improvements
+
+### Release Checklist
+
+```bash
+# 1. Ensure tests pass
+cargo test
+
+# 2. Bump version in Cargo.toml
+#    Edit: version = "X.Y.Z"
+
+# 3. Commit the release
+jj commit -m "chore: bump version to X.Y.Z
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+# 4. Update main bookmark and push
+jj bookmark set main -r @-
+jj git push
+
+# 5. Install locally
+just install
+
+# 6. Verify
+crit --version
+
+# 7. Announce on botbus
+export BOTBUS_AGENT=<your-agent>
+botbus send botcrit "crit vX.Y.Z released - [summary of changes]"
+```
+
+### Quick Reference
+
+| Stage | Commands |
+|-------|----------|
+| Test | `cargo test` |
+| Bump | Edit `Cargo.toml` version |
+| Commit | `jj commit -m "chore: bump version to X.Y.Z"` |
+| Push | `jj bookmark set main -r @- && jj git push` |
+| Install | `just install` |
+| Announce | `botbus send botcrit "crit vX.Y.Z - ..."` |
