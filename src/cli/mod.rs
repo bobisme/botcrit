@@ -68,7 +68,7 @@ pub enum Commands {
     /// Interactive UI for browsing reviews
     Ui,
 
-    /// Add a comment to a review (auto-creates thread if needed)
+    /// Add a comment to a review (auto-creates thread if needed). Use `reply` to respond to an existing thread.
     Comment {
         /// Review ID
         review_id: String,
@@ -122,6 +122,16 @@ pub enum Commands {
         /// Only show activity since this timestamp (ISO 8601 or relative like "1h", "2d")
         #[arg(long)]
         since: Option<String>,
+    },
+
+    /// Reply to an existing thread (shortcut for `comments add`)
+    Reply {
+        /// Thread ID
+        thread_id: String,
+
+        /// Reply message
+        #[arg(value_name = "MESSAGE")]
+        message: String,
     },
 
     /// Show reviews and threads needing your attention

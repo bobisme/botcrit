@@ -315,6 +315,10 @@ fn main() -> Result<()> {
             )?;
         }
 
+        Commands::Reply { thread_id, message } => {
+            run_comments_add(&crit_root, &thread_id, &message, identity.as_deref(), format)?;
+        }
+
         Commands::Inbox => {
             let agent = get_agent_identity(identity.as_deref())?;
             run_inbox(&crit_root, &agent, format)?;

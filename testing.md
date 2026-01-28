@@ -265,6 +265,14 @@ Verify thread ID with `crit threads list <review_id>`.
 This is correct! Thread context shows code at the commit where the thread was created.
 Use `crit status` to see drift detection for how lines moved.
 
+Drift status quick guide:
+- `unchanged`: same line number as the original anchor
+- `shifted(+N)` / `shifted(-N)`: same line content but moved by N lines
+- `modified`: anchored line content changed
+- `deleted`: anchored line removed
+
+Use `crit threads show <thread_id> --current` to inspect context at the current commit.
+
 ### Agent identity
 Set `CRIT_AGENT` environment variable, or use `--author` flag.
 Falls back to `BOTBUS_AGENT` then `USER`.

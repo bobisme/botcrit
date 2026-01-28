@@ -7,24 +7,20 @@ This project uses [BotBus](https://github.com/anomalyco/botbus) for multi-agent 
 ### Quick Start
 
 ```bash
-# Set your identity (once per session)
-export BOTBUS_AGENT=$(botbus generate-name)  # e.g., "swift-falcon"
-# Or choose your own: export BOTBUS_AGENT=my-agent-name
-
 # Check what's happening
 botbus status              # Overview: agents, channels, claims
 botbus history             # Recent messages in #general
 botbus agents              # Who's been active
 
 # Communicate
-botbus send general "Starting work on X"
-botbus send general "Done with X, ready for review"
-botbus send @other-agent "Question about Y"
+botbus send --agent botcrit-dev botcrit "Starting work on X"
+botbus send --agent botcrit-dev botcrit "Done with X, ready for review"
+botbus send --agent botcrit-dev @other-agent "Question about Y"
 
 # Coordinate file access (claims use absolute paths internally)
-botbus claim "src/api/**" -m "Working on API routes"
+botbus claim --agent botcrit-dev "src/api/**" -m "Working on API routes"
 botbus check-claim src/api/routes.rs   # Check before editing
-botbus release --all                    # When done
+botbus release --agent botcrit-dev --all  # When done
 ```
 
 ### Best Practices
@@ -48,6 +44,7 @@ Channel names: lowercase alphanumeric with hyphens (e.g., `my-channel`)
 ### Message Conventions
 
 Keep messages concise and actionable:
+
 - "Starting work on issue #123: Add foo feature"
 - "Blocked: need database credentials to proceed"
 - "Question: should auth middleware go in src/api or src/auth?"
@@ -57,8 +54,8 @@ Keep messages concise and actionable:
 
 ```bash
 # After sending a DM, wait for reply
-botbus send @other-agent "Can you review this?"
-botbus wait -c @other-agent -t 60  # Wait up to 60s for reply
+botbus send --agent botcrit-dev @other-agent "Can you review this?"
+botbus wait --agent botcrit-dev -c @other-agent -t 60  # Wait up to 60s for reply
 
 # Wait for any @mention of you
 botbus wait --mention -t 120
@@ -491,11 +488,13 @@ cargo test
 ### When to Use Subagents
 
 Use subagents with maw workspaces when:
+
 - Multiple agents will edit files in parallel
 - Work can be cleanly separated by module/directory
 - Tasks are independent and non-blocking
 
 Don't bother with workspaces when:
+
 - Single agent doing sequential work
 - Quick tasks that complete in one shot
 - Research/read-only tasks
@@ -505,11 +504,13 @@ Don't bother with workspaces when:
 If multiple agents need to touch the same file (e.g., adding modules to `mod.rs`):
 
 1. **Pre-create shared structure** - Before spawning agents, add the module declarations yourself:
+
    ```rust
    // Orchestrator adds this before spawning agents:
    pub mod drift;
    pub mod context;
    ```
+
    Then agents only create their own files (drift.rs, context.rs).
 
 2. **Combine related work** - If tasks touch the same directory, consider one agent for both.
@@ -558,6 +559,15 @@ crit comment <review_id> --file src/main.rs --line 42 "Good point, will fix"
 
 # Comment on a line range
 crit comment <review_id> --file src/main.rs --line 10-20 "This block needs refactoring"
+```
+
+### Replying to Threads
+
+Use `crit reply` to respond to an existing thread (instead of `crit comment` which creates new threads):
+
+```bash
+# Reply to an existing thread
+crit reply <thread_id> "Good point, will fix"
 ```
 
 ### Managing Threads
@@ -625,21 +635,25 @@ crit inbox
 ### Agent Best Practices
 
 1. **Set your identity** via environment:
+
    ```bash
    export BOTBUS_AGENT=my-agent-name
    ```
 
 2. **Check inbox at session start**:
+
    ```bash
    crit inbox
    ```
 
 3. **Check status** to see unresolved threads:
+
    ```bash
    crit status <review_id> --unresolved-only
    ```
 
 4. **Run doctor** to verify setup:
+
    ```bash
    crit doctor
    ```
@@ -653,7 +667,8 @@ crit inbox
 
 - **Reviews** are anchored to jj Change IDs (survive rebases)
 - **Threads** group comments on specific file locations
-- **crit comment** is the simple way to leave feedback (auto-creates threads)
+- **crit comment** leaves feedback on a file+line (auto-creates threads)
+- **crit reply** responds to an existing thread
 - Works across jj workspaces (shared .crit/ in main repo)
 
 <!-- end-crit-agent-instructions -->
@@ -663,8 +678,9 @@ crit inbox
 ### Version Bumps
 
 Use semantic versioning:
+
 - **MAJOR** (1.0.0): Breaking changes
-- **MINOR** (0.X.0): New features, backward compatible  
+- **MINOR** (0.X.0): New features, backward compatible
 - **PATCH** (0.0.X): Bug fixes, minor improvements
 
 ### Release Checklist
@@ -692,17 +708,17 @@ just install
 crit --version
 
 # 7. Announce on botbus
-export BOTBUS_AGENT=<your-agent>
-botbus send botcrit "crit vX.Y.Z released - [summary of changes]"
+botbus --agent botcrit-dev send botcrit "crit vX.Y.Z released - [summary of changes]"
 ```
 
 ### Quick Reference
 
-| Stage | Commands |
-|-------|----------|
-| Test | `cargo test` |
-| Bump | Edit `Cargo.toml` version |
-| Commit | `jj commit -m "chore: bump version to X.Y.Z"` |
-| Push | `jj bookmark set main -r @- && jj git push` |
-| Install | `just install` |
-| Announce | `botbus send botcrit "crit vX.Y.Z - ..."` |
+| Stage    | Commands                                      |
+| -------- | --------------------------------------------- |
+| Test     | `cargo test`                                  |
+| Bump     | Edit `Cargo.toml` version                     |
+| Commit   | `jj commit -m "chore: bump version to X.Y.Z"` |
+| Push     | `jj bookmark set main -r @- && jj git push`   |
+| Install  | `just install`                                |
+| Announce | `botbus send botcrit "crit vX.Y.Z - ..."`     |
+
