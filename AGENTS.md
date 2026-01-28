@@ -610,6 +610,18 @@ crit reviews merge <review_id>
 crit reviews merge <review_id> --self-approve
 ```
 
+### Checking Your Inbox
+
+```bash
+# See all items needing your attention
+crit inbox
+
+# Shows:
+# - Reviews awaiting your vote (you're a reviewer but haven't voted)
+# - Threads with new responses (someone replied to your comment)
+# - Open feedback on your reviews (threads others opened on your code)
+```
+
 ### Agent Best Practices
 
 1. **Set your identity** via environment:
@@ -617,9 +629,9 @@ crit reviews merge <review_id> --self-approve
    export BOTBUS_AGENT=my-agent-name
    ```
 
-2. **Check for pending reviews** at session start:
+2. **Check inbox at session start**:
    ```bash
-   crit reviews list --needs-review --author $BOTBUS_AGENT
+   crit inbox
    ```
 
 3. **Check status** to see unresolved threads:

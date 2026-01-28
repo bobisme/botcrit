@@ -123,6 +123,9 @@ pub enum Commands {
         #[arg(long)]
         since: Option<String>,
     },
+
+    /// Show reviews and threads needing your attention
+    Inbox,
 }
 
 // ============================================================================

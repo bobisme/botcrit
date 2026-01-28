@@ -95,6 +95,52 @@ pub struct Comment {
     pub created_at: String,
 }
 
+/// A review awaiting the agent's vote.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewAwaitingVote {
+    pub review_id: String,
+    pub title: String,
+    pub author: String,
+    pub status: String,
+    pub open_thread_count: i64,
+    pub requested_at: String,
+}
+
+/// A thread with new responses since the agent's last comment.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadWithNewResponses {
+    pub thread_id: String,
+    pub review_id: String,
+    pub review_title: String,
+    pub file_path: String,
+    pub selection_start: i64,
+    pub status: String,
+    pub my_last_comment_at: String,
+    pub new_response_count: i64,
+    pub latest_response_at: String,
+}
+
+/// An open thread on a review I authored (feedback to address).
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenThreadOnMyReview {
+    pub thread_id: String,
+    pub review_id: String,
+    pub review_title: String,
+    pub file_path: String,
+    pub selection_start: i64,
+    pub thread_author: String,
+    pub comment_count: i64,
+    pub latest_comment_at: String,
+}
+
+/// Complete inbox summary for an agent.
+#[derive(Debug, Clone, Serialize)]
+pub struct InboxSummary {
+    pub reviews_awaiting_vote: Vec<ReviewAwaitingVote>,
+    pub threads_with_new_responses: Vec<ThreadWithNewResponses>,
+    pub open_threads_on_my_reviews: Vec<OpenThreadOnMyReview>,
+}
+
 // ============================================================================
 // Query Functions
 // ============================================================================
@@ -445,6 +491,170 @@ impl ProjectionDb {
         let mut results = Vec::new();
         for row in rows {
             results.push(row.context("Failed to read comment row")?);
+        }
+        Ok(results)
+    }
+
+    // ========================================================================
+    // Inbox Queries
+    // ========================================================================
+
+    /// Get complete inbox summary for an agent.
+    pub fn get_inbox(&self, agent: &str) -> Result<InboxSummary> {
+        Ok(InboxSummary {
+            reviews_awaiting_vote: self.get_reviews_awaiting_vote(agent)?,
+            threads_with_new_responses: self.get_threads_with_new_responses(agent)?,
+            open_threads_on_my_reviews: self.get_open_threads_on_my_reviews(agent)?,
+        })
+    }
+
+    /// Get reviews where the agent is a requested reviewer but hasn't voted yet.
+    ///
+    /// Only includes open/approved reviews (not merged/abandoned).
+    pub fn get_reviews_awaiting_vote(&self, agent: &str) -> Result<Vec<ReviewAwaitingVote>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT 
+                    r.review_id, r.title, r.author, r.status,
+                    COALESCE(s.open_thread_count, 0) as open_thread_count,
+                    rr.requested_at
+                 FROM review_reviewers rr
+                 JOIN reviews r ON r.review_id = rr.review_id
+                 LEFT JOIN v_reviews_summary s ON s.review_id = r.review_id
+                 LEFT JOIN reviewer_votes v ON v.review_id = r.review_id AND v.reviewer = ?
+                 WHERE rr.reviewer = ?
+                   AND r.status IN ('open', 'approved')
+                   AND v.vote IS NULL
+                 ORDER BY rr.requested_at DESC",
+            )
+            .context("Failed to prepare reviews_awaiting_vote query")?;
+
+        let rows = stmt
+            .query_map(params![agent, agent], |row| {
+                Ok(ReviewAwaitingVote {
+                    review_id: row.get(0)?,
+                    title: row.get(1)?,
+                    author: row.get(2)?,
+                    status: row.get(3)?,
+                    open_thread_count: row.get(4)?,
+                    requested_at: row.get(5)?,
+                })
+            })
+            .context("Failed to execute reviews_awaiting_vote query")?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.context("Failed to read review row")?);
+        }
+        Ok(results)
+    }
+
+    /// Get threads where the agent has commented but there are newer comments from others.
+    ///
+    /// Only includes open threads on open/approved reviews.
+    pub fn get_threads_with_new_responses(
+        &self,
+        agent: &str,
+    ) -> Result<Vec<ThreadWithNewResponses>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "WITH my_last_comment AS (
+                    SELECT thread_id, MAX(created_at) as last_at
+                    FROM comments
+                    WHERE author = ?
+                    GROUP BY thread_id
+                ),
+                new_responses AS (
+                    SELECT 
+                        c.thread_id,
+                        COUNT(*) as new_count,
+                        MAX(c.created_at) as latest_at
+                    FROM comments c
+                    JOIN my_last_comment m ON m.thread_id = c.thread_id
+                    WHERE c.author != ? AND c.created_at > m.last_at
+                    GROUP BY c.thread_id
+                )
+                SELECT 
+                    t.thread_id, t.review_id, r.title, t.file_path,
+                    t.selection_start, t.status,
+                    m.last_at, n.new_count, n.latest_at
+                FROM threads t
+                JOIN reviews r ON r.review_id = t.review_id
+                JOIN my_last_comment m ON m.thread_id = t.thread_id
+                JOIN new_responses n ON n.thread_id = t.thread_id
+                WHERE t.status = 'open'
+                  AND r.status IN ('open', 'approved')
+                ORDER BY n.latest_at DESC",
+            )
+            .context("Failed to prepare threads_with_new_responses query")?;
+
+        let rows = stmt
+            .query_map(params![agent, agent], |row| {
+                Ok(ThreadWithNewResponses {
+                    thread_id: row.get(0)?,
+                    review_id: row.get(1)?,
+                    review_title: row.get(2)?,
+                    file_path: row.get(3)?,
+                    selection_start: row.get(4)?,
+                    status: row.get(5)?,
+                    my_last_comment_at: row.get(6)?,
+                    new_response_count: row.get(7)?,
+                    latest_response_at: row.get(8)?,
+                })
+            })
+            .context("Failed to execute threads_with_new_responses query")?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.context("Failed to read thread row")?);
+        }
+        Ok(results)
+    }
+
+    /// Get open threads on reviews where the agent is the author.
+    ///
+    /// This shows feedback that the agent needs to address.
+    /// Only includes open/approved reviews.
+    pub fn get_open_threads_on_my_reviews(&self, agent: &str) -> Result<Vec<OpenThreadOnMyReview>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT 
+                    t.thread_id, t.review_id, r.title, t.file_path,
+                    t.selection_start, t.author,
+                    COUNT(c.comment_id) as comment_count,
+                    MAX(c.created_at) as latest_comment_at
+                 FROM threads t
+                 JOIN reviews r ON r.review_id = t.review_id
+                 LEFT JOIN comments c ON c.thread_id = t.thread_id
+                 WHERE r.author = ?
+                   AND r.status IN ('open', 'approved')
+                   AND t.status = 'open'
+                 GROUP BY t.thread_id
+                 ORDER BY MAX(c.created_at) DESC NULLS LAST, t.created_at DESC",
+            )
+            .context("Failed to prepare open_threads_on_my_reviews query")?;
+
+        let rows = stmt
+            .query_map(params![agent], |row| {
+                Ok(OpenThreadOnMyReview {
+                    thread_id: row.get(0)?,
+                    review_id: row.get(1)?,
+                    review_title: row.get(2)?,
+                    file_path: row.get(3)?,
+                    selection_start: row.get(4)?,
+                    thread_author: row.get(5)?,
+                    comment_count: row.get(6)?,
+                    latest_comment_at: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                })
+            })
+            .context("Failed to execute open_threads_on_my_reviews query")?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.context("Failed to read thread row")?);
         }
         Ok(results)
     }

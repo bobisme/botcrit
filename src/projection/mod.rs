@@ -11,7 +11,10 @@
 
 mod query;
 
-pub use query::{Comment, ReviewDetail, ReviewSummary, ReviewerVote, ThreadDetail, ThreadSummary};
+pub use query::{
+    Comment, InboxSummary, OpenThreadOnMyReview, ReviewAwaitingVote, ReviewDetail, ReviewSummary,
+    ReviewerVote, ThreadDetail, ThreadSummary, ThreadWithNewResponses,
+};
 
 use std::path::Path;
 

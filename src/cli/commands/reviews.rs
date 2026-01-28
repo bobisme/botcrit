@@ -730,6 +730,92 @@ pub fn run_review(
     Ok(())
 }
 
+/// Show inbox - reviews and threads needing the agent's attention.
+pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<()> {
+    ensure_initialized(repo_root)?;
+
+    let db = open_and_sync(repo_root)?;
+    let inbox = db.get_inbox(agent)?;
+
+    if matches!(format, OutputFormat::Json) {
+        let formatter = Formatter::new(format);
+        formatter.print(&inbox)?;
+        return Ok(());
+    }
+
+    // TOON output
+    let total_items = inbox.reviews_awaiting_vote.len()
+        + inbox.threads_with_new_responses.len()
+        + inbox.open_threads_on_my_reviews.len();
+
+    if total_items == 0 {
+        println!("Inbox empty - no items need your attention");
+        return Ok(());
+    }
+
+    println!("Inbox for {} ({} items)", agent, total_items);
+    println!();
+
+    // Section 1: Reviews awaiting vote
+    if !inbox.reviews_awaiting_vote.is_empty() {
+        println!(
+            "Reviews awaiting your vote ({}):",
+            inbox.reviews_awaiting_vote.len()
+        );
+        for r in &inbox.reviews_awaiting_vote {
+            let threads_info = if r.open_thread_count > 0 {
+                format!(" [{} open threads]", r.open_thread_count)
+            } else {
+                String::new()
+            };
+            println!(
+                "  {} · {} by {}{}",
+                r.review_id, r.title, r.author, threads_info
+            );
+        }
+        println!();
+    }
+
+    // Section 2: Threads with new responses
+    if !inbox.threads_with_new_responses.is_empty() {
+        println!(
+            "Threads with new responses ({}):",
+            inbox.threads_with_new_responses.len()
+        );
+        for t in &inbox.threads_with_new_responses {
+            println!(
+                "  {} · {}:{} (+{} new)",
+                t.thread_id, t.file_path, t.selection_start, t.new_response_count
+            );
+            println!("    in {} ({})", t.review_id, t.review_title);
+        }
+        println!();
+    }
+
+    // Section 3: Open threads on my reviews
+    if !inbox.open_threads_on_my_reviews.is_empty() {
+        println!(
+            "Open feedback on your reviews ({}):",
+            inbox.open_threads_on_my_reviews.len()
+        );
+        for t in &inbox.open_threads_on_my_reviews {
+            let comments_info = if t.comment_count > 0 {
+                format!(" ({} comments)", t.comment_count)
+            } else {
+                String::new()
+            };
+            println!(
+                "  {} · {}:{} by {}{}",
+                t.thread_id, t.file_path, t.selection_start, t.thread_author, comments_info
+            );
+            println!("    in {} ({})", t.review_id, t.review_title);
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
