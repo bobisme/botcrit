@@ -42,7 +42,7 @@ pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
     }
 
     bail!(
-        "Agent identity required. Set CRIT_AGENT or BOTBUS_AGENT, or use --user for human identity."
+        "Agent identity required. Use --agent <name>, set CRIT_AGENT or BOTBUS_AGENT, or use --user for human identity."
     )
 }
 

@@ -14,8 +14,8 @@ pub struct Cli {
     pub json: bool,
 
     /// Override agent identity (requires CRIT_AGENT or BOTBUS_AGENT by default)
-    #[arg(long, global = true)]
-    pub author: Option<String>,
+    #[arg(long, global = true, visible_alias = "author")]
+    pub agent: Option<String>,
 
     /// Use $USER as identity (for human usage)
     #[arg(long, global = true)]

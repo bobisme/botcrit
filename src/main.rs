@@ -19,10 +19,10 @@ use crit::jj::resolve_repo_root;
 use crit::output::OutputFormat;
 
 /// Resolve identity based on CLI flags.
-/// Priority: --author > --user > CRIT_AGENT/BOTBUS_AGENT (required)
+/// Priority: --agent > --user > CRIT_AGENT/BOTBUS_AGENT (required)
 fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
-    if let Some(ref author) = cli.author {
-        return Ok(Some(author.clone()));
+    if let Some(ref agent) = cli.agent {
+        return Ok(Some(agent.clone()));
     }
     if cli.user {
         return Ok(Some(get_user_identity()?));

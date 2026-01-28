@@ -3,6 +3,7 @@
 //! Manages agent instructions in AGENTS.md for crit usage.
 
 use anyhow::{Context, Result};
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -16,10 +17,26 @@ const START_MARKER: &str = "<!-- crit-agent-instructions -->";
 const END_MARKER: &str = "<!-- end-crit-agent-instructions -->";
 
 /// Returns the crit agent instructions text.
-pub fn get_crit_instructions() -> &'static str {
-    r#"## Crit: Agent-Centric Code Review
+pub fn get_crit_instructions() -> String {
+    let suggested_name = suggest_agent_name();
+
+    format!(
+        r#"## Crit: Agent-Centric Code Review
 
 This project uses [crit](https://github.com/anomalyco/botcrit) for distributed code reviews optimized for AI agents.
+
+### Identity
+
+Pass `--agent <name>` on every crit command to identify yourself:
+
+```bash
+crit --agent {name} reviews list
+crit --agent {name} comment <id> --file F --line L "msg"
+```
+
+Alternatively, set `CRIT_AGENT` or `BOTBUS_AGENT` env vars (but note these may not persist across tool invocations in some environments).
+
+Use `--user` for human identity (uses $USER).
 
 ### Essential Commands
 
@@ -28,6 +45,7 @@ crit reviews list                        # List reviews
 crit reviews create --title "..."        # Create review for current change
 crit review <id>                         # Show full review with threads/comments
 crit comment <id> --file F --line L "M"  # Add comment (auto-creates thread)
+crit reply <thread_id> "M"              # Reply to an existing thread
 crit lgtm <id> -m "..."                  # Approve (LGTM)
 crit block <id> -r "..."                 # Request changes
 crit threads resolve <id> --reason "..." # Resolve a thread
@@ -38,17 +56,45 @@ crit reviews merge <id> --self-approve   # Approve + merge (solo workflow)
 
 1. **Review code**: `crit review <id>` or `crit threads list <id> -v`
 2. **Add feedback**: `crit comment <id> --file <path> --line <n> "comment"`
-3. **Vote**: `crit lgtm <id>` or `crit block <id> -r "reason"`
-4. **Resolve threads**: `crit threads resolve <id>` after addressing feedback
-5. **Merge**: `crit reviews merge <id>` (fails if blocking votes exist)
+3. **Reply**: `crit reply <thread_id> "response"` to respond to existing threads
+4. **Vote**: `crit lgtm <id>` or `crit block <id> -r "reason"`
+5. **Resolve threads**: `crit threads resolve <id>` after addressing feedback
+6. **Merge**: `crit reviews merge <id>` (fails if blocking votes exist)
 
 ### Key Points
 
 - Reviews anchor to jj Change IDs (survive rebases)
-- `crit comment` auto-creates threads - preferred over `threads create` + `comments add`
+- `crit comment` creates new feedback on a file+line (auto-creates threads)
+- `crit reply` responds to an existing thread
 - Use `--json` for machine-parseable output
-- **Identity required**: Set `CRIT_AGENT` or `BOTBUS_AGENT` env var
-- Use `--user` flag for human identity (uses $USER)"#
+- **Identity**: Use `--agent <name>` flag (preferred) or set CRIT_AGENT/BOTBUS_AGENT env var
+- Use `--user` flag for human identity (uses $USER)"#,
+        name = suggested_name,
+    )
+}
+
+/// Suggest an agent name based on the project directory.
+///
+/// Priority: CRIT_AGENT > BOTBUS_AGENT > <dirname>-dev
+fn suggest_agent_name() -> String {
+    // Check env vars first - don't override an existing identity
+    if let Ok(name) = env::var("CRIT_AGENT") {
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    if let Ok(name) = env::var("BOTBUS_AGENT") {
+        if !name.is_empty() {
+            return name;
+        }
+    }
+
+    // Fall back to project-based name
+    env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .map(|dir| format!("{}-dev", dir))
+        .unwrap_or_else(|| "my-agent".to_string())
 }
 
 /// Run the `crit agents init` command.
@@ -118,10 +164,12 @@ pub fn run_agents_init(repo_root: &Path) -> Result<()> {
 /// Run the `crit agents show` command.
 ///
 /// Prints the crit instructions block to stdout.
+/// The output includes a suggested agent name based on the project directory.
 pub fn run_agents_show() -> Result<()> {
     println!("{}", get_crit_instructions());
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -135,6 +183,8 @@ mod tests {
         assert!(instructions.contains("crit"));
         assert!(instructions.contains("reviews"));
         assert!(instructions.contains("threads"));
+        assert!(instructions.contains("--agent"));
+        assert!(instructions.contains("reply"));
     }
 
     #[test]

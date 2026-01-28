@@ -1,6 +1,6 @@
 [package]
 name = "crit"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Agent-centric distributed code review tool for jj"
 license = "MIT"
