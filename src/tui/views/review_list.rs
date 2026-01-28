@@ -21,7 +21,15 @@ pub struct ReviewListView {
 
 impl ReviewListView {
     /// Create a new review list view
-    pub fn new(reviews: Vec<ReviewSummary>) -> Self {
+    pub fn new(mut reviews: Vec<ReviewSummary>) -> Self {
+        // Sort: open first, then approved, merged, abandoned
+        reviews.sort_by_key(|r| match r.status.as_str() {
+            "open" => 0,
+            "approved" => 1,
+            "merged" => 2,
+            "abandoned" => 3,
+            _ => 4,
+        });
         let mut list_state = ListState::default();
         if !reviews.is_empty() {
             list_state.select(Some(0));
@@ -111,23 +119,10 @@ impl ReviewListView {
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect) {
-        // Sort: open reviews first, then by status
-        let mut sorted_reviews: Vec<(usize, &ReviewSummary)> =
-            self.reviews.iter().enumerate().collect();
-        sorted_reviews.sort_by(|a, b| {
-            let status_order = |s: &str| match s {
-                "open" => 0,
-                "approved" => 1,
-                "merged" => 2,
-                "abandoned" => 3,
-                _ => 4,
-            };
-            status_order(&a.1.status).cmp(&status_order(&b.1.status))
-        });
-
-        let items: Vec<ListItem> = sorted_reviews
+        let items: Vec<ListItem> = self
+            .reviews
             .iter()
-            .map(|(_, review)| {
+            .map(|review| {
                 let status_style = match review.status.as_str() {
                     "open" => Style::default().fg(theme::CURRENT),
                     "approved" => Style::default()

@@ -76,6 +76,9 @@ pub fn run_doctor(repo_root: &Path, format: OutputFormat) -> Result<()> {
 
         // Check 5: index.db sync status
         checks.push(check_index_sync(repo_root));
+
+        // Check 6: index.db gitignored
+        checks.push(check_index_gitignored(repo_root));
     }
 
     let healthy = checks.iter().all(|c| c.status != "fail");
@@ -248,5 +251,36 @@ fn check_index_sync(repo_root: &Path) -> CheckResult {
             &format!("Cannot open events.jsonl: {}", e),
             "Check file permissions",
         ),
+    }
+}
+
+/// Check if .crit/index.db is gitignored.
+///
+/// The index is an ephemeral cache rebuilt from events.jsonl and should not be committed.
+fn check_index_gitignored(repo_root: &Path) -> CheckResult {
+    let index_rel = ".crit/index.db";
+
+    // Use git check-ignore (works in both git and jj-backed repos)
+    let result = Command::new("git")
+        .args(["check-ignore", "-q", index_rel])
+        .current_dir(repo_root)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {
+            CheckResult::pass("index_gitignored", ".crit/index.db is gitignored")
+        }
+        Ok(_) => CheckResult::warn(
+            "index_gitignored",
+            ".crit/index.db is not gitignored",
+            Some("Add '.crit/index.db' to .gitignore — it's a rebuildable cache"),
+        ),
+        Err(_) => {
+            // git not available — skip silently
+            CheckResult::pass(
+                "index_gitignored",
+                "Skipped gitignore check (git not available)",
+            )
+        }
     }
 }

@@ -1,5 +1,8 @@
 /target
 
+# crit index is a rebuildable cache
+.crit/index.db
+
 # bv (beads viewer) local config and caches
 .bv/
 opencode.json
