@@ -151,7 +151,7 @@ fn check_crit_initialized(repo_root: &Path) -> CheckResult {
         CheckResult::fail(
             "crit_initialized",
             ".crit directory not found",
-            "Run 'crit init' to initialize crit in this repository",
+            "Run 'crit --agent <your-name> init' to initialize crit in this repository",
         )
     }
 }
@@ -200,7 +200,7 @@ fn check_events_parseable(repo_root: &Path) -> CheckResult {
         Err(e) => CheckResult::fail(
             "events_parseable",
             &format!("Cannot read events.jsonl: {}", e),
-            "Check file permissions or run 'crit init' to recreate",
+            "Check file permissions or run 'crit --agent <your-name> init' to recreate",
         ),
     }
 }

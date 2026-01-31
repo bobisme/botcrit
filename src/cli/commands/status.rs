@@ -14,7 +14,7 @@ use crate::projection::{sync_from_log, ProjectionDb, ThreadSummary};
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit reviews list",
+        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
         review_id
     )
 }
@@ -281,7 +281,7 @@ fn group_threads_by_file(threads: &[ThreadSummary]) -> serde_json::Value {
 
 fn ensure_initialized(repo_root: &Path) -> Result<()> {
     if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit init' first.");
+        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
     }
     Ok(())
 }

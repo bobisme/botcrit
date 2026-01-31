@@ -40,26 +40,28 @@ Use `--user` for human identity (uses $USER).
 
 ### Essential Commands
 
+All commands require `--agent <name>` (env vars don't persist in sandboxed environments):
+
 ```bash
-crit reviews list                        # List reviews
-crit reviews create --title "..."        # Create review for current change
-crit review <id>                         # Show full review with threads/comments
-crit comment <id> --file F --line L "M"  # Add comment (auto-creates thread)
-crit reply <thread_id> "M"              # Reply to an existing thread
-crit lgtm <id> -m "..."                  # Approve (LGTM)
-crit block <id> -r "..."                 # Request changes
-crit threads resolve <id> --reason "..." # Resolve a thread
-crit reviews merge <id> --self-approve   # Approve + merge (solo workflow)
+crit --agent {name} reviews list                        # List reviews
+crit --agent {name} reviews create --title "..."        # Create review for current change
+crit --agent {name} review <id>                         # Show full review with threads/comments
+crit --agent {name} comment <id> --file F --line L "M"  # Add comment (auto-creates thread)
+crit --agent {name} reply <thread_id> "M"               # Reply to an existing thread
+crit --agent {name} lgtm <id> -m "..."                  # Approve (LGTM)
+crit --agent {name} block <id> -r "..."                 # Request changes
+crit --agent {name} threads resolve <id> --reason "..." # Resolve a thread
+crit --agent {name} reviews merge <id> --self-approve   # Approve + merge (solo workflow)
 ```
 
 ### Workflow
 
-1. **Review code**: `crit review <id>` or `crit threads list <id> -v`
-2. **Add feedback**: `crit comment <id> --file <path> --line <n> "comment"`
-3. **Reply**: `crit reply <thread_id> "response"` to respond to existing threads
-4. **Vote**: `crit lgtm <id>` or `crit block <id> -r "reason"`
-5. **Resolve threads**: `crit threads resolve <id>` after addressing feedback
-6. **Merge**: `crit reviews merge <id>` (fails if blocking votes exist)
+1. **Review code**: `crit --agent {name} review <id>` or `crit --agent {name} threads list <id> -v`
+2. **Add feedback**: `crit --agent {name} comment <id> --file <path> --line <n> "comment"`
+3. **Reply**: `crit --agent {name} reply <thread_id> "response"` to respond to existing threads
+4. **Vote**: `crit --agent {name} lgtm <id>` or `crit --agent {name} block <id> -r "reason"`
+5. **Resolve threads**: `crit --agent {name} threads resolve <id>` after addressing feedback
+6. **Merge**: `crit --agent {name} reviews merge <id>` (fails if blocking votes exist)
 
 ### Key Points
 
@@ -243,7 +245,7 @@ mod tests {
         assert!(content.contains(END_MARKER));
         // Should have new instructions, not old
         assert!(!content.contains("Old instructions"));
-        assert!(content.contains("crit reviews create"));
+        assert!(content.contains("crit --agent"));
     }
 
     #[test]

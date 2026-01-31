@@ -52,10 +52,10 @@ pub fn run_init(repo_root: &Path) -> Result<()> {
     println!();
     println!("Next steps:");
     println!("  1. Create a review:");
-    println!("     crit reviews create --title \"Your change description\"");
+    println!("     crit --agent <your-name> reviews create --title \"Your change description\"");
     println!();
     println!("  2. Or check agent setup:");
-    println!("     crit agents show");
+    println!("     crit --agent <your-name> agents show");
 
     Ok(())
 }

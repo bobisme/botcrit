@@ -17,7 +17,7 @@ use crate::projection::{sync_from_log, ProjectionDb};
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit reviews list",
+        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
         review_id
     )
 }
@@ -25,7 +25,7 @@ fn review_not_found_error(review_id: &str) -> anyhow::Error {
 /// Helper to create actionable "thread not found" error messages.
 fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "Thread not found: {}\n  To fix: crit threads list <review_id>",
+        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
         thread_id
     )
 }
@@ -123,11 +123,11 @@ pub fn run_reviews_create(
         println!();
         println!("Next steps:");
         println!("  • Add reviewers:");
-        println!("    crit reviews request {review_id} --reviewers agent-name");
+        println!("    crit --agent <your-name> reviews request {review_id} --reviewers other-agent");
         println!("  • Add comments:");
-        println!("    crit comment {review_id} --file path/to/file.rs --line 10 \"feedback\"");
+        println!("    crit --agent <your-name> comment {review_id} --file path/to/file.rs --line 10 \"feedback\"");
         println!("  • View the review:");
-        println!("    crit review {review_id}");
+        println!("    crit --agent <your-name> review {review_id}");
     }
 
     Ok(())
@@ -392,7 +392,7 @@ pub fn run_reviews_merge(
             .collect();
 
         bail!(
-            "Cannot merge review with blocking votes:\n{}\n\nReviewers must change their vote with 'crit lgtm {}' before merging.",
+            "Cannot merge review with blocking votes:\n{}\n\nReviewers must change their vote with 'crit --agent <their-name> lgtm {}' before merging.",
             blockers.join("\n"),
             review_id
         );
@@ -850,7 +850,7 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
 
 fn ensure_initialized(repo_root: &Path) -> Result<()> {
     if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit init' first.");
+        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
     }
     Ok(())
 }

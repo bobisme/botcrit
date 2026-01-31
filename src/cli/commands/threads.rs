@@ -17,7 +17,7 @@ use crate::projection::{sync_from_log, ProjectionDb};
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit reviews list",
+        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
         review_id
     )
 }
@@ -25,7 +25,7 @@ fn review_not_found_error(review_id: &str) -> anyhow::Error {
 /// Helper to create actionable "thread not found" error messages.
 fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "Thread not found: {}\n  To fix: crit threads list <review_id>",
+        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
         thread_id
     )
 }
@@ -584,7 +584,7 @@ pub fn run_threads_reopen(
 
 fn ensure_initialized(repo_root: &Path) -> Result<()> {
     if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit init' first.");
+        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
     }
     Ok(())
 }
