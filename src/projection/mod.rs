@@ -94,6 +94,24 @@ impl ProjectionDb {
         Ok(line.map_or(0, |l| l as usize))
     }
 
+    /// Get the stored content hash of the event log prefix.
+    ///
+    /// Returns `None` if no hash has been stored yet.
+    pub fn get_events_file_hash(&self) -> Result<Option<String>> {
+        let hash: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT events_file_hash FROM sync_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to query events_file_hash")?
+            .flatten();
+
+        Ok(hash)
+    }
+
     /// Update the last successfully processed line number.
     pub fn set_last_sync_line(&self, line: usize) -> Result<()> {
         let now = Utc::now().to_rfc3339();
@@ -118,30 +136,66 @@ impl ProjectionDb {
 /// Reads events starting from the last processed line and applies them
 /// to the database. Returns the number of events processed.
 ///
-/// Detects file truncation (e.g., from jj working copy restoration) by
-/// comparing `last_sync_line` against the file's total line count. When
-/// truncation is detected, the projection is rebuilt from scratch.
+/// Detects file replacement (e.g., from jj working copy restoration) using
+/// two checks:
+/// 1. **Truncation**: `last_sync_line > total_lines()` — file got shorter.
+/// 2. **Content hash**: prefix hash of lines 0..last_sync_line changed —
+///    file was replaced with same-or-longer content but different history.
+///
+/// Either triggers a full rebuild from scratch.
 pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     let last_line = db.get_last_sync_line()?;
 
-    // Detect file truncation: if the file has fewer lines than our sync cursor,
-    // the file was replaced with an older version (e.g., by jj working copy
-    // restoration). In this case, the DB contains phantom state from events
-    // that no longer exist in the log, so we must rebuild from scratch.
     if last_line > 0 {
         let total = log.total_lines()?;
+
+        // Check 1: Truncation — file has fewer lines than our sync cursor.
         if last_line > total {
+            eprintln!(
+                "WARNING: events.jsonl truncated (expected >={} lines, found {}). Rebuilding projection.",
+                last_line, total
+            );
             return rebuild_projection(db, log);
+        }
+
+        // Check 2: Content hash — the prefix we already processed changed.
+        let stored_hash = db.get_events_file_hash()?;
+        if let Some(ref expected) = stored_hash {
+            if let Some(ref actual) = log.prefix_hash(last_line)? {
+                if expected != actual {
+                    eprintln!(
+                        "WARNING: events.jsonl content changed (hash mismatch at line {}). Rebuilding projection.",
+                        last_line
+                    );
+                    return rebuild_projection(db, log);
+                }
+            }
         }
     }
 
     let events = log.read_from(last_line)?;
 
     if events.is_empty() {
+        // Even if no new events, store hash if we don't have one yet
+        // (backfill for databases created before hash tracking).
+        if last_line > 0 && db.get_events_file_hash()?.is_none() {
+            if let Some(hash) = log.prefix_hash(last_line)? {
+                db.conn
+                    .execute(
+                        "UPDATE sync_state SET events_file_hash = ? WHERE id = 1",
+                        params![hash],
+                    )
+                    .context("Failed to backfill events_file_hash")?;
+            }
+        }
         return Ok(0);
     }
 
     let count = events.len();
+    let new_line = last_line + count;
+
+    // Compute new prefix hash covering all processed lines
+    let new_hash = log.prefix_hash(new_line)?;
 
     // Process events in a transaction for atomicity
     let tx = db
@@ -160,11 +214,10 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     }
 
     // Update sync state to point past all processed events
-    let new_line = last_line + count;
     let now = Utc::now().to_rfc3339();
     tx.execute(
-        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ? WHERE id = 1",
-        params![new_line as i64, now],
+        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ?, events_file_hash = ? WHERE id = 1",
+        params![new_line as i64, now, new_hash],
     )
     .context("Failed to update sync_state")?;
 
@@ -176,12 +229,15 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
 /// Rebuild the projection from scratch by wiping all data and re-applying
 /// all events from the log.
 ///
-/// Called when file truncation is detected (last_sync_line > total file lines),
-/// which can happen when jj restores the working copy to an older version
-/// while index.db (gitignored) retains a stale sync cursor.
+/// Called when file replacement is detected — either truncation
+/// (last_sync_line > total file lines) or content hash mismatch
+/// (same line count but different content).
 fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     let events = log.read_all()?;
     let count = events.len();
+
+    // Compute hash of the full file for the new sync state
+    let new_hash = log.prefix_hash(count)?;
 
     let tx = db
         .conn
@@ -204,11 +260,11 @@ fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> 
             .with_context(|| format!("Failed to apply event during rebuild: {:?}", event_type_name(&event.event)))?;
     }
 
-    // Update sync state
+    // Update sync state with line count and content hash
     let now = Utc::now().to_rfc3339();
     tx.execute(
-        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ? WHERE id = 1",
-        params![count as i64, now],
+        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ?, events_file_hash = ? WHERE id = 1",
+        params![count as i64, now, new_hash],
     )
     .context("Failed to update sync_state after rebuild")?;
 
@@ -1769,6 +1825,135 @@ mod tests {
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 2, "Should pick up block + lgtm");
             assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        }
+    }
+
+    /// bd-oum: jj restores events.jsonl to a version with the SAME number
+    /// of lines but DIFFERENT content. The truncation check (line count) passes,
+    /// but the content hash detects the replacement and triggers a rebuild.
+    #[test]
+    fn test_bd_oum_same_length_content_replacement() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        // === Phase 1: Create review cr-001 with a block vote, sync ===
+        let review1 = make_review_created("cr-001");
+        let block1 = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+        write_raw(&log_path, "");
+        for event in [&review1, &block1] {
+            append_raw(&log_path, &format!("{}\n", event.to_json_line().unwrap()));
+        }
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 2);
+            assert_eq!(db.get_last_sync_line().unwrap(), 2);
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+
+            // Hash should be stored
+            assert!(db.get_events_file_hash().unwrap().is_some(), "Hash should be stored after sync");
+        }
+
+        // === Phase 2: jj replaces file with SAME line count, DIFFERENT content ===
+        // A different review (cr-002) with an lgtm vote — same 2 lines, different content.
+        let review2 = make_review_created("cr-002");
+        let lgtm2 = make_lgtm_vote("cr-002", "reviewer-b");
+        let replaced = format!(
+            "{}\n{}\n",
+            review2.to_json_line().unwrap(),
+            lgtm2.to_json_line().unwrap()
+        );
+        write_raw(&log_path, &replaced);
+
+        // File still has 2 lines — truncation check won't catch this.
+        let line_count = std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(line_count, 2, "File should still have 2 lines");
+
+        // === Phase 3: sync detects hash mismatch, rebuilds ===
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+
+            // Rebuild replays the 2 events from the replaced file
+            assert_eq!(count, 2, "Rebuild replays all events from replaced file");
+            assert_eq!(db.get_last_sync_line().unwrap(), 2);
+
+            // cr-001 block vote is GONE (not in replaced file)
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), None);
+
+            // cr-002 lgtm vote is present (from replaced file)
+            assert_eq!(query_vote(&db, "cr-002", "reviewer-b"), Some("lgtm".to_string()));
+        }
+    }
+
+    /// bd-oum: Verify that the hash is backfilled on existing databases
+    /// that were created before hash tracking was added.
+    #[test]
+    fn test_bd_oum_hash_backfill_on_noop_sync() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        // Write 2 events and sync
+        let review = make_review_created("cr-001");
+        let block = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+        write_raw(&log_path, "");
+        for event in [&review, &block] {
+            append_raw(&log_path, &format!("{}\n", event.to_json_line().unwrap()));
+        }
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            sync_from_log(&db, &log).unwrap();
+            assert!(db.get_events_file_hash().unwrap().is_some());
+
+            // Simulate a pre-hash database by clearing the hash
+            db.conn().execute(
+                "UPDATE sync_state SET events_file_hash = NULL WHERE id = 1",
+                [],
+            ).unwrap();
+            assert!(db.get_events_file_hash().unwrap().is_none());
+        }
+
+        // No-op sync should backfill the hash
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 0, "No new events to process");
+            assert!(db.get_events_file_hash().unwrap().is_some(), "Hash should be backfilled");
+        }
+
+        // Now same-length replacement should be detected
+        let review2 = make_review_created("cr-002");
+        let lgtm2 = make_lgtm_vote("cr-002", "reviewer-b");
+        let replaced = format!(
+            "{}\n{}\n",
+            review2.to_json_line().unwrap(),
+            lgtm2.to_json_line().unwrap()
+        );
+        write_raw(&log_path, &replaced);
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 2, "Should rebuild from replaced file");
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), None);
+            assert_eq!(query_vote(&db, "cr-002", "reviewer-b"), Some("lgtm".to_string()));
         }
     }
 

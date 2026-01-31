@@ -4,7 +4,9 @@
 //! as JSON Lines in `.crit/events.jsonl` with advisory file locking for
 //! concurrent access.
 
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -40,6 +42,16 @@ pub trait AppendLog {
         // Default: same as len(). Override for file-based implementations
         // to count all lines including empty ones.
         self.len()
+    }
+
+    /// Compute a hash of the first `n` lines for content-change detection.
+    ///
+    /// Returns `None` if `n == 0` or the log has no content to hash.
+    /// Used alongside truncation detection to catch same-length file
+    /// replacement (e.g., jj restoring a file with different content
+    /// but the same number of lines).
+    fn prefix_hash(&self, _n: usize) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 
@@ -187,6 +199,40 @@ impl AppendLog for FileLog {
         let count = reader.lines().filter_map(|l| l.ok()).count();
 
         Ok(count)
+    }
+
+    fn prefix_hash(&self, n: usize) -> Result<Option<String>> {
+        if n == 0 {
+            return Ok(None);
+        }
+
+        let file = match File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("Failed to open log file: {}", self.path.display()))
+            }
+        };
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let mut hasher = DefaultHasher::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            if idx >= n {
+                break;
+            }
+            let line = line_result
+                .with_context(|| format!("Failed to read line {} for hashing", idx))?;
+            line.hash(&mut hasher);
+        }
+
+        Ok(Some(format!("{:016x}", hasher.finish())))
     }
 }
 
