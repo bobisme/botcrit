@@ -671,6 +671,28 @@ crit inbox
 - **crit reply** responds to an existing thread
 - Works across jj workspaces (shared .crit/ in main repo)
 
+### Output Guidelines
+
+Crit is frequently invoked by agents with **no prior context**. Every piece of tool output must be self-contained and actionable.
+
+**Errors** must include:
+- What failed (include details when available)
+- How to fix it (exact command to run)
+- Example: `"Review not found: cr-abc\n  To fix: crit reviews list"`
+
+**Success output** must include:
+- What happened
+- What to do next (exact commands)
+- Example: `"Review cr-abc created!\n  Next: crit comment cr-abc --file src/main.rs --line 10 \"feedback\""`
+
+**Principles**:
+- Agents can't remember prior output — every message must stand alone
+- Include copy-pasteable commands, not just descriptions
+- Keep it brief — agents are token-conscious
+- Use structured prefixes where appropriate: `WARNING:`, `IMPORTANT:`, `To fix:`, `Next:`
+- Assume agents have **zero crit knowledge** — every concept (threads, reviews, TOON, change IDs) needs a one-line explanation the first time it appears in a given output context
+- All file paths in output should be relative to repo root for clarity
+
 <!-- end-crit-agent-instructions -->
 
 ## Release Process

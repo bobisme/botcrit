@@ -48,8 +48,14 @@ pub fn run_init(repo_root: &Path) -> Result<()> {
     // Create gitignore
     ensure_gitignore(&crit_dir)?;
 
-    println!("Initialized crit in {}", crit_dir.display());
-    println!("  Created: {}", events_file.display());
+    println!("✓ Crit initialized in {}", crit_dir.display());
+    println!();
+    println!("Next steps:");
+    println!("  1. Create a review:");
+    println!("     crit reviews create --title \"Your change description\"");
+    println!();
+    println!("  2. Or check agent setup:");
+    println!("     crit agents show");
 
     Ok(())
 }

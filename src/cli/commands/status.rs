@@ -11,6 +11,14 @@ use crate::log::open_or_create;
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb, ThreadSummary};
 
+/// Helper to create actionable "review not found" error messages.
+fn review_not_found_error(review_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Review not found: {}\n  To fix: crit reviews list",
+        review_id
+    )
+}
+
 /// Thread status with drift information.
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadStatusEntry {
@@ -58,7 +66,7 @@ pub fn run_status(
         let review = db.get_review(rid)?;
         match review {
             Some(r) => vec![r],
-            None => bail!("Review not found: {}", rid),
+            None => return Err(review_not_found_error(&rid)),
         }
     } else {
         // Get all open reviews
@@ -183,7 +191,7 @@ pub fn run_diff(
     let review = db.get_review(review_id)?;
     let review = match review {
         Some(r) => r,
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
     };
 
     // Get the base commit: parent of initial_commit

@@ -14,6 +14,22 @@ use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
 
+/// Helper to create actionable "thread not found" error messages.
+fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Thread not found: {}\n  To fix: crit threads list <review_id>",
+        thread_id
+    )
+}
+
+/// Helper to create actionable "review not found" error messages.
+fn review_not_found_error(review_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Review not found: {}\n  To fix: crit reviews list",
+        review_id
+    )
+}
+
 /// Add a comment to a thread.
 pub fn run_comments_add(
     repo_root: &Path,
@@ -29,7 +45,7 @@ pub fn run_comments_add(
     // Verify thread exists
     let thread = db.get_thread(thread_id)?;
     if thread.is_none() {
-        bail!("Thread not found: {}", thread_id);
+        return Err(thread_not_found_error(&thread_id));
     }
 
     let comment_id = new_comment_id();
@@ -86,7 +102,7 @@ pub fn run_comment(
     // Verify review exists and is open
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status != "open" => {
             bail!(
                 "Cannot comment on review with status '{}': {}",
@@ -181,7 +197,7 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
 
     // Verify thread exists
     if db.get_thread(thread_id)?.is_none() {
-        bail!("Thread not found: {}", thread_id);
+        return Err(thread_not_found_error(&thread_id));
     }
 
     let comments = db.list_comments(thread_id)?;

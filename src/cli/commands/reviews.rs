@@ -14,6 +14,22 @@ use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
 
+/// Helper to create actionable "review not found" error messages.
+fn review_not_found_error(review_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Review not found: {}\n  To fix: crit reviews list",
+        review_id
+    )
+}
+
+/// Helper to create actionable "thread not found" error messages.
+fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Thread not found: {}\n  To fix: crit threads list <review_id>",
+        thread_id
+    )
+}
+
 /// Parse a --since value into a DateTime.
 /// Supports:
 /// - ISO 8601 timestamps: "2026-01-27T23:00:00Z"
@@ -102,6 +118,18 @@ pub fn run_reviews_create(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
+    // Add next steps for TOON format (agents need guidance on what to do next)
+    if format == OutputFormat::Toon {
+        println!();
+        println!("Next steps:");
+        println!("  • Add reviewers:");
+        println!("    crit reviews request {review_id} --reviewers agent-name");
+        println!("  • Add comments:");
+        println!("    crit comment {review_id} --file path/to/file.rs --line 10 \"feedback\"");
+        println!("  • View the review:");
+        println!("    crit review {review_id}");
+    }
+
     Ok(())
 }
 
@@ -149,7 +177,7 @@ pub fn run_reviews_show(repo_root: &Path, review_id: &str, format: OutputFormat)
             formatter.print(&r)?;
         }
         None => {
-            bail!("Review not found: {}", review_id);
+            return Err(review_not_found_error(&review_id));
         }
     }
 
@@ -169,7 +197,7 @@ pub fn run_reviews_request(
     // Verify review exists
     let db = open_and_sync(repo_root)?;
     if db.get_review(review_id)?.is_none() {
-        bail!("Review not found: {}", review_id);
+        return Err(review_not_found_error(&review_id));
     }
 
     let reviewer_list: Vec<String> = reviewers
@@ -218,7 +246,7 @@ pub fn run_reviews_approve(
     let db = open_and_sync(repo_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status != "open" => {
             bail!(
                 "Cannot approve review with status '{}': {}",
@@ -265,7 +293,7 @@ pub fn run_reviews_abandon(
     let db = open_and_sync(repo_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status == "abandoned" => {
             bail!("Review is already abandoned: {}", review_id);
         }
@@ -320,7 +348,7 @@ pub fn run_reviews_merge(
     let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status == "merged" => {
             bail!("Review is already merged: {}", review_id);
         }
@@ -456,7 +484,7 @@ fn run_vote(
     let db = open_and_sync(repo_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status == "merged" => {
             bail!("Cannot vote on merged review: {}", review_id);
         }
@@ -514,7 +542,7 @@ pub fn run_review(
     let review = db.get_review(review_id)?;
 
     let Some(review) = review else {
-        bail!("Review not found: {}", review_id);
+        return Err(review_not_found_error(&review_id));
     };
 
     let jj = JjRepo::new(workspace_root);

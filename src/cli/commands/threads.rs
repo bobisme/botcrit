@@ -14,6 +14,22 @@ use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{sync_from_log, ProjectionDb};
 
+/// Helper to create actionable "review not found" error messages.
+fn review_not_found_error(review_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Review not found: {}\n  To fix: crit reviews list",
+        review_id
+    )
+}
+
+/// Helper to create actionable "thread not found" error messages.
+fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Thread not found: {}\n  To fix: crit threads list <review_id>",
+        thread_id
+    )
+}
+
 /// Create a new comment thread on a file.
 ///
 /// # Arguments
@@ -34,7 +50,7 @@ pub fn run_threads_create(
     let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => bail!("Review not found: {}", review_id),
+        None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status != "open" => {
             bail!(
                 "Cannot create thread on review with status '{}': {}",
@@ -109,7 +125,7 @@ pub fn run_threads_list(
 
     // Verify review exists
     if db.get_review(review_id)?.is_none() {
-        bail!("Review not found: {}", review_id);
+        return Err(review_not_found_error(&review_id));
     }
 
     let threads = db.list_threads(review_id, status, file)?;
@@ -272,7 +288,7 @@ pub fn run_threads_show(
             }
         }
         None => {
-            bail!("Thread not found: {}", thread_id);
+            return Err(thread_not_found_error(&thread_id));
         }
     }
 
@@ -481,7 +497,7 @@ pub fn run_threads_resolve(
         for tid in thread_ids {
             let thread = db.get_thread(tid)?;
             match &thread {
-                None => bail!("Thread not found: {}", tid),
+                None => return Err(thread_not_found_error(&tid)),
                 Some(t) if t.status == "resolved" => {
                     bail!("Thread is already resolved: {}", tid);
                 }
@@ -527,7 +543,7 @@ pub fn run_threads_reopen(
     let thread = db.get_thread(thread_id)?;
 
     match &thread {
-        None => bail!("Thread not found: {}", thread_id),
+        None => return Err(thread_not_found_error(&thread_id)),
         Some(t) if t.status != "resolved" => {
             bail!(
                 "Cannot reopen thread with status '{}': {}",
