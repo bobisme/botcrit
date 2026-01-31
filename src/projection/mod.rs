@@ -1022,4 +1022,88 @@ mod tests {
         assert_eq!(thread_count, 2);
         assert_eq!(open_count, 1);
     }
+
+    #[test]
+    fn test_reviewer_vote_replacement() {
+        use crate::events::VoteType;
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Create a review
+        apply_event(&db, &make_review_created("cr-001")).unwrap();
+
+        // Reviewer casts block vote
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "reviewer",
+                Event::ReviewerVoted(ReviewerVoted {
+                    review_id: "cr-001".to_string(),
+                    vote: VoteType::Block,
+                    reason: Some("Needs fixes".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Verify block vote exists
+        let (vote, reason): (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT vote, reason FROM reviewer_votes WHERE review_id = ? AND reviewer = ?",
+                params!["cr-001", "reviewer"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(vote, "block");
+        assert_eq!(reason, Some("Needs fixes".to_string()));
+
+        // Reviewer changes to LGTM vote
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "reviewer",
+                Event::ReviewerVoted(ReviewerVoted {
+                    review_id: "cr-001".to_string(),
+                    vote: VoteType::Lgtm,
+                    reason: Some("Looks good now".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Verify LGTM vote replaced block vote
+        let (vote, reason): (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT vote, reason FROM reviewer_votes WHERE review_id = ? AND reviewer = ?",
+                params!["cr-001", "reviewer"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(vote, "lgtm");
+        assert_eq!(reason, Some("Looks good now".to_string()));
+
+        // Verify only one vote row exists
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM reviewer_votes WHERE review_id = ? AND reviewer = ?",
+                params!["cr-001", "reviewer"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify has_blocking_votes returns false
+        let has_blocks = db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM reviewer_votes WHERE review_id = ? AND vote = 'block'",
+                params!["cr-001"],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(has_blocks, 0);
+    }
 }

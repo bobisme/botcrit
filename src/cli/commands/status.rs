@@ -194,20 +194,21 @@ pub fn run_diff(
         None => return Err(review_not_found_error(&review_id)),
     };
 
-    // Get the base commit: parent of initial_commit
-    // This shows ALL files changed in the review, not just changes since creation
-    let base_commit = jj
-        .get_parent_commit(&review.initial_commit)
-        .unwrap_or_else(|_| review.initial_commit.clone());
-
     // Get target commit: resolve the review's change_id to its current commit
     // - For merged reviews: use final_commit
     // - For open/approved: resolve jj_change_id to current commit
+    // We resolve this FIRST so we can get its parent, which handles rewrites correctly
     let target_commit = review
         .final_commit
         .clone()
         .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
-        .unwrap_or_else(|| jj.get_current_commit().unwrap_or_default());
+        .unwrap_or_else(|| review.initial_commit.clone());
+
+    // Get the base commit: parent of target_commit (not initial_commit)
+    // This shows ALL files changed in the review, even after rewrites
+    let base_commit = jj
+        .get_parent_commit(&target_commit)
+        .unwrap_or_else(|_| review.initial_commit.clone());
 
     // Get the diff between base and target
     let diff = jj.diff_git(&base_commit, &target_commit)?;
