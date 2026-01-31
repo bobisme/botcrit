@@ -117,8 +117,24 @@ impl ProjectionDb {
 ///
 /// Reads events starting from the last processed line and applies them
 /// to the database. Returns the number of events processed.
+///
+/// Detects file truncation (e.g., from jj working copy restoration) by
+/// comparing `last_sync_line` against the file's total line count. When
+/// truncation is detected, the projection is rebuilt from scratch.
 pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     let last_line = db.get_last_sync_line()?;
+
+    // Detect file truncation: if the file has fewer lines than our sync cursor,
+    // the file was replaced with an older version (e.g., by jj working copy
+    // restoration). In this case, the DB contains phantom state from events
+    // that no longer exist in the log, so we must rebuild from scratch.
+    if last_line > 0 {
+        let total = log.total_lines()?;
+        if last_line > total {
+            return rebuild_projection(db, log);
+        }
+    }
+
     let events = log.read_from(last_line)?;
 
     if events.is_empty() {
@@ -153,6 +169,50 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     .context("Failed to update sync_state")?;
 
     tx.commit().context("Failed to commit transaction")?;
+
+    Ok(count)
+}
+
+/// Rebuild the projection from scratch by wiping all data and re-applying
+/// all events from the log.
+///
+/// Called when file truncation is detected (last_sync_line > total file lines),
+/// which can happen when jj restores the working copy to an older version
+/// while index.db (gitignored) retains a stale sync cursor.
+fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
+    let events = log.read_all()?;
+    let count = events.len();
+
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .context("Failed to begin rebuild transaction")?;
+
+    // Wipe all projection data (order matters for foreign keys)
+    tx.execute_batch(
+        "DELETE FROM comments;
+         DELETE FROM threads;
+         DELETE FROM reviewer_votes;
+         DELETE FROM review_reviewers;
+         DELETE FROM reviews;",
+    )
+    .context("Failed to wipe projection tables")?;
+
+    // Re-apply all events
+    for event in &events {
+        apply_event_inner(&tx, event)
+            .with_context(|| format!("Failed to apply event during rebuild: {:?}", event_type_name(&event.event)))?;
+    }
+
+    // Update sync state
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ? WHERE id = 1",
+        params![count as i64, now],
+    )
+    .context("Failed to update sync_state after rebuild")?;
+
+    tx.commit().context("Failed to commit rebuild")?;
 
     Ok(count)
 }
@@ -1022,6 +1082,699 @@ mod tests {
         assert_eq!(thread_count, 2);
         assert_eq!(open_count, 1);
     }
+
+    // ========================================================================
+    // bd-1s1 reproduction tests: LGTM vote doesn't override block in index
+    // ========================================================================
+    //
+    // These tests simulate the exact CLI command sync pattern from the R4 eval
+    // to reproduce the reported bug where `crit lgtm` succeeded but
+    // `crit review` still showed a blocking vote.
+    //
+    // Hypotheses tested:
+    // 1. Empty lines in events.jsonl cause sync offset drift
+    // 2. Incremental sync with on-disk DB persistence loses vote state
+    // 3. The eval's exact event sequence triggers the bug
+
+    use crate::events::{ReviewerVoted, ReviewersRequested, VoteType};
+    use std::io::Write;
+
+    /// Helper: query the current vote for a reviewer on a review.
+    fn query_vote(db: &ProjectionDb, review_id: &str, reviewer: &str) -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT vote FROM reviewer_votes WHERE review_id = ? AND reviewer = ?",
+                params![review_id, reviewer],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    /// Helper: write raw string content to a file (no FileLog, exact bytes).
+    fn write_raw(path: &std::path::Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Helper: append raw string content to a file.
+    fn append_raw(path: &std::path::Path, content: &str) {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file.flush().unwrap();
+    }
+
+    /// Helper: make a block vote event.
+    fn make_block_vote(review_id: &str, reviewer: &str, reason: &str) -> EventEnvelope {
+        EventEnvelope::new(
+            reviewer,
+            Event::ReviewerVoted(ReviewerVoted {
+                review_id: review_id.to_string(),
+                vote: VoteType::Block,
+                reason: Some(reason.to_string()),
+            }),
+        )
+    }
+
+    /// Helper: make an lgtm vote event.
+    fn make_lgtm_vote(review_id: &str, reviewer: &str) -> EventEnvelope {
+        EventEnvelope::new(
+            reviewer,
+            Event::ReviewerVoted(ReviewerVoted {
+                review_id: review_id.to_string(),
+                vote: VoteType::Lgtm,
+                reason: Some("Looks good".to_string()),
+            }),
+        )
+    }
+
+    /// Baseline: incremental sync with block → lgtm votes, no empty lines.
+    /// Simulates: crit block, then crit lgtm, then crit review.
+    #[test]
+    fn test_bd_1s1_baseline_incremental_vote_override() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let log = open_or_create(&log_path).unwrap();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Command 1: crit reviews create
+        log.append(&make_review_created("cr-001")).unwrap();
+        sync_from_log(&db, &log).unwrap();
+
+        // Command 2: crit block
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        sync_from_log(&db, &log).unwrap();
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        assert!(db.has_blocking_votes("cr-001").unwrap());
+
+        // Command 3: crit lgtm
+        log.append(&make_lgtm_vote("cr-001", "reviewer-a")).unwrap();
+        // The lgtm command does NOT re-sync; the NEXT command does.
+
+        // Command 4: crit review (syncs the lgtm event)
+        sync_from_log(&db, &log).unwrap();
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert!(!db.has_blocking_votes("cr-001").unwrap());
+    }
+
+    /// Test sync offset drift when empty line exists between block and lgtm.
+    /// Verifies that empty lines cause re-processing but correct final state.
+    #[test]
+    fn test_bd_1s1_empty_line_between_votes() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let log = open_or_create(&log_path).unwrap();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write review + block vote normally
+        log.append(&make_review_created("cr-001")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        sync_from_log(&db, &log).unwrap();
+        assert_eq!(db.get_last_sync_line().unwrap(), 2);
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+
+        // Inject empty line, then lgtm vote (bypassing FileLog::append)
+        append_raw(&log_path, "\n"); // empty line at idx 2
+        let lgtm = make_lgtm_vote("cr-001", "reviewer-a");
+        let lgtm_json = lgtm.to_json_line().unwrap();
+        append_raw(&log_path, &format!("{}\n", lgtm_json)); // lgtm at idx 3
+
+        // Sync: should pick up lgtm despite empty line
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 1, "Should process exactly 1 new event (lgtm)");
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert!(!db.has_blocking_votes("cr-001").unwrap());
+
+        // Check for sync offset drift: last_sync should be 3 (not 4)
+        // because empty line was skipped in count but occupies a file line
+        let sync_line = db.get_last_sync_line().unwrap();
+        let actual_lines: usize = std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .count();
+        // Drift detected: sync_line < actual_lines
+        assert_eq!(sync_line, 3, "Sync offset should be 3 (drift: missed the empty line)");
+        assert_eq!(actual_lines, 4, "File should have 4 lines (including empty)");
+
+        // Subsequent sync: re-reads lgtm due to drift (harmless)
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 1, "Re-processes lgtm due to offset drift");
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert!(!db.has_blocking_votes("cr-001").unwrap());
+    }
+
+    /// Test with trailing empty line (matches eval data: 20 events + empty line 21).
+    /// Trailing empty lines do NOT cause drift because they're at the end:
+    /// read_from(N) skips them and returns empty, so last_sync stays correct.
+    #[test]
+    fn test_bd_1s1_trailing_empty_line() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let log = open_or_create(&log_path).unwrap();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write review + block + lgtm normally
+        log.append(&make_review_created("cr-001")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        log.append(&make_lgtm_vote("cr-001", "reviewer-a")).unwrap();
+
+        // Add trailing empty line (as seen in eval data)
+        append_raw(&log_path, "\n");
+
+        // Full sync from scratch
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert!(!db.has_blocking_votes("cr-001").unwrap());
+
+        // Sync line is 3 — this is correct because events 0,1,2 were processed
+        let sync_line = db.get_last_sync_line().unwrap();
+        assert_eq!(sync_line, 3);
+
+        // Trailing empty line does NOT cause re-processing:
+        // read_from(3) hits idx 3 (empty) → skip → no events → count=0
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 0, "Trailing empty line should NOT cause re-processing");
+        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+    }
+
+    /// Test with on-disk DB persistence (closer to real CLI behavior).
+    /// Each "command" opens a fresh DB connection, syncs, then closes.
+    #[test]
+    fn test_bd_1s1_ondisk_persistence_vote_override() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+        let log = open_or_create(&log_path).unwrap();
+
+        // Command 1: create review (opens fresh DB)
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            // No events yet, nothing to sync
+            sync_from_log(&db, &log).unwrap();
+        }
+        log.append(&make_review_created("cr-001")).unwrap();
+
+        // Command 2: block vote
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            sync_from_log(&db, &log).unwrap(); // syncs ReviewCreated
+        }
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+
+        // Command 3: lgtm vote (syncs block, then writes lgtm)
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            sync_from_log(&db, &log).unwrap(); // syncs block vote
+            // At this point, DB shows block
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        }
+        log.append(&make_lgtm_vote("cr-001", "reviewer-a")).unwrap();
+
+        // Command 4: crit review (syncs lgtm, then reads)
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            sync_from_log(&db, &log).unwrap(); // syncs lgtm vote
+            // Should show lgtm
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+            assert!(!db.has_blocking_votes("cr-001").unwrap());
+        }
+    }
+
+    /// Simulate the EXACT R4 eval pattern using raw event JSON lines.
+    /// Uses the actual event data from /tmp/tmp.iyprC50GHo/.crit/events.jsonl.
+    #[test]
+    fn test_bd_1s1_eval_data_incremental_sync() {
+        // Raw event lines from R4 eval (actual JSON from events.jsonl)
+        let events: Vec<&str> = vec![
+            r#"{"ts":"2026-01-31T17:18:32.592763788Z","author":"mystic-birch","event":"ReviewCreated","data":{"review_id":"cr-fjf9","jj_change_id":"lsrxqntnrzlyulstznuytqollqwpmnur","initial_commit":"ab7ef0a9cf8f1d01e7cd3c635429ba7195cf5e73","title":"feat: add GET /files/:name endpoint","description":"Adds file serving endpoint that reads from ./data"}}"#,
+            r#"{"ts":"2026-01-31T17:18:36.109469869Z","author":"mystic-birch","event":"ReviewersRequested","data":{"review_id":"cr-fjf9","reviewers":["jasper-lattice"]}}"#,
+            r#"{"ts":"2026-01-31T17:20:01.874064552Z","author":"jasper-lattice","event":"ThreadCreated","data":{"thread_id":"th-ooz8","review_id":"cr-fjf9","file_path":"src/main.rs","selection":{"type":"Line","line":22},"commit_hash":"517b3f84fcdba505957a74f79316ed5338911600"}}"#,
+            r#"{"ts":"2026-01-31T17:20:01.874131748Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-m9xz","thread_id":"th-ooz8","body":"CRITICAL: Path traversal vulnerability."}}"#,
+            r#"{"ts":"2026-01-31T17:20:07.776996959Z","author":"jasper-lattice","event":"ThreadCreated","data":{"thread_id":"th-fj4b","review_id":"cr-fjf9","file_path":"src/main.rs","selection":{"type":"Line","line":24},"commit_hash":"e4c6aff98c3a5b4c133576d14818136f9d99b966"}}"#,
+            r#"{"ts":"2026-01-31T17:20:07.777046382Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-80oc","thread_id":"th-fj4b","body":"HIGH: Using synchronous filesystem I/O in async handler."}}"#,
+            r#"{"ts":"2026-01-31T17:20:13.705333684Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-ltji","thread_id":"th-fj4b","body":"HIGH: Unbounded memory consumption."}}"#,
+            r#"{"ts":"2026-01-31T17:20:19.305357862Z","author":"jasper-lattice","event":"ThreadCreated","data":{"thread_id":"th-azov","review_id":"cr-fjf9","file_path":"src/main.rs","selection":{"type":"Line","line":29},"commit_hash":"c851779e0f7efbe3a9e3c2d6575c9c4d645eba37"}}"#,
+            r#"{"ts":"2026-01-31T17:20:19.305407595Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-3zdn","thread_id":"th-azov","body":"MEDIUM: Missing error information."}}"#,
+            r#"{"ts":"2026-01-31T17:20:24.988565444Z","author":"jasper-lattice","event":"ThreadCreated","data":{"thread_id":"th-xgby","review_id":"cr-fjf9","file_path":"src/main.rs","selection":{"type":"Line","line":16},"commit_hash":"2dc3be9e8140dcc8b18b8aead907ca88a0a9bf0f"}}"#,
+            r#"{"ts":"2026-01-31T17:20:24.988629895Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-c8z0","thread_id":"th-xgby","body":"MEDIUM: Using unwrap() on production server startup."}}"#,
+            r#"{"ts":"2026-01-31T17:20:31.713659068Z","author":"jasper-lattice","event":"ThreadCreated","data":{"thread_id":"th-a8ha","review_id":"cr-fjf9","file_path":"src/main.rs","selection":{"type":"Line","line":14},"commit_hash":"7240b65595aabcfc731f594b31fb37458c5ab58a"}}"#,
+            r#"{"ts":"2026-01-31T17:20:31.713722667Z","author":"jasper-lattice","event":"CommentAdded","data":{"comment_id":"c-xla3","thread_id":"th-a8ha","body":"LOW: Binding to 0.0.0.0 exposes service to all network interfaces."}}"#,
+            r#"{"ts":"2026-01-31T17:20:36.558747769Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"block","reason":"CRITICAL path traversal vulnerability allows reading arbitrary files."}}"#,
+            r#"{"ts":"2026-01-31T17:27:06.693854670Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"lgtm","reason":"All issues resolved."}}"#,
+            r#"{"ts":"2026-01-31T17:27:30.337341106Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"lgtm"}}"#,
+            r#"{"ts":"2026-01-31T17:27:39.741734997Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"lgtm","reason":"All security issues resolved"}}"#,
+            r#"{"ts":"2026-01-31T17:28:03.984462867Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"lgtm"}}"#,
+            r#"{"ts":"2026-01-31T17:28:15.551617462Z","author":"jasper-lattice","event":"ReviewApproved","data":{"review_id":"cr-fjf9"}}"#,
+            r#"{"ts":"2026-01-31T17:29:25.525546004Z","author":"mystic-birch","event":"ReviewMerged","data":{"review_id":"cr-fjf9","final_commit":"72f4e86c4ab0ca0c48150a6c26bfeeeb4e6b9d98"}}"#,
+        ];
+
+        // Simulate CLI command batches (which events are written per command):
+        // Each tuple: (events_written_this_batch, description)
+        let batches: Vec<(usize, &str)> = vec![
+            (1, "crit reviews create"),             // event 0
+            (1, "crit reviews request-reviewers"),   // event 1
+            (2, "crit comment (thread+comment)"),    // events 2-3
+            (2, "crit comment (thread+comment)"),    // events 4-5
+            (1, "crit reply"),                       // event 6
+            (2, "crit comment (thread+comment)"),    // events 7-8
+            (2, "crit comment (thread+comment)"),    // events 9-10
+            (2, "crit comment (thread+comment)"),    // events 11-12
+            (1, "crit block"),                       // event 13
+            (1, "crit lgtm (attempt 1)"),            // event 14
+            (1, "crit lgtm (attempt 2)"),            // event 15
+            (1, "crit lgtm (attempt 3)"),            // event 16
+            (1, "crit lgtm (attempt 4)"),            // event 17
+            (1, "crit reviews approve"),             // event 18
+            (1, "crit reviews merge"),               // event 19
+        ];
+
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        // Create empty events file
+        std::fs::write(&log_path, "").unwrap();
+
+        let mut event_idx = 0;
+        for (batch_size, desc) in &batches {
+            // Each CLI command: open DB, sync, close DB
+            {
+                let db = ProjectionDb::open(&db_path).unwrap();
+                db.init_schema().unwrap();
+                let log = crate::log::FileLog::new(&log_path);
+                sync_from_log(&db, &log).unwrap();
+
+                // After syncing block vote, check state
+                if *desc == "crit lgtm (attempt 1)" {
+                    // DB should have block vote at this point
+                    assert_eq!(
+                        query_vote(&db, "cr-fjf9", "jasper-lattice"),
+                        Some("block".to_string()),
+                        "Before first lgtm write, DB should show block"
+                    );
+                }
+
+                // After syncing first lgtm, check state
+                if *desc == "crit lgtm (attempt 2)" {
+                    // DB should have lgtm vote (from first lgtm at line 14)
+                    let vote = query_vote(&db, "cr-fjf9", "jasper-lattice");
+                    assert_eq!(
+                        vote,
+                        Some("lgtm".to_string()),
+                        "After syncing first lgtm, DB should show lgtm (was: {:?}) [{}]",
+                        vote,
+                        desc
+                    );
+                    assert!(
+                        !db.has_blocking_votes("cr-fjf9").unwrap(),
+                        "No blocking votes after lgtm synced"
+                    );
+                }
+            }
+
+            // Then write this batch's events to the log
+            for _ in 0..*batch_size {
+                append_raw(&log_path, &format!("{}\n", events[event_idx]));
+                event_idx += 1;
+            }
+        }
+
+        // Final check: open DB, sync remaining events, verify merged state
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            sync_from_log(&db, &log).unwrap();
+
+            assert_eq!(
+                query_vote(&db, "cr-fjf9", "jasper-lattice"),
+                Some("lgtm".to_string()),
+                "Final state should be lgtm"
+            );
+            assert!(!db.has_blocking_votes("cr-fjf9").unwrap());
+
+            // Verify review was merged
+            let status: String = db
+                .conn()
+                .query_row(
+                    "SELECT status FROM reviews WHERE review_id = ?",
+                    params!["cr-fjf9"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "merged");
+        }
+    }
+
+    /// Same as eval data test but with trailing empty line (as found in eval).
+    /// Trailing empty lines do NOT cause drift — only middle empty lines do.
+    #[test]
+    fn test_bd_1s1_eval_data_with_trailing_empty_line() {
+        let events: Vec<&str> = vec![
+            r#"{"ts":"2026-01-31T17:18:32.592763788Z","author":"mystic-birch","event":"ReviewCreated","data":{"review_id":"cr-fjf9","jj_change_id":"lsrxqntnrzlyulstznuytqollqwpmnur","initial_commit":"ab7ef0a9cf8f1d01e7cd3c635429ba7195cf5e73","title":"feat: add GET /files/:name endpoint","description":"Adds file serving endpoint that reads from ./data"}}"#,
+            r#"{"ts":"2026-01-31T17:18:36.109469869Z","author":"mystic-birch","event":"ReviewersRequested","data":{"review_id":"cr-fjf9","reviewers":["jasper-lattice"]}}"#,
+            r#"{"ts":"2026-01-31T17:20:36.558747769Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"block","reason":"CRITICAL vulnerability"}}"#,
+            r#"{"ts":"2026-01-31T17:27:06.693854670Z","author":"jasper-lattice","event":"ReviewerVoted","data":{"review_id":"cr-fjf9","vote":"lgtm","reason":"All issues resolved."}}"#,
+        ];
+
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+
+        // Write all events + trailing empty line (matches eval file)
+        let mut content = String::new();
+        for event in &events {
+            content.push_str(event);
+            content.push('\n');
+        }
+        content.push('\n'); // trailing empty line
+        write_raw(&log_path, &content);
+
+        // Full sync from fresh DB
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+        let log = crate::log::FileLog::new(&log_path);
+
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 4, "Should process 4 events (skip empty line)");
+
+        assert_eq!(
+            query_vote(&db, "cr-fjf9", "jasper-lattice"),
+            Some("lgtm".to_string()),
+            "Full sync should show lgtm"
+        );
+        assert!(!db.has_blocking_votes("cr-fjf9").unwrap());
+
+        // Sync line is 4 (correct: 4 events processed)
+        assert_eq!(
+            db.get_last_sync_line().unwrap(),
+            4,
+            "Sync line should be 4"
+        );
+
+        // Trailing empty line does NOT cause re-processing
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 0, "Trailing empty line should NOT cause re-processing");
+        assert_eq!(
+            query_vote(&db, "cr-fjf9", "jasper-lattice"),
+            Some("lgtm".to_string()),
+            "Vote should still be lgtm after re-sync"
+        );
+    }
+
+    /// Test that multiple empty lines cause proportionally more drift.
+    /// With enough empty lines, sync could re-read the block vote.
+    #[test]
+    fn test_bd_1s1_multiple_empty_lines_drift() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+
+        let review = make_review_created("cr-001");
+        let block = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+        let lgtm = make_lgtm_vote("cr-001", "reviewer-a");
+
+        // Write: review, empty, empty, block, empty, empty, empty, lgtm
+        let mut content = String::new();
+        content.push_str(&review.to_json_line().unwrap());
+        content.push('\n');
+        content.push('\n'); // empty at idx 1
+        content.push('\n'); // empty at idx 2
+        content.push_str(&block.to_json_line().unwrap());
+        content.push('\n'); // block at idx 3
+        content.push('\n'); // empty at idx 4
+        content.push('\n'); // empty at idx 5
+        content.push('\n'); // empty at idx 6
+        content.push_str(&lgtm.to_json_line().unwrap());
+        content.push('\n'); // lgtm at idx 7
+        write_raw(&log_path, &content);
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+        let log = crate::log::FileLog::new(&log_path);
+
+        // Full sync: processes review, block, lgtm (3 events from 8 lines)
+        let count = sync_from_log(&db, &log).unwrap();
+        assert_eq!(count, 3, "Should process 3 events, skipping 5 empty lines");
+
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string()),
+            "Full sync should show lgtm"
+        );
+
+        // Drift: last_sync = 3 but file has 8 lines
+        let sync_line = db.get_last_sync_line().unwrap();
+        assert_eq!(sync_line, 3, "Major drift: sync at 3, file has 8 lines");
+
+        // Re-sync: reads from idx 3 (block), processes block + lgtm
+        let count = sync_from_log(&db, &log).unwrap();
+        assert!(count > 0, "Drift causes re-processing");
+
+        // CRITICAL: does the re-processing cause vote regression?
+        // The block at idx 3 is re-read, but lgtm at idx 7 is also re-read.
+        // Since they're in the same batch, lgtm overwrites block.
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string()),
+            "Vote should remain lgtm despite block re-processing (same batch)"
+        );
+
+        // Keep re-syncing until stable
+        let mut iterations = 0;
+        loop {
+            let count = sync_from_log(&db, &log).unwrap();
+            if count == 0 {
+                break;
+            }
+            iterations += 1;
+            assert!(iterations < 10, "Should converge, not loop forever");
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string()),
+                "Vote must remain lgtm on iteration {iterations}"
+            );
+        }
+
+        // Final sync line should eventually reach 8
+        assert_eq!(
+            db.get_last_sync_line().unwrap(),
+            8,
+            "Should eventually converge to correct offset"
+        );
+    }
+
+    /// Test the dangerous scenario: block is re-processed in isolation
+    /// (without lgtm in the same batch) due to empty lines.
+    ///
+    /// This tests whether progressive drift accumulation can cause the block
+    /// to be replayed WITHOUT the subsequent lgtm, which would regress the vote.
+    #[test]
+    fn test_bd_1s1_progressive_drift_vote_regression() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        let review = make_review_created("cr-001");
+        let block = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+        let lgtm = make_lgtm_vote("cr-001", "reviewer-a");
+
+        // Step 1: Write review + block, sync
+        write_raw(&log_path, "");
+        append_raw(&log_path, &format!("{}\n", review.to_json_line().unwrap()));
+        append_raw(&log_path, &format!("{}\n", block.to_json_line().unwrap()));
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            sync_from_log(&db, &log).unwrap();
+            assert_eq!(db.get_last_sync_line().unwrap(), 2);
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        }
+
+        // Step 2: Inject empty line + lgtm, sync
+        append_raw(&log_path, "\n"); // empty at idx 2
+        append_raw(&log_path, &format!("{}\n", lgtm.to_json_line().unwrap())); // lgtm at idx 3
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            sync_from_log(&db, &log).unwrap();
+            // last_sync = 2 + 1 = 3 (drift: should be 4)
+            assert_eq!(db.get_last_sync_line().unwrap(), 3);
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string()),
+                "After syncing lgtm, vote should be lgtm"
+            );
+        }
+
+        // Step 3: No new events, but sync again (simulates crit review)
+        // Due to drift (last_sync=3, lgtm is at idx 3), it re-reads lgtm
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+
+            // Should re-process lgtm (harmless)
+            assert_eq!(count, 1, "Re-processes lgtm due to drift");
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string()),
+                "Vote must remain lgtm after re-sync"
+            );
+            // Now last_sync = 4, drift resolved
+            assert_eq!(db.get_last_sync_line().unwrap(), 4);
+        }
+
+        // Step 4: Final sync should be clean (no drift)
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 0, "No more drift, clean sync");
+        }
+    }
+
+    /// jj working copy restoration causes events.jsonl to revert to an older
+    /// version while index.db retains a stale last_sync_line.
+    ///
+    /// With the truncation detection fix, sync_from_log detects that
+    /// last_sync_line > total file lines and rebuilds the projection.
+    #[test]
+    fn test_bd_1s1_jj_restore_triggers_rebuild() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        // === Phase 1: Normal operation — create review + block vote ===
+        let review = make_review_created("cr-001");
+        let reviewers = EventEnvelope::new(
+            "author",
+            Event::ReviewersRequested(ReviewersRequested {
+                review_id: "cr-001".to_string(),
+                reviewers: vec!["reviewer-a".to_string()],
+            }),
+        );
+        let block = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+
+        // Write 3 events
+        write_raw(&log_path, "");
+        for event in [&review, &reviewers, &block] {
+            append_raw(&log_path, &format!("{}\n", event.to_json_line().unwrap()));
+        }
+
+        // Simulate CLI: open DB, sync all 3 events
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 3);
+            assert_eq!(db.get_last_sync_line().unwrap(), 3);
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        }
+
+        // === Phase 2: jj restores events.jsonl to an older version ===
+        let restored_content = format!("{}\n", review.to_json_line().unwrap());
+        write_raw(&log_path, &restored_content);
+        // File: 1 event. DB: last_sync_line=3, block vote present.
+
+        // === Phase 3: crit lgtm — sync detects truncation, rebuilds ===
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            // Truncation detected (last_sync=3 > total_lines=1) → rebuild from file
+            assert_eq!(count, 1, "Rebuild replays the 1 event in the restored file");
+            assert_eq!(db.get_last_sync_line().unwrap(), 1);
+
+            // Block vote is GONE — it's not in the restored file
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), None);
+            assert!(!db.has_blocking_votes("cr-001").unwrap());
+        }
+
+        // Append lgtm vote
+        let lgtm = make_lgtm_vote("cr-001", "reviewer-a");
+        append_raw(&log_path, &format!("{}\n", lgtm.to_json_line().unwrap()));
+
+        // === Phase 4: crit review — picks up lgtm normally ===
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 1, "Syncs the new lgtm event");
+
+            // FIXED: vote is lgtm!
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string()),
+                "Vote should be lgtm after rebuild + sync"
+            );
+            assert!(!db.has_blocking_votes("cr-001").unwrap());
+        }
+    }
+
+    /// Variant: jj restores events.jsonl to a version with MORE events
+    /// than index.db has seen (e.g., workspace merge brings in new events).
+    /// This should work correctly.
+    #[test]
+    fn test_bd_1s1_jj_restore_with_more_events() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+
+        // Write just ReviewCreated, sync
+        let review = make_review_created("cr-001");
+        write_raw(&log_path, &format!("{}\n", review.to_json_line().unwrap()));
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            sync_from_log(&db, &log).unwrap();
+            assert_eq!(db.get_last_sync_line().unwrap(), 1);
+        }
+
+        // jj restore brings in a version with MORE events (block + lgtm)
+        let block = make_block_vote("cr-001", "reviewer-a", "Needs fixes");
+        let lgtm = make_lgtm_vote("cr-001", "reviewer-a");
+        let mut content = format!("{}\n", review.to_json_line().unwrap());
+        content.push_str(&format!("{}\n", block.to_json_line().unwrap()));
+        content.push_str(&format!("{}\n", lgtm.to_json_line().unwrap()));
+        write_raw(&log_path, &content);
+
+        // Sync should pick up new events from line 1 onwards
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log(&db, &log).unwrap();
+            assert_eq!(count, 2, "Should pick up block + lgtm");
+            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        }
+    }
+
+    // ========================================================================
+    // End of bd-1s1 reproduction tests
+    // ========================================================================
 
     #[test]
     fn test_reviewer_vote_replacement() {

@@ -31,6 +31,16 @@ pub trait AppendLog {
     fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
+
+    /// Get the total number of lines in the log, including empty lines.
+    ///
+    /// Used for truncation detection: if `last_sync_line > total_lines()`,
+    /// the file was truncated (e.g., by jj working copy restoration).
+    fn total_lines(&self) -> Result<usize> {
+        // Default: same as len(). Override for file-based implementations
+        // to count all lines including empty ones.
+        self.len()
+    }
 }
 
 /// File-based implementation of the append-only event log.
@@ -154,6 +164,27 @@ impl AppendLog for FileLog {
             .filter_map(|l| l.ok())
             .filter(|l| !l.trim().is_empty())
             .count();
+
+        Ok(count)
+    }
+
+    fn total_lines(&self) -> Result<usize> {
+        let file = match File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(0);
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("Failed to open log file: {}", self.path.display()))
+            }
+        };
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let count = reader.lines().filter_map(|l| l.ok()).count();
 
         Ok(count)
     }
