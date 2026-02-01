@@ -552,6 +552,13 @@ pub fn run_review(
         let threads = db.list_threads(review_id, None, None)?;
         let mut threads_with_comments = Vec::new();
 
+        // Determine commit for context (same logic as TOON output)
+        let commit_ref = review
+            .final_commit
+            .clone()
+            .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
+            .unwrap_or_else(|| "@".to_string());
+
         for thread in threads {
             let comments = db.list_comments(&thread.thread_id)?;
             // Filter comments by since if provided
@@ -573,12 +580,33 @@ pub fn run_review(
                 continue;
             }
 
+            // Extract code context for this thread
+            let anchor_start = thread.selection_start as u32;
+            let anchor_end = thread.selection_end.unwrap_or(thread.selection_start) as u32;
+
+            let context_value = if context_lines > 0 {
+                match extract_context(
+                    &jj,
+                    &thread.file_path,
+                    &commit_ref,
+                    anchor_start,
+                    anchor_end,
+                    context_lines,
+                ) {
+                    Ok(ctx) => serde_json::to_value(&ctx).ok(),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
             threads_with_comments.push(serde_json::json!({
                 "thread_id": thread.thread_id,
                 "file_path": thread.file_path,
                 "selection_start": thread.selection_start,
                 "selection_end": thread.selection_end,
                 "status": thread.status,
+                "context": context_value,
                 "comments": filtered_comments,
             }));
         }
