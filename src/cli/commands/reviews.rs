@@ -547,6 +547,12 @@ pub fn run_review(
 
     let jj = JjRepo::new(workspace_root);
 
+    // Find which workspace contains this change (if any)
+    let workspace_info = jj
+        .find_workspace_for_change(&review.jj_change_id)
+        .ok()
+        .flatten();
+
     // For JSON output, build a complete structure
     if matches!(format, OutputFormat::Json) {
         let threads = db.list_threads(review_id, None, None)?;
@@ -611,8 +617,16 @@ pub fn run_review(
             }));
         }
 
+        let workspace_json = workspace_info.as_ref().map(|(name, path)| {
+            serde_json::json!({
+                "name": name,
+                "path": path.display().to_string(),
+            })
+        });
+
         let result = serde_json::json!({
             "review": review,
+            "workspace": workspace_json,
             "threads": threads_with_comments,
         });
 
@@ -637,6 +651,11 @@ pub fn run_review(
         review.author,
         &review.created_at[..10]
     );
+
+    // Show workspace info if the change is in a non-default workspace
+    if let Some((workspace_name, workspace_path)) = &workspace_info {
+        println!("  Workspace: {} ({})", workspace_name, workspace_path.display());
+    }
 
     if let Some(desc) = &review.description {
         println!("\n  {}", desc);

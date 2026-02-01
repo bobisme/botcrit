@@ -333,6 +333,56 @@ impl JjRepo {
             .map(ToString::to_string)
             .collect())
     }
+
+    /// Find which workspace contains a given change_id.
+    ///
+    /// Returns (workspace_name, workspace_path) if found, None if the change
+    /// is in the default workspace or if workspaces are not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the jj command fails.
+    pub fn find_workspace_for_change(&self, change_id: &str) -> Result<Option<(String, PathBuf)>> {
+        // Get list of workspaces with their working copy commits
+        let output = self
+            .run_jj(&["workspace", "list"])
+            .context("Failed to list workspaces")?;
+
+        // Parse output: format is "workspace_name: change_id [commit_id]"
+        // Example: "default: qxoswoqq 12345678"
+        //          "my-workspace: abcdefgh 87654321"
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            // Split on ": " to get workspace name and change info
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let workspace_name = parts[0];
+            let change_info = parts[1];
+
+            // Extract change_id (first word before space)
+            let workspace_change_id = change_info.split_whitespace().next().unwrap_or("");
+
+            if workspace_change_id == change_id {
+                // Found it! Skip if it's the default workspace
+                if workspace_name == "default" {
+                    return Ok(None);
+                }
+
+                // Get the workspace path
+                let workspace_path = self.repo_path.join(".workspaces").join(workspace_name);
+                return Ok(Some((workspace_name.to_string(), workspace_path)));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
