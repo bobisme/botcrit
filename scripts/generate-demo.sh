@@ -167,6 +167,27 @@ extract_id() {
 # ============================================================================
 
 # Make auth changes on a new commit
+# Also make a tiny change to main.rs (for testing comments outside changed range)
+cat > src/main.rs << 'RUST'
+use std::env;
+
+mod auth;
+mod config;
+mod server;
+
+fn main() {
+    let config = config::load();
+    let addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+
+    println!("Starting server on {}", addr);
+
+    // Initialize auth module
+    auth::init_sessions();
+
+    server::run(&addr, &config);
+}
+RUST
+
 cat > src/auth.rs << 'RUST'
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -180,6 +201,11 @@ pub struct Session {
 
 lazy_static::lazy_static! {
     static ref SESSIONS: RwLock<HashMap<String, Session>> = RwLock::new(HashMap::new());
+}
+
+pub fn init_sessions() {
+    // Force initialization of lazy_static
+    let _ = &*SESSIONS;
 }
 
 pub fn validate_token(token: &str) -> bool {
@@ -248,14 +274,22 @@ crit_as "swift-falcon" reviews request "$R1" --reviewers "bold-tiger,quiet-owl" 
 crit_as "bold-tiger" comment "$R1" --file src/auth.rs --line 4 \
 	"Nice — removing the unsafe block is a big improvement." >/dev/null 2>&1
 
-crit_as "bold-tiger" comment "$R1" --file src/auth.rs --line 14 \
-	"Should we bound the session map size? In production this could grow unbounded if sessions aren't cleaned up." >/dev/null 2>&1
+T_SIZE=$(crit_as "bold-tiger" --json comment "$R1" --file src/auth.rs --line 14 \
+	"Should we bound the session map size? In production this could grow unbounded if sessions aren't cleaned up." \
+	2>/dev/null | extract_id thread_id)
 
 crit_as "bold-tiger" comment "$R1" --file src/auth.rs --line 37 \
 	"The revoke function looks good. Should we also add a revoke_all_for_user for account lockout scenarios?" >/dev/null 2>&1
 
-# Swift-falcon replies to the size concern (2nd thread)
-T_SIZE=$(crit_as "swift-falcon" --json threads list "$R1" 2>/dev/null | jq -r '.[1].thread_id')
+# Comment on main.rs at an UNCHANGED line (line 3, the mod auth declaration)
+crit_as "bold-tiger" comment "$R1" --file src/main.rs --line 3 \
+	"Good call adding the init_sessions() call, but should we also add error handling here in case auth module fails to initialize?" >/dev/null 2>&1
+
+# Comment on a file NOT IN THE CHANGE at all (config.rs wasn't touched in Review 1)
+crit_as "quiet-owl" comment "$R1" --file src/config.rs --line 6 \
+	"Since we're adding session management, should we also add a session_max_size config here?" >/dev/null 2>&1
+
+# Swift-falcon replies to the size concern
 crit_as "swift-falcon" reply "$T_SIZE" \
 	"Good point. I'll add a max_sessions config option and a background cleanup task." >/dev/null 2>&1
 
@@ -263,11 +297,11 @@ crit_as "swift-falcon" reply "$T_SIZE" \
 crit_as "quiet-owl" comment "$R1" --file src/auth.rs --line 22 \
 	"Consider returning a Result instead of unwrap() on the RwLock. A poisoned lock would panic the server." >/dev/null 2>&1
 
-crit_as "quiet-owl" comment "$R1" --file src/auth.rs --line 43 \
-	"fastrand isn't cryptographically secure. For session tokens, use rand::OsRng or similar." >/dev/null 2>&1
+T_CRYPTO=$(crit_as "quiet-owl" --json comment "$R1" --file src/auth.rs --line 43 \
+	"fastrand isn't cryptographically secure. For session tokens, use rand::OsRng or similar." \
+	2>/dev/null | extract_id thread_id)
 
-# Swift-falcon acknowledges the crypto concern (last thread)
-T_CRYPTO=$(crit_as "swift-falcon" --json threads list "$R1" 2>/dev/null | jq -r '.[-1].thread_id')
+# Swift-falcon acknowledges the crypto concern
 crit_as "swift-falcon" reply "$T_CRYPTO" \
 	"You're right, I'll switch to rand::OsRng. Good catch." >/dev/null 2>&1
 crit_as "swift-falcon" threads resolve "$T_CRYPTO" \
@@ -279,7 +313,7 @@ crit_as "bold-tiger" lgtm "$R1" -m "Looks good overall. The unsafe removal is so
 # Quiet-owl blocks pending the crypto fix
 crit_as "quiet-owl" block "$R1" -r "Need cryptographically secure token generation before merge" >/dev/null 2>&1
 
-echo "  5 threads, 1 resolved, 1 LGTM, 1 block" >&2
+echo "  7 threads (2 on unchanged code), 1 resolved, 1 LGTM, 1 block" >&2
 
 # ============================================================================
 # Review 2: Config improvements (approved and merged)
