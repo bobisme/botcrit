@@ -15,7 +15,7 @@ use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
 };
 use crit::events::{get_agent_identity, get_user_identity};
-use crit::jj::resolve_repo_root;
+use crit::jj::{resolve_crit_root_from_path, resolve_repo_root};
 
 /// Resolve identity based on CLI flags.
 /// Priority: --agent > --user > CRIT_AGENT/BOTBUS_AGENT (required)
@@ -36,8 +36,17 @@ fn main() -> Result<()> {
     // We need two paths:
     // 1. crit_root: where .crit/ lives (main repo root, shared across workspaces)
     // 2. workspace_root: where jj commands run (current workspace, for @ resolution)
-    let workspace_root = env::current_dir()?;
-    let crit_root = resolve_repo_root(&workspace_root).unwrap_or_else(|_| workspace_root.clone());
+    let (crit_root, workspace_root) = if let Some(path) = &cli.path {
+        // --path provided: resolve crit root from that path
+        let crit_root = resolve_crit_root_from_path(path)?;
+        // Use the crit root as workspace root too (user-specified path)
+        (crit_root.clone(), crit_root)
+    } else {
+        // No --path: use current directory
+        let workspace_root = env::current_dir()?;
+        let crit_root = resolve_repo_root(&workspace_root).unwrap_or_else(|_| workspace_root.clone());
+        (crit_root, workspace_root)
+    };
 
     // Determine output format (handles backward compat with --json)
     let format = cli.output_format();

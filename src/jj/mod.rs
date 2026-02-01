@@ -72,6 +72,55 @@ pub fn resolve_repo_root(start_path: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Resolve the .crit repository root from a given path.
+///
+/// This function intelligently finds the .crit directory from various input paths:
+/// - If path points to .crit directory itself, returns parent
+/// - If path points to repo root (contains .crit), returns it
+/// - If path points to subdirectory, walks up to find .crit
+///
+/// # Arguments
+///
+/// * `path` - Starting path (can be .crit dir, repo root, or subdirectory)
+///
+/// # Returns
+///
+/// The repository root directory (parent of .crit)
+///
+/// # Errors
+///
+/// Returns an error if no .crit directory is found in the path hierarchy.
+pub fn resolve_crit_root_from_path(path: &Path) -> Result<PathBuf> {
+    let canonical_path = path.canonicalize().with_context(|| {
+        format!("Failed to resolve path: {}", path.display())
+    })?;
+
+    // If path points directly to .crit, return its parent
+    if canonical_path.file_name() == Some(std::ffi::OsStr::new(".crit")) {
+        return canonical_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .context(".crit directory has no parent");
+    }
+
+    // Walk up to find .crit directory
+    let mut current = canonical_path.clone();
+    loop {
+        let crit_path = current.join(".crit");
+        if crit_path.is_dir() {
+            return Ok(current);
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => bail!(
+                "No .crit directory found in path hierarchy.\nSearched from: {}",
+                canonical_path.display()
+            ),
+        }
+    }
+}
+
 /// Wrapper for executing jj commands against a repository.
 #[derive(Debug, Clone)]
 pub struct JjRepo {

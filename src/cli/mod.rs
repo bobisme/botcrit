@@ -27,6 +27,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub user: bool,
 
+    /// Path to repository (can be repo root, .crit dir, or subdirectory)
+    #[arg(long, global = true)]
+    pub path: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
