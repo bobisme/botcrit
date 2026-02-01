@@ -16,7 +16,6 @@ use crit::cli::{
 };
 use crit::events::{get_agent_identity, get_user_identity};
 use crit::jj::resolve_repo_root;
-use crit::output::OutputFormat;
 
 /// Resolve identity based on CLI flags.
 /// Priority: --agent > --user > CRIT_AGENT/BOTBUS_AGENT (required)
@@ -40,12 +39,8 @@ fn main() -> Result<()> {
     let workspace_root = env::current_dir()?;
     let crit_root = resolve_repo_root(&workspace_root).unwrap_or_else(|_| workspace_root.clone());
 
-    // Determine output format
-    let format = if cli.json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::Toon
-    };
+    // Determine output format (handles backward compat with --json)
+    let format = cli.output_format();
 
     // Resolve identity (--author or --user override, otherwise deferred to env vars)
     let identity = resolve_identity(&cli)?;

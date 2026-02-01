@@ -4,17 +4,23 @@ use clap::{Parser, Subcommand};
 
 pub mod commands;
 
+use crate::output::OutputFormat;
+
 /// Agent-centric distributed code review tool for jj
 #[derive(Parser, Debug)]
 #[command(name = "crit")]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-    /// Output format: TOON (default) or JSON
-    #[arg(long, global = true)]
+    /// Output format (default: toon)
+    #[arg(long, global = true, value_enum)]
+    pub format: Option<OutputFormat>,
+
+    /// DEPRECATED: Use --format=json instead
+    #[arg(long, global = true, hide = true)]
     pub json: bool,
 
     /// Override agent identity (requires CRIT_AGENT or BOTBUS_AGENT by default)
-    #[arg(long, global = true, visible_alias = "author")]
+    #[arg(long, global = true)]
     pub agent: Option<String>,
 
     /// Use $USER as identity (for human usage)
@@ -23,6 +29,18 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    /// Get the effective output format, handling backward compatibility with --json
+    pub fn output_format(&self) -> OutputFormat {
+        if self.json {
+            eprintln!("Warning: --json is deprecated, use --format=json instead");
+            OutputFormat::Json
+        } else {
+            self.format.unwrap_or_default()
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

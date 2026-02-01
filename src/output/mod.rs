@@ -7,13 +7,15 @@ use serde::Serialize;
 use std::io::{self, Write};
 
 /// Output format selection
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     /// TOON format - compact token-oriented notation
     #[default]
     Toon,
     /// JSON format - machine-readable output
     Json,
+    /// Plain text format - simple text output
+    Text,
 }
 
 /// Formatter that can output data in TOON or JSON format
@@ -46,6 +48,13 @@ impl Formatter {
                 let output = serde_json::to_string_pretty(data)?;
                 Ok(output)
             }
+            OutputFormat::Text => {
+                // For now, text format is the same as TOON
+                // Commands can override this behavior if they need plain text
+                let json_value = serde_json::to_value(data)?;
+                let output = toon::encode(&json_value, None);
+                Ok(output)
+            }
         }
     }
 
@@ -70,7 +79,7 @@ impl Formatter {
         if data.is_empty() {
             let mut stdout = io::stdout().lock();
             match self.format {
-                OutputFormat::Toon => writeln!(stdout, "{empty_message}")?,
+                OutputFormat::Toon | OutputFormat::Text => writeln!(stdout, "{empty_message}")?,
                 OutputFormat::Json => writeln!(stdout, "[]")?,
             }
             Ok(())
