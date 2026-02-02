@@ -367,16 +367,29 @@ impl JjRepo {
             let change_info = parts[1];
 
             // Extract change_id (first word before space)
-            let workspace_change_id = change_info.split_whitespace().next().unwrap_or("");
+            // Note: jj workspace list shows SHORT change IDs (8 chars), but we have full IDs
+            let workspace_change_id_short = change_info.split_whitespace().next().unwrap_or("");
 
-            if workspace_change_id == change_id {
+            // Match by prefix (jj shows first 8 chars, we have full ID)
+            if change_id.starts_with(workspace_change_id_short) {
                 // Found it! Skip if it's the default workspace
                 if workspace_name == "default" {
                     return Ok(None);
                 }
 
-                // Get the workspace path
-                let workspace_path = self.repo_path.join(".workspaces").join(workspace_name);
+                // Get the workspace path - check both .workspaces/ (maw) and current dir (jj)
+                let maw_path = self.repo_path.join(".workspaces").join(workspace_name);
+                let jj_path = self.repo_path.join(workspace_name);
+
+                let workspace_path = if maw_path.exists() {
+                    maw_path
+                } else if jj_path.exists() {
+                    jj_path
+                } else {
+                    // Workspace might have been destroyed, use .workspaces convention
+                    maw_path
+                };
+
                 return Ok(Some((workspace_name.to_string(), workspace_path)));
             }
         }
