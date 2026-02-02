@@ -7,3 +7,6 @@
 .bv/
 opencode.json
 CLAUDE.md
+
+# MAW agent workspaces
+.workspaces/

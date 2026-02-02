@@ -1,152 +1,11 @@
-<!-- botbus-agent-instructions-v1 -->
+# crit
 
-## BotBus Agent Coordination
+Project type: cli
+Tools: `beads`, `maw`, `crit`, `botbus`, `botty`
+Reviewer roles: security
 
-This project uses [BotBus](https://github.com/anomalyco/botbus) for multi-agent coordination. BotBus uses global storage (~/.local/share/botbus/) shared across all projects.
+<!-- Add project-specific context below: architecture, conventions, key files, etc. -->
 
-### Quick Start
-
-```bash
-# Check what's happening
-botbus status              # Overview: agents, channels, claims
-botbus history             # Recent messages in #general
-botbus agents              # Who's been active
-
-# Communicate
-botbus send --agent botcrit-dev botcrit "Starting work on X"
-botbus send --agent botcrit-dev botcrit "Done with X, ready for review"
-botbus send --agent botcrit-dev @other-agent "Question about Y"
-
-# Coordinate file access (claims use absolute paths internally)
-botbus claim --agent botcrit-dev "src/api/**" -m "Working on API routes"
-botbus check-claim src/api/routes.rs   # Check before editing
-botbus release --agent botcrit-dev --all  # When done
-```
-
-### Best Practices
-
-1. **Set BOTBUS_AGENT** at session start - identity is stateless
-2. **Run `botbus status`** to see current state before starting work
-3. **Claim files** you plan to edit - overlapping claims are denied
-4. **Check claims** before editing files outside your claimed area
-5. **Send updates** on blockers, questions, or completed work
-6. **Release claims** when done - don't hoard files
-
-### Channel Conventions
-
-- `#general` - Default channel for cross-project coordination
-- `#project-name` - Project-specific updates (e.g., `#botcrit`, `#backend`)
-- `#project-topic` - Sub-topics (e.g., `#botcrit-tui`, `#backend-auth`)
-- `@agent-name` - Direct messages for specific coordination
-
-Channel names: lowercase alphanumeric with hyphens (e.g., `my-channel`)
-
-### Message Conventions
-
-Keep messages concise and actionable:
-
-- "Starting work on issue #123: Add foo feature"
-- "Blocked: need database credentials to proceed"
-- "Question: should auth middleware go in src/api or src/auth?"
-- "Done: implemented bar, tests passing"
-
-### Waiting for Replies
-
-```bash
-# After sending a DM, wait for reply
-botbus send --agent botcrit-dev @other-agent "Can you review this?"
-botbus wait --agent botcrit-dev -c @other-agent -t 60  # Wait up to 60s for reply
-
-# Wait for any @mention of you
-botbus wait --mention -t 120
-```
-
-<!-- end-botbus-agent-instructions -->
-<!-- maw-agent-instructions-v1 -->
-
-## Multi-Agent Workflow with MAW
-
-This project uses MAW for coordinating multiple agents via jj workspaces.
-Each agent gets an isolated working copy - you can edit files without blocking other agents.
-
-### Workspace Naming
-
-**Your workspace name will be assigned by the coordinator** (human or orchestrating agent).
-If you need to create your own, use:
-
-- Lowercase alphanumeric with hyphens: `agent-1`, `feature-auth`, `bugfix-123`
-- Check existing workspaces first: `maw ws list`
-
-### Quick Reference
-
-| Task                 | Command                 |
-| -------------------- | ----------------------- |
-| Create workspace     | `maw ws create <name>`  |
-| List workspaces      | `maw ws list`           |
-| Check status         | `maw ws status`         |
-| Sync stale workspace | `maw ws sync`           |
-| Merge all work       | `maw ws merge --all`    |
-| Destroy workspace    | `maw ws destroy <name>` |
-
-### Starting Work
-
-```bash
-# Check what workspaces exist
-maw ws list
-
-# Create your workspace (if not already assigned)
-maw ws create <assigned-name>
-cd .workspaces/<assigned-name>
-
-# Start working - jj tracks changes automatically
-jj describe -m "wip: implementing feature X"
-```
-
-### During Work
-
-```bash
-# See your changes
-jj diff
-jj status
-
-# Save your work (describe current commit)
-jj describe -m "feat: add feature X"
-
-# Or commit and start fresh
-jj commit -m "feat: add feature X"
-
-# See what other agents are doing
-maw ws status
-```
-
-### Handling Stale Workspace
-
-If you see "working copy is stale", the main repo changed while you were working:
-
-```bash
-maw ws sync
-```
-
-### Finishing Work
-
-When done, notify the coordinator. They will merge from the main workspace:
-
-```bash
-# Coordinator runs from main workspace:
-maw ws merge --all --destroy
-```
-
-### Resolving Conflicts
-
-jj records conflicts in commits rather than blocking. If you see conflicts:
-
-```bash
-jj status  # shows conflicted files
-# Edit the files to resolve (remove conflict markers)
-jj describe -m "resolve: merge conflicts"
-```
-
-<!-- end-maw-agent-instructions -->
 
 ### Using bv as an AI sidecar
 
@@ -709,7 +568,7 @@ Use semantic versioning:
 
 ```bash
 # 1. Ensure tests pass
-cargo test
+just test
 
 # 2. Bump version in Cargo.toml
 #    Edit: version = "X.Y.Z"
@@ -737,10 +596,111 @@ botbus --agent botcrit-dev send botcrit "crit vX.Y.Z released - [summary of chan
 
 | Stage    | Commands                                      |
 | -------- | --------------------------------------------- |
-| Test     | `cargo test`                                  |
+| Test     | `just test`                                   |
 | Bump     | Edit `Cargo.toml` version                     |
 | Commit   | `jj commit -m "chore: bump version to X.Y.Z"` |
 | Push     | `jj bookmark set main -r @- && jj git push`   |
 | Install  | `just install`                                |
 | Announce | `botbus send botcrit "crit vX.Y.Z - ..."`     |
 
+
+<!-- botbox:managed-start -->
+## Botbox Workflow
+
+This project uses the botbox multi-agent workflow.
+
+### Identity
+
+Every command that touches bus or crit requires `--agent <name>`.
+Use `<project>-dev` as your name (e.g., `terseid-dev`). Agents spawned by `agent-loop.sh` receive a random name automatically.
+Run `bus whoami --agent $AGENT` to confirm your identity.
+
+### Lifecycle
+
+**New to the workflow?** Start with [worker-loop.md](.agents/botbox/worker-loop.md) — it covers the complete triage → start → work → finish cycle.
+
+Individual workflow docs:
+
+- [Close bead, merge workspace, release claims, sync](.agents/botbox/finish.md)
+- [groom](.agents/botbox/groom.md)
+- [Verify approval before merge](.agents/botbox/merge-check.md)
+- [Validate toolchain health](.agents/botbox/preflight.md)
+- [Report bugs/features to other projects](.agents/botbox/report-issue.md)
+- [Reviewer agent loop](.agents/botbox/review-loop.md)
+- [Request a review](.agents/botbox/review-request.md)
+- [Handle reviewer feedback (fix/address/defer)](.agents/botbox/review-response.md)
+- [Claim bead, create workspace, announce](.agents/botbox/start.md)
+- [Find work from inbox and beads](.agents/botbox/triage.md)
+- [Change bead status (open/in_progress/blocked/done)](.agents/botbox/update.md)
+- [Full triage-work-finish lifecycle](.agents/botbox/worker-loop.md)
+
+### Quick Start
+
+```bash
+AGENT=<project>-dev   # or: AGENT=$(bus generate-name)
+bus whoami --agent $AGENT
+br ready
+```
+
+### Beads Conventions
+
+- Create a bead for each unit of work before starting.
+- Update status as you progress: `open` → `in_progress` → `closed`.
+- Reference bead IDs in all bus messages.
+- Sync on session end: `br sync --flush-only`.
+
+### Mesh Protocol
+
+- Include `-L mesh` on bus messages.
+- Claim bead: `bus claims stake --agent $AGENT "bead://$BOTBOX_PROJECT/<bead-id>" -m "<bead-id>"`.
+- Claim workspace: `bus claims stake --agent $AGENT "workspace://$BOTBOX_PROJECT/$WS" -m "<bead-id>"`.
+- Claim agents before spawning: `bus claims stake --agent $AGENT "agent://role" -m "<bead-id>"`.
+- Release claims when done: `bus claims release --agent $AGENT --all`.
+
+### Spawning Agents
+
+1. Check if the role is online: `bus agents`.
+2. Claim the agent lease: `bus claims stake --agent $AGENT "agent://role"`.
+3. Spawn with an explicit identity (e.g., via botty or agent-loop.sh).
+4. Announce with `-L spawn-ack`.
+
+### Reviews
+
+- Use `crit` to open and request reviews.
+- If a reviewer is not online, claim `agent://reviewer-<role>` and spawn them.
+- Reviewer agents loop until no pending reviews remain (see review-loop doc).
+
+### Cross-Project Feedback
+
+When you encounter issues with tools from other projects:
+
+1. Query the `#projects` registry: `bus inbox --agent $AGENT --channels projects --all`
+2. Find the project entry (format: `project:<name> repo:<path> lead:<agent> tools:<tool1>,<tool2>`)
+3. Navigate to the repo, create beads with `br create`
+4. Post to the project channel: `bus send <project> "Filed beads: <ids>. <summary> @<lead>" -L feedback`
+
+See [report-issue.md](.agents/botbox/report-issue.md) for details.
+
+### Stack Reference
+
+| Tool | Purpose | Key commands |
+|------|---------|-------------|
+| bus | Communication, claims, presence | `send`, `inbox`, `claim`, `release`, `agents` |
+| maw | Isolated jj workspaces | `ws create`, `ws merge`, `ws destroy` |
+| br/bv | Work tracking + triage | `ready`, `create`, `close`, `--robot-next` |
+| crit | Code review | `review`, `comment`, `lgtm`, `block` |
+| botty | Agent runtime | `spawn`, `kill`, `tail`, `snapshot` |
+
+### Loop Scripts
+
+Scripts in `scripts/` automate agent loops:
+
+| Script | Purpose |
+|--------|---------|
+| `agent-loop.sh` | Worker: sequential triage-start-work-finish |
+| `dev-loop.sh` | Lead dev: triage, parallel dispatch, merge |
+| `reviewer-loop.sh` | Reviewer: review loop until queue empty |
+| `spawn-security-reviewer.sh` | Spawn a security reviewer |
+
+Usage: `bash scripts/<script>.sh <project-name> [agent-name]`
+<!-- botbox:managed-end -->
