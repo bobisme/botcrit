@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
 use crate::cli::commands::threads::parse_line_selection;
 use crate::events::{
-    get_agent_identity, new_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
+    get_agent_identity, make_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
     ThreadCreated,
 };
 use crate::jj::JjRepo;
@@ -42,13 +42,13 @@ pub fn run_comments_add(
 
     let db = open_and_sync(repo_root)?;
 
-    // Verify thread exists
-    let thread = db.get_thread(thread_id)?;
-    if thread.is_none() {
+    // Verify thread exists and get next comment number
+    let comment_number = db.get_next_comment_number(thread_id)?;
+    let Some(comment_number) = comment_number else {
         return Err(thread_not_found_error(&thread_id));
-    }
+    };
 
-    let comment_id = new_comment_id();
+    let comment_id = make_comment_id(thread_id, comment_number);
     let author = get_agent_identity(author)?;
 
     let event = EventEnvelope::new(
@@ -118,10 +118,14 @@ pub fn run_comment(
     let start_line = selection.start_line() as i64;
 
     // Check for existing thread at this location
-    let thread_id = match db.find_thread_at_location(review_id, file, start_line)? {
+    let (thread_id, comment_number) = match db.find_thread_at_location(review_id, file, start_line)?
+    {
         Some(existing_id) => {
-            // Use existing thread
-            existing_id
+            // Use existing thread - get its next comment number
+            let comment_number = db
+                .get_next_comment_number(&existing_id)?
+                .expect("thread exists but has no comment number");
+            (existing_id, comment_number)
         }
         None => {
             // Create new thread
@@ -152,12 +156,13 @@ pub fn run_comment(
             let log = open_or_create(&events_path(crit_root))?;
             log.append(&thread_event)?;
 
-            new_thread_id
+            // New thread starts at comment number 1
+            (new_thread_id, 1)
         }
     };
 
     // Now add the comment to the thread
-    let comment_id = new_comment_id();
+    let comment_id = make_comment_id(&thread_id, comment_number);
     let author_str = get_agent_identity(author)?;
 
     let comment_event = EventEnvelope::new(

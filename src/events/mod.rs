@@ -6,7 +6,7 @@ pub mod identity;
 pub mod ids;
 
 pub use identity::{get_agent_identity, get_user_identity};
-pub use ids::{new_comment_id, new_review_id, new_thread_id};
+pub use ids::{make_comment_id, new_review_id, new_thread_id};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -195,7 +195,7 @@ pub struct ThreadReopened {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentAdded {
-    /// Unique comment identifier (e.g., "c-xxx")
+    /// Comment identifier as thread child (e.g., "th-abc.1")
     pub comment_id: String,
     /// Parent thread
     pub thread_id: String,

@@ -648,6 +648,7 @@ fn apply_comment_added(
     author: &str,
     ts: &DateTime<Utc>,
 ) -> Result<()> {
+    // Insert the comment
     conn.execute(
         "INSERT OR IGNORE INTO comments (
             comment_id, thread_id, body, author, created_at
@@ -659,6 +660,11 @@ fn apply_comment_added(
             author,
             ts.to_rfc3339(),
         ],
+    )?;
+    // Increment the thread's next_comment_number for future comments
+    conn.execute(
+        "UPDATE threads SET next_comment_number = next_comment_number + 1 WHERE thread_id = ?",
+        params![event.thread_id],
     )?;
     Ok(())
 }
@@ -758,7 +764,8 @@ CREATE TABLE IF NOT EXISTS threads (
     status_changed_at TEXT,
     status_changed_by TEXT,
     resolve_reason TEXT,
-    reopen_reason TEXT
+    reopen_reason TEXT,
+    next_comment_number INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_threads_review_id ON threads(review_id);
@@ -836,17 +843,6 @@ mod tests {
                 file_path: "src/main.rs".to_string(),
                 selection: CodeSelection::range(10, 20),
                 commit_hash: "abc123".to_string(),
-            }),
-        )
-    }
-
-    fn make_comment_added(comment_id: &str, thread_id: &str) -> EventEnvelope {
-        EventEnvelope::new(
-            "test_author",
-            Event::CommentAdded(CommentAdded {
-                comment_id: comment_id.to_string(),
-                thread_id: thread_id.to_string(),
-                body: "Test comment".to_string(),
             }),
         )
     }

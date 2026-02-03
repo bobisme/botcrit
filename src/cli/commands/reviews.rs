@@ -22,14 +22,6 @@ fn review_not_found_error(review_id: &str) -> anyhow::Error {
     )
 }
 
-/// Helper to create actionable "thread not found" error messages.
-fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
-        thread_id
-    )
-}
-
 /// Parse a --since value into a DateTime.
 /// Supports:
 /// - ISO 8601 timestamps: "2026-01-27T23:00:00Z"

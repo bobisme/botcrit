@@ -1,6 +1,7 @@
-//! ID generation for reviews, threads, and comments.
+//! ID generation for reviews and threads.
 //!
-//! Uses short, human-readable slugs: cr-xxx, th-xxx, c-xxx
+//! Uses short, human-readable slugs: cr-xxx, th-xxx
+//! Comments use thread child IDs: th-xxx.1, th-xxx.2, etc.
 //! Powered by terseid for adaptive-length, collision-resistant IDs.
 
 use terseid::{IdConfig, IdGenerator, parse_id};
@@ -14,10 +15,6 @@ fn review_generator() -> IdGenerator {
 
 fn thread_generator() -> IdGenerator {
     IdGenerator::new(IdConfig::new("th"))
-}
-
-fn comment_generator() -> IdGenerator {
-    IdGenerator::new(IdConfig::new("c"))
 }
 
 /// Generate random bytes for seeding ID generation.
@@ -37,9 +34,9 @@ pub fn new_thread_id() -> String {
     thread_generator().candidate(&random_seed(), HASH_LENGTH)
 }
 
-/// Generate a new comment ID (e.g., "c-ab12")
-pub fn new_comment_id() -> String {
-    comment_generator().candidate(&random_seed(), HASH_LENGTH)
+/// Generate a comment ID as a child of a thread (e.g., "th-abc.1")
+pub fn make_comment_id(thread_id: &str, comment_number: u32) -> String {
+    format!("{}.{}", thread_id, comment_number)
 }
 
 /// Check if a string looks like a valid review ID
@@ -56,11 +53,19 @@ pub fn is_thread_id(s: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a string looks like a valid comment ID
+/// Check if a string looks like a valid comment ID (th-xxx.N format)
 pub fn is_comment_id(s: &str) -> bool {
-    parse_id(s)
-        .map(|parsed| parsed.prefix == "c" && parsed.hash.len() >= 3)
-        .unwrap_or(false)
+    // Split on '.' to separate thread ID from comment number
+    let parts: Vec<&str> = s.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    // First part must be a valid thread ID
+    if !is_thread_id(parts[0]) {
+        return false;
+    }
+    // Second part must be a positive integer
+    parts[1].parse::<u32>().map(|n| n > 0).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -86,10 +91,20 @@ mod tests {
 
     #[test]
     fn test_comment_id_format() {
-        let id = new_comment_id();
-        assert!(id.starts_with("c-"), "ID should start with 'c-': {}", id);
-        assert!(id.len() >= 5, "ID should be at least 5 chars: {}", id);
-        assert!(is_comment_id(&id));
+        // Comment IDs are now thread child IDs: th-xxx.N
+        let thread_id = new_thread_id();
+        let comment_id = make_comment_id(&thread_id, 1);
+        assert!(
+            comment_id.ends_with(".1"),
+            "Comment ID should end with '.1': {}",
+            comment_id
+        );
+        assert!(is_comment_id(&comment_id));
+
+        // Multiple comments
+        let comment_id_2 = make_comment_id(&thread_id, 42);
+        assert!(comment_id_2.ends_with(".42"));
+        assert!(is_comment_id(&comment_id_2));
     }
 
     #[test]
@@ -116,8 +131,15 @@ mod tests {
         assert!(is_thread_id("th-abc"));
         assert!(!is_thread_id("cr-1234"));
 
-        assert!(is_comment_id("c-wx1z"));
-        assert!(is_comment_id("c-abc"));
-        assert!(!is_comment_id("c-ab")); // too short (min 3 chars)
+        // Comment IDs are now thread child IDs
+        assert!(is_comment_id("th-abc.1"));
+        assert!(is_comment_id("th-1234.42"));
+        assert!(is_comment_id("th-abc1ef.999")); // long hash needs digit (terseid rule)
+        assert!(!is_comment_id("th-abc")); // missing comment number
+        assert!(!is_comment_id("th-abc.")); // empty comment number
+        assert!(!is_comment_id("th-abc.0")); // zero not allowed
+        assert!(!is_comment_id("th-abc.-1")); // negative not allowed
+        assert!(!is_comment_id("c-abc")); // old format not valid
+        assert!(!is_comment_id("cr-abc.1")); // review ID, not thread
     }
 }

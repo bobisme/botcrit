@@ -518,6 +518,24 @@ impl ProjectionDb {
         Ok(results)
     }
 
+    /// Get the next comment number for a thread.
+    ///
+    /// Returns the next sequential number to use for a comment ID (e.g., 1, 2, 3...).
+    /// Returns `None` if the thread doesn't exist.
+    pub fn get_next_comment_number(&self, thread_id: &str) -> Result<Option<u32>> {
+        let result: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT next_comment_number FROM threads WHERE thread_id = ?",
+                params![thread_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to query next_comment_number")?;
+
+        Ok(result.map(|n| n as u32))
+    }
+
     // ========================================================================
     // Inbox Queries
     // ========================================================================
@@ -1095,8 +1113,8 @@ mod tests {
 
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
         apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
-        apply_event(&db, &make_comment("c-001", "th-001", "First comment")).unwrap();
-        apply_event(&db, &make_comment("c-002", "th-001", "Second comment")).unwrap();
+        apply_event(&db, &make_comment("th-001.1", "th-001", "First comment")).unwrap();
+        apply_event(&db, &make_comment("th-001.2", "th-001", "Second comment")).unwrap();
 
         let threads = db.list_threads("cr-001", None, None).unwrap();
         assert_eq!(threads.len(), 1);
@@ -1155,8 +1173,8 @@ mod tests {
 
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
         apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
-        apply_event(&db, &make_comment("c-001", "th-001", "First comment")).unwrap();
-        apply_event(&db, &make_comment("c-002", "th-001", "Second comment")).unwrap();
+        apply_event(&db, &make_comment("th-001.1", "th-001", "First comment")).unwrap();
+        apply_event(&db, &make_comment("th-001.2", "th-001", "Second comment")).unwrap();
 
         let thread = db.get_thread("th-001").unwrap().unwrap();
         assert_eq!(thread.comments.len(), 2);
@@ -1209,9 +1227,9 @@ mod tests {
 
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
         apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
-        apply_event(&db, &make_comment("c-001", "th-001", "First")).unwrap();
-        apply_event(&db, &make_comment("c-002", "th-001", "Second")).unwrap();
-        apply_event(&db, &make_comment("c-003", "th-001", "Third")).unwrap();
+        apply_event(&db, &make_comment("th-001.1", "th-001", "First")).unwrap();
+        apply_event(&db, &make_comment("th-001.2", "th-001", "Second")).unwrap();
+        apply_event(&db, &make_comment("th-001.3", "th-001", "Third")).unwrap();
 
         let comments = db.list_comments("th-001").unwrap();
         assert_eq!(comments.len(), 3);
@@ -1227,8 +1245,8 @@ mod tests {
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
         apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
         apply_event(&db, &make_thread("th-002", "cr-001", "src/lib.rs", 20)).unwrap();
-        apply_event(&db, &make_comment("c-001", "th-001", "Thread 1 comment")).unwrap();
-        apply_event(&db, &make_comment("c-002", "th-002", "Thread 2 comment")).unwrap();
+        apply_event(&db, &make_comment("th-001.1", "th-001", "Thread 1 comment")).unwrap();
+        apply_event(&db, &make_comment("th-002.1", "th-002", "Thread 2 comment")).unwrap();
 
         let comments_1 = db.list_comments("th-001").unwrap();
         assert_eq!(comments_1.len(), 1);
