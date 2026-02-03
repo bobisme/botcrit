@@ -1,1 +1,1 @@
-Resumed iteration for bd-2m6 (P1 bug: events.jsonl truncation). Review cr-kbhq created in previous iteration still open - 0 votes, 0 threads. Security reviewer botcrit-security came online and started review loop but hasn't completed. Holding claims on bead and workspace. 4 other ready beads available but blocked on review completion per REVIEW=true protocol.
+Merged bd-3to (thread child IDs) after security LGTM. Resolved conflicts in issues.jsonl, pushed to main. No ready beads remain.

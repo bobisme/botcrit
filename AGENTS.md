@@ -611,30 +611,34 @@ jj commit -m "chore: bump version to X.Y.Z
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 
-# 4. Update main bookmark and push
-jj bookmark set main -r @-
-jj git push
+# 4. Create version tag
+jj tag set vX.Y.Z -r @-
 
-# 5. Install locally
+# 5. Update main bookmark and push (including tags)
+jj bookmark set main -r @-
+jj git push --all
+
+# 6. Install locally
 just install
 
-# 6. Verify
+# 7. Verify
 crit --version
 
-# 7. Announce on botbus
+# 8. Announce on botbus
 botbus --agent botcrit-dev send botcrit "crit vX.Y.Z released - [summary of changes]"
 ```
 
 ### Quick Reference
 
-| Stage    | Commands                                      |
-| -------- | --------------------------------------------- |
-| Test     | `just test`                                   |
-| Bump     | Edit `Cargo.toml` version                     |
-| Commit   | `jj commit -m "chore: bump version to X.Y.Z"` |
-| Push     | `jj bookmark set main -r @- && jj git push`   |
-| Install  | `just install`                                |
-| Announce | `botbus send botcrit "crit vX.Y.Z - ..."`     |
+| Stage    | Commands                                           |
+| -------- | -------------------------------------------------- |
+| Test     | `just test`                                        |
+| Bump     | Edit `Cargo.toml` version                          |
+| Commit   | `jj commit -m "chore: bump version to X.Y.Z"`      |
+| Tag      | `jj tag set vX.Y.Z -r @-`                          |
+| Push     | `jj bookmark set main -r @- && jj git push --all`  |
+| Install  | `just install`                                     |
+| Announce | `botbus send botcrit "crit vX.Y.Z - ..."`          |
 
 
 <!-- botbox:managed-start -->
