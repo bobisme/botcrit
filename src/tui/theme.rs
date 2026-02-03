@@ -21,7 +21,8 @@ pub const RESOLVED: Color = Color::Blue;
 /// Stale/warning items (e.g., drift detected)
 pub const STALE: Color = Color::Yellow;
 
-/// Error/conflict items
+/// Error/conflict items (reserved for future use)
+#[allow(dead_code)]
 pub const CONFLICT: Color = Color::Red;
 
 /// Abandoned/inactive items

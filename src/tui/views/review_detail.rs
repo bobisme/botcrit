@@ -60,6 +60,8 @@ pub struct ReviewDetailView {
     /// The review being displayed
     pub review: ReviewDetail,
     /// Target commit for the diff (resolved from change_id or final_commit)
+    /// Currently stored for potential future display; not read after construction.
+    #[allow(dead_code)]
     pub target_commit: String,
     /// File sections with their diffs
     pub files: Vec<FileSection>,
