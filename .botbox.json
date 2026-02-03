@@ -1,10 +1,10 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.4",
   "project": {
-    "name": "crit",
-    "type": [
-      "cli"
-    ]
+    "name": "botcrit",
+    "type": ["cli"],
+    "default_agent": "botcrit-dev",
+    "channel": "botcrit"
   },
   "tools": {
     "beads": true,
@@ -15,9 +15,7 @@
   },
   "review": {
     "enabled": true,
-    "reviewers": [
-      "security"
-    ]
+    "reviewers": ["security"]
   },
   "pushMain": false,
   "agents": {
