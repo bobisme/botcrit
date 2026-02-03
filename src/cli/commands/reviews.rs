@@ -483,7 +483,7 @@ fn run_vote(
     // receive votes, e.g., to change a block to lgtm after issues are fixed)
     let db = open_and_sync(repo_root)?;
     let review = db.get_review(review_id)?;
-    match &review {
+    let review_status = match &review {
         None => return Err(review_not_found_error(&review_id)),
         Some(r) if r.status == "merged" => {
             bail!("Cannot vote on merged review: {}", review_id);
@@ -491,15 +491,15 @@ fn run_vote(
         Some(r) if r.status == "abandoned" => {
             bail!("Cannot vote on abandoned review: {}", review_id);
         }
-        _ => {}
-    }
+        Some(r) => r.status.clone(),
+    };
 
     let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
         &author,
         Event::ReviewerVoted(ReviewerVoted {
             review_id: review_id.to_string(),
-            vote,
+            vote: vote.clone(),
             reason: reason.clone(),
         }),
     );
@@ -507,12 +507,37 @@ fn run_vote(
     let log = open_or_create(&events_path(repo_root))?;
     log.append(&event)?;
 
-    let result = serde_json::json!({
+    // Auto-approve on LGTM if review is open and no blocking votes from others
+    let auto_approved = if vote == VoteType::Lgtm && review_status == "open" {
+        // Re-sync to see our newly recorded vote
+        let db = open_and_sync(repo_root)?;
+        let has_blocks = db.has_blocking_votes_from_others(review_id, &author)?;
+        if !has_blocks {
+            // Auto-approve the review
+            let approve_event = EventEnvelope::new(
+                &author,
+                Event::ReviewApproved(ReviewApproved {
+                    review_id: review_id.to_string(),
+                }),
+            );
+            log.append(&approve_event)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let mut result = serde_json::json!({
         "review_id": review_id,
         "vote": vote.to_string(),
         "reason": reason,
         "voter": author,
     });
+    if auto_approved {
+        result["auto_approved"] = serde_json::json!(true);
+    }
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;

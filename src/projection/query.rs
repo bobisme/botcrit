@@ -463,6 +463,27 @@ impl ProjectionDb {
         Ok(count > 0)
     }
 
+    /// Check if a review has blocking votes from reviewers other than the specified one.
+    ///
+    /// Used for auto-approval logic: when a reviewer votes LGTM, we only auto-approve
+    /// if no OTHER reviewers have blocking votes.
+    pub fn has_blocking_votes_from_others(
+        &self,
+        review_id: &str,
+        exclude_reviewer: &str,
+    ) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviewer_votes WHERE review_id = ? AND vote = 'block' AND reviewer != ?",
+                params![review_id, exclude_reviewer],
+                |row| row.get(0),
+            )
+            .context("Failed to check for blocking votes from others")?;
+
+        Ok(count > 0)
+    }
+
     /// List all comments for a thread.
     ///
     /// Returns comments sorted by creation time (oldest first).
@@ -750,8 +771,8 @@ impl ThreadDetailRow {
 mod tests {
     use super::*;
     use crate::events::{
-        CodeSelection, CommentAdded, Event, EventEnvelope, ReviewCreated, ReviewersRequested,
-        ThreadCreated, ThreadResolved,
+        CodeSelection, CommentAdded, Event, EventEnvelope, ReviewCreated, ReviewerVoted,
+        ReviewersRequested, ThreadCreated, ThreadResolved, VoteType,
     };
     use crate::projection::apply_event;
 
@@ -1206,5 +1227,82 @@ mod tests {
         let comments_2 = db.list_comments("th-002").unwrap();
         assert_eq!(comments_2.len(), 1);
         assert_eq!(comments_2[0].body, "Thread 2 comment");
+    }
+
+    // ========================================================================
+    // has_blocking_votes_from_others tests
+    // ========================================================================
+
+    fn make_vote(reviewer: &str, review_id: &str, vote: VoteType) -> EventEnvelope {
+        EventEnvelope::new(
+            reviewer,
+            Event::ReviewerVoted(ReviewerVoted {
+                review_id: review_id.to_string(),
+                vote,
+                reason: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_no_votes() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+
+        // No votes at all → no blocks from others
+        assert!(!db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_only_own_block() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_vote("bob", "cr-001", VoteType::Block)).unwrap();
+
+        // Bob blocks, but we exclude bob → no blocks from others
+        assert!(!db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_other_reviewer_blocks() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_vote("charlie", "cr-001", VoteType::Block)).unwrap();
+
+        // Charlie blocks, we exclude bob → charlie's block counts
+        assert!(db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_mixed_votes() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_vote("bob", "cr-001", VoteType::Lgtm)).unwrap();
+        apply_event(&db, &make_vote("charlie", "cr-001", VoteType::Lgtm)).unwrap();
+
+        // Both LGTM → no blocks from others
+        assert!(!db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_self_lgtm_other_blocks() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_vote("bob", "cr-001", VoteType::Lgtm)).unwrap();
+        apply_event(&db, &make_vote("charlie", "cr-001", VoteType::Block)).unwrap();
+
+        // Bob LGTM, Charlie blocks → blocks from others exist
+        assert!(db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    #[test]
+    fn test_has_blocking_votes_from_others_self_block_other_lgtm() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_vote("bob", "cr-001", VoteType::Block)).unwrap();
+        apply_event(&db, &make_vote("charlie", "cr-001", VoteType::Lgtm)).unwrap();
+
+        // Bob blocks, Charlie LGTM, exclude bob → no blocks from others
+        assert!(!db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
     }
 }
