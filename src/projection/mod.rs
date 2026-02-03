@@ -476,9 +476,12 @@ fn apply_reviewers_requested(
     let ts_str = ts.to_rfc3339();
     for reviewer in &event.reviewers {
         conn.execute(
-            "INSERT OR IGNORE INTO review_reviewers (
+            "INSERT INTO review_reviewers (
                 review_id, reviewer, requested_at, requested_by
-            ) VALUES (?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT (review_id, reviewer) DO UPDATE SET
+                requested_at = excluded.requested_at,
+                requested_by = excluded.requested_by",
             params![event.review_id, reviewer, ts_str, author],
         )?;
     }

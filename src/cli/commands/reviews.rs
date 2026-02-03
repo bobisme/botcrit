@@ -868,9 +868,14 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
             } else {
                 String::new()
             };
+            let status_indicator = if r.request_status == "re-review" {
+                " [re-review]"
+            } else {
+                ""
+            };
             println!(
-                "  {} · {} by {}{}",
-                r.review_id, r.title, r.author, threads_info
+                "  {} · {} by {}{}{}",
+                r.review_id, r.title, r.author, threads_info, status_indicator
             );
         }
         println!();

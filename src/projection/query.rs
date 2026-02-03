@@ -104,6 +104,8 @@ pub struct ReviewAwaitingVote {
     pub status: String,
     pub open_thread_count: i64,
     pub requested_at: String,
+    /// "fresh" if reviewer has never voted, "re-review" if they voted but author re-requested.
+    pub request_status: String,
 }
 
 /// A thread with new responses since the agent's last comment.
@@ -529,30 +531,36 @@ impl ProjectionDb {
         })
     }
 
-    /// Get reviews where the agent is a requested reviewer but hasn't voted yet.
+    /// Get reviews where the agent is a requested reviewer but hasn't voted,
+    /// or where they voted but the author re-requested review.
     ///
     /// Only includes open/approved reviews (not merged/abandoned).
+    /// Returns `request_status` = 'fresh' for never voted, 're-review' for re-requested after vote.
     pub fn get_reviews_awaiting_vote(&self, agent: &str) -> Result<Vec<ReviewAwaitingVote>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT 
+                "SELECT
                     r.review_id, r.title, r.author, r.status,
                     COALESCE(s.open_thread_count, 0) as open_thread_count,
-                    rr.requested_at
+                    rr.requested_at,
+                    CASE
+                        WHEN v.vote IS NULL THEN 'fresh'
+                        ELSE 're-review'
+                    END as request_status
                  FROM review_reviewers rr
                  JOIN reviews r ON r.review_id = rr.review_id
                  LEFT JOIN v_reviews_summary s ON s.review_id = r.review_id
-                 LEFT JOIN reviewer_votes v ON v.review_id = r.review_id AND v.reviewer = ?
+                 LEFT JOIN reviewer_votes v ON v.review_id = rr.review_id AND v.reviewer = rr.reviewer
                  WHERE rr.reviewer = ?
                    AND r.status IN ('open', 'approved')
-                   AND v.vote IS NULL
+                   AND (v.vote IS NULL OR rr.requested_at > v.voted_at)
                  ORDER BY rr.requested_at DESC",
             )
             .context("Failed to prepare reviews_awaiting_vote query")?;
 
         let rows = stmt
-            .query_map(params![agent, agent], |row| {
+            .query_map(params![agent], |row| {
                 Ok(ReviewAwaitingVote {
                     review_id: row.get(0)?,
                     title: row.get(1)?,
@@ -560,6 +568,7 @@ impl ProjectionDb {
                     status: row.get(3)?,
                     open_thread_count: row.get(4)?,
                     requested_at: row.get(5)?,
+                    request_status: row.get(6)?,
                 })
             })
             .context("Failed to execute reviews_awaiting_vote query")?;
@@ -771,10 +780,11 @@ impl ThreadDetailRow {
 mod tests {
     use super::*;
     use crate::events::{
-        CodeSelection, CommentAdded, Event, EventEnvelope, ReviewCreated, ReviewerVoted,
-        ReviewersRequested, ThreadCreated, ThreadResolved, VoteType,
+        CodeSelection, CommentAdded, Event, EventEnvelope, ReviewAbandoned, ReviewCreated,
+        ReviewMerged, ReviewerVoted, ReviewersRequested, ThreadCreated, ThreadResolved, VoteType,
     };
     use crate::projection::apply_event;
+    use chrono::{DateTime, Duration, Utc};
 
     fn setup_db() -> ProjectionDb {
         let db = ProjectionDb::open_in_memory().unwrap();
@@ -1304,5 +1314,189 @@ mod tests {
 
         // Bob blocks, Charlie LGTM, exclude bob → no blocks from others
         assert!(!db.has_blocking_votes_from_others("cr-001", "bob").unwrap());
+    }
+
+    // ========================================================================
+    // get_reviews_awaiting_vote tests (inbox with re-review status)
+    // ========================================================================
+
+    fn make_reviewers_requested(
+        review_id: &str,
+        reviewers: Vec<&str>,
+        author: &str,
+    ) -> EventEnvelope {
+        EventEnvelope::new(
+            author,
+            Event::ReviewersRequested(ReviewersRequested {
+                review_id: review_id.to_string(),
+                reviewers: reviewers.into_iter().map(String::from).collect(),
+            }),
+        )
+    }
+
+    fn make_reviewers_requested_at(
+        review_id: &str,
+        reviewers: Vec<&str>,
+        author: &str,
+        ts: DateTime<Utc>,
+    ) -> EventEnvelope {
+        EventEnvelope {
+            ts,
+            author: author.to_string(),
+            event: Event::ReviewersRequested(ReviewersRequested {
+                review_id: review_id.to_string(),
+                reviewers: reviewers.into_iter().map(String::from).collect(),
+            }),
+        }
+    }
+
+    fn make_vote_at(
+        reviewer: &str,
+        review_id: &str,
+        vote: VoteType,
+        ts: DateTime<Utc>,
+    ) -> EventEnvelope {
+        EventEnvelope {
+            ts,
+            author: reviewer.to_string(),
+            event: Event::ReviewerVoted(ReviewerVoted {
+                review_id: review_id.to_string(),
+                vote,
+                reason: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_reviews_awaiting_vote_fresh_status() {
+        let db = setup_db();
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
+
+        // Bob hasn't voted → should show in inbox with 'fresh' status
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!(awaiting[0].review_id, "cr-001");
+        assert_eq!(awaiting[0].request_status, "fresh");
+    }
+
+    #[test]
+    fn test_reviews_awaiting_vote_disappears_after_vote() {
+        let db = setup_db();
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
+        apply_event(&db, &make_vote("bob", "cr-001", VoteType::Lgtm)).unwrap();
+
+        // Bob voted → should NOT show in inbox
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert!(awaiting.is_empty());
+    }
+
+    #[test]
+    fn test_reviews_awaiting_vote_rereview_status() {
+        let db = setup_db();
+
+        let t0 = Utc::now();
+        let t1 = t0 + Duration::hours(1);
+        let t2 = t0 + Duration::hours(2);
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t0),
+        )
+        .unwrap();
+        apply_event(&db, &make_vote_at("bob", "cr-001", VoteType::Lgtm, t1)).unwrap();
+
+        // Bob voted at t1 → not in inbox
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert!(awaiting.is_empty());
+
+        // Alice re-requests at t2 (after bob's vote)
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t2),
+        )
+        .unwrap();
+
+        // Bob should now see review with 're-review' status
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!(awaiting[0].review_id, "cr-001");
+        assert_eq!(awaiting[0].request_status, "re-review");
+    }
+
+    #[test]
+    fn test_reviews_awaiting_vote_rerequest_before_vote_still_fresh() {
+        let db = setup_db();
+
+        let t0 = Utc::now();
+        let t1 = t0 + Duration::hours(1);
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t0),
+        )
+        .unwrap();
+        // Re-request at t1 but bob never voted
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t1),
+        )
+        .unwrap();
+
+        // Bob never voted → still 'fresh' (the re-request just updated timestamp)
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!(awaiting[0].request_status, "fresh");
+    }
+
+    #[test]
+    fn test_reviews_awaiting_vote_only_shows_actionable_reviews() {
+        let db = setup_db();
+
+        // Create multiple reviews
+        apply_event(&db, &make_review("cr-001", "alice", "Open review")).unwrap();
+        apply_event(&db, &make_review("cr-002", "alice", "Merged review")).unwrap();
+        apply_event(&db, &make_review("cr-003", "alice", "Abandoned review")).unwrap();
+
+        // Request bob on all
+        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
+        apply_event(&db, &make_reviewers_requested("cr-002", vec!["bob"], "alice")).unwrap();
+        apply_event(&db, &make_reviewers_requested("cr-003", vec!["bob"], "alice")).unwrap();
+
+        // Merge cr-002
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "merger",
+                Event::ReviewMerged(ReviewMerged {
+                    review_id: "cr-002".to_string(),
+                    final_commit: "final".to_string(),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Abandon cr-003
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "abandoner",
+                Event::ReviewAbandoned(ReviewAbandoned {
+                    review_id: "cr-003".to_string(),
+                    reason: Some("not needed".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Bob should only see cr-001 (open review)
+        let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!(awaiting[0].review_id, "cr-001");
     }
 }
