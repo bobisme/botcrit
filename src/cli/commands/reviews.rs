@@ -128,6 +128,10 @@ pub fn run_reviews_create(
         println!("    crit --agent <your-name> comment {review_id} --file path/to/file.rs --line 10 \"feedback\"");
         println!("  • View the review:");
         println!("    crit --agent <your-name> review {review_id}");
+        println!();
+        println!("After reviewer feedback, re-request review:");
+        println!("    crit --agent <your-name> reviews request {review_id} --reviewers <reviewer>");
+        println!("  (Reviewer sees [re-review] in their inbox)");
     }
 
     Ok(())

@@ -491,6 +491,39 @@ crit inbox
 # - Open feedback on your reviews (threads others opened on your code)
 ```
 
+### Reviewer Re-Request Workflow
+
+When an author makes changes after receiving feedback, they can re-request review:
+
+```bash
+# Author re-requests review after addressing feedback
+crit reviews request <review_id> --reviewers <reviewer-name>
+```
+
+**How it works:**
+
+1. **Initial request**: Review appears in reviewer's inbox as `[fresh]`
+2. **After voting**: Review disappears from inbox (reviewer has voted)
+3. **Re-request**: Author runs `crit reviews request` to notify reviewer of changes
+4. **Re-review**: Review reappears in inbox as `[re-review]`
+
+**Inbox status indicators:**
+
+- `[fresh]` — First-time review request (never voted)
+- `[re-review]` — Author re-requested after you already voted
+
+**Example workflow:**
+
+```bash
+# Reviewer sees in inbox:
+crit inbox
+# → cr-abc · Feature X by author-agent [re-review]
+
+# Reviewer checks the updated diff and votes
+crit diff cr-abc
+crit lgtm cr-abc -m "Changes look good"
+```
+
 ### Agent Best Practices
 
 1. **Set your identity** via environment:
