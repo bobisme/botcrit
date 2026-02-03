@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized};
+use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
@@ -12,7 +12,7 @@ use crate::events::{
 use crate::jj::JjRepo;
 use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log, ProjectionDb};
+use crate::projection::{sync_from_log_with_backup, ProjectionDb};
 
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
@@ -931,6 +931,7 @@ fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
     let db = ProjectionDb::open(&index_path(repo_root))?;
     db.init_schema()?;
     let log = open_or_create(&events_path(repo_root))?;
-    sync_from_log(&db, &log)?;
+    let crit_dir = repo_root.join(CRIT_DIR);
+    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
     Ok(db)
 }

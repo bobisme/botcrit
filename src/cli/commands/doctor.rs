@@ -5,11 +5,11 @@ use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized};
+use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
 use crate::events::EventEnvelope;
 use crate::log::open_or_create;
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log, ProjectionDb};
+use crate::projection::{sync_from_log_with_backup, ProjectionDb};
 
 /// Result of a single health check.
 #[derive(Debug, Clone, Serialize)]
@@ -222,7 +222,8 @@ fn check_index_sync(repo_root: &Path) -> CheckResult {
             }
 
             // Try to sync and check for errors
-            match sync_from_log(&db, &log) {
+            let crit_dir = repo_root.join(CRIT_DIR);
+            match sync_from_log_with_backup(&db, &log, Some(&crit_dir)) {
                 Ok(events_processed) => {
                     // Get some stats
                     let review_count = db.list_reviews(None, None).map(|r| r.len()).unwrap_or(0);

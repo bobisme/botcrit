@@ -4,12 +4,12 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized};
+use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
 use crate::jj::drift::{calculate_drift, DriftResult};
 use crate::jj::JjRepo;
 use crate::log::open_or_create;
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log, ProjectionDb, ThreadSummary};
+use crate::projection::{sync_from_log_with_backup, ProjectionDb, ThreadSummary};
 
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
@@ -291,6 +291,7 @@ fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
     let db = ProjectionDb::open(&index_path(repo_root))?;
     db.init_schema()?;
     let log = open_or_create(&events_path(repo_root))?;
-    sync_from_log(&db, &log)?;
+    let crit_dir = repo_root.join(CRIT_DIR);
+    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
     Ok(db)
 }

@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized};
+use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
 use crate::cli::commands::threads::parse_line_selection;
 use crate::events::{
     get_agent_identity, new_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
@@ -12,7 +12,7 @@ use crate::events::{
 use crate::jj::JjRepo;
 use crate::log::{open_or_create, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log, ProjectionDb};
+use crate::projection::{sync_from_log_with_backup, ProjectionDb};
 
 /// Helper to create actionable "thread not found" error messages.
 fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
@@ -223,6 +223,7 @@ fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
     let db = ProjectionDb::open(&index_path(repo_root))?;
     db.init_schema()?;
     let log = open_or_create(&events_path(repo_root))?;
-    sync_from_log(&db, &log)?;
+    let crit_dir = repo_root.join(CRIT_DIR);
+    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
     Ok(db)
 }

@@ -144,6 +144,19 @@ impl ProjectionDb {
 ///
 /// Either triggers a full rebuild from scratch.
 pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
+    sync_from_log_with_backup(db, log, None)
+}
+
+/// Sync the projection database with optional orphan backup on truncation.
+///
+/// When `crit_dir` is provided and truncation/mismatch is detected, saves
+/// orphaned review IDs to `.crit/orphaned-reviews-{timestamp}.json` before
+/// rebuilding. This allows recovery of lost reviews from jj workspace history.
+pub fn sync_from_log_with_backup(
+    db: &ProjectionDb,
+    log: &impl AppendLog,
+    crit_dir: Option<&Path>,
+) -> Result<usize> {
     let last_line = db.get_last_sync_line()?;
 
     if last_line > 0 {
@@ -155,7 +168,7 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
                 "WARNING: events.jsonl truncated (expected >={} lines, found {}). Rebuilding projection.",
                 last_line, total
             );
-            return rebuild_projection(db, log);
+            return rebuild_projection_with_orphan_detection(db, log, crit_dir);
         }
 
         // Check 2: Content hash — the prefix we already processed changed.
@@ -167,7 +180,7 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
                         "WARNING: events.jsonl content changed (hash mismatch at line {}). Rebuilding projection.",
                         last_line
                     );
-                    return rebuild_projection(db, log);
+                    return rebuild_projection_with_orphan_detection(db, log, crit_dir);
                 }
             }
         }
@@ -232,6 +245,7 @@ pub fn sync_from_log(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
 /// Called when file replacement is detected — either truncation
 /// (last_sync_line > total file lines) or content hash mismatch
 /// (same line count but different content).
+#[allow(dead_code)]
 fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> {
     let events = log.read_all()?;
     let count = events.len();
@@ -261,6 +275,134 @@ fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> 
     }
 
     // Update sync state with line count and content hash
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ?, events_file_hash = ? WHERE id = 1",
+        params![count as i64, now, new_hash],
+    )
+    .context("Failed to update sync_state after rebuild")?;
+
+    tx.commit().context("Failed to commit rebuild")?;
+
+    Ok(count)
+}
+
+/// Rebuild projection with orphan detection and backup.
+///
+/// Before wiping the projection, extracts current review IDs from the database.
+/// After rebuilding from the new file, identifies which reviews were lost (orphaned)
+/// and writes them to a timestamped backup file in the crit directory.
+fn rebuild_projection_with_orphan_detection(
+    db: &ProjectionDb,
+    log: &impl AppendLog,
+    crit_dir: Option<&Path>,
+) -> Result<usize> {
+    // Step 1: Capture current review IDs before rebuild
+    let old_review_ids: Vec<String> = db
+        .conn
+        .prepare("SELECT review_id FROM reviews")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("Failed to query existing review IDs")?;
+
+    // Step 2: Read new events and compute hash
+    let events = log.read_all()?;
+    let count = events.len();
+    let new_hash = log.prefix_hash(count)?;
+
+    // Step 3: Find which review IDs will exist after rebuild
+    let new_review_ids: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ReviewCreated(rc) => Some(rc.review_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Step 4: Identify orphaned reviews (in old DB but not in new file)
+    let orphaned: Vec<&String> = old_review_ids
+        .iter()
+        .filter(|id| !new_review_ids.contains(*id))
+        .collect();
+
+    // Step 5: If orphans exist and crit_dir provided, write backup
+    if !orphaned.is_empty() {
+        eprintln!(
+            "WARNING: {} review(s) will be lost: {}",
+            orphaned.len(),
+            orphaned
+                .iter()
+                .take(5)
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if orphaned.len() > 5 {
+            eprintln!("  ... and {} more", orphaned.len() - 5);
+        }
+
+        if let Some(dir) = crit_dir {
+            let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+            let backup_path = dir.join(format!("orphaned-reviews-{}.json", timestamp));
+
+            // Gather detailed info about orphaned reviews
+            let mut orphan_details: Vec<serde_json::Value> = Vec::new();
+            for id in &orphaned {
+                let detail: Option<(String, String, String)> = db
+                    .conn
+                    .query_row(
+                        "SELECT title, author, status FROM reviews WHERE review_id = ?",
+                        params![id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+
+                if let Some((title, author, status)) = detail {
+                    orphan_details.push(serde_json::json!({
+                        "review_id": id,
+                        "title": title,
+                        "author": author,
+                        "status": status,
+                    }));
+                }
+            }
+
+            let backup = serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+                "reason": "events.jsonl truncation or content mismatch detected",
+                "orphaned_reviews": orphan_details,
+                "recovery_hint": "These reviews were in index.db but not in the restored events.jsonl. Check jj history for older versions of events.jsonl using: jj file annotate .crit/events.jsonl"
+            });
+
+            std::fs::write(&backup_path, serde_json::to_string_pretty(&backup)?)?;
+            eprintln!("Orphaned review details saved to: {}", backup_path.display());
+        } else {
+            eprintln!(
+                "HINT: Run 'jj file annotate .crit/events.jsonl' to find older versions"
+            );
+        }
+    }
+
+    // Step 6: Proceed with normal rebuild
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .context("Failed to begin rebuild transaction")?;
+
+    tx.execute_batch(
+        "DELETE FROM comments;
+         DELETE FROM threads;
+         DELETE FROM reviewer_votes;
+         DELETE FROM review_reviewers;
+         DELETE FROM reviews;",
+    )
+    .context("Failed to wipe projection tables")?;
+
+    for event in &events {
+        apply_event_inner(&tx, event)
+            .with_context(|| format!("Failed to apply event during rebuild: {:?}", event_type_name(&event.event)))?;
+    }
+
     let now = Utc::now().to_rfc3339();
     tx.execute(
         "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ?, events_file_hash = ? WHERE id = 1",
@@ -2043,5 +2185,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_blocks, 0);
+    }
+
+    /// bd-2m6: Test orphan detection saves lost reviews to backup file
+    /// when truncation is detected and crit_dir is provided.
+    #[test]
+    fn test_bd_2m6_orphan_detection_backup() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let db_path = dir.path().join("index.db");
+        let crit_dir = dir.path();
+
+        // === Phase 1: Create two reviews and sync ===
+        let review1 = make_review_created("cr-001");
+        let review2 = make_review_created("cr-002");
+        write_raw(&log_path, "");
+        append_raw(&log_path, &format!("{}\n", review1.to_json_line().unwrap()));
+        append_raw(&log_path, &format!("{}\n", review2.to_json_line().unwrap()));
+
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+            let count = sync_from_log_with_backup(&db, &log, Some(crit_dir)).unwrap();
+            assert_eq!(count, 2);
+
+            // Both reviews should exist
+            assert!(db.get_review("cr-001").unwrap().is_some());
+            assert!(db.get_review("cr-002").unwrap().is_some());
+        }
+
+        // === Phase 2: Truncate file to only contain cr-002 ===
+        // This simulates jj restoring an older version
+        let truncated = format!("{}\n", review2.to_json_line().unwrap());
+        write_raw(&log_path, &truncated);
+
+        // === Phase 3: Sync with backup enabled ===
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap();
+            let log = crate::log::FileLog::new(&log_path);
+
+            // This should detect truncation and create a backup file
+            let count = sync_from_log_with_backup(&db, &log, Some(crit_dir)).unwrap();
+            assert_eq!(count, 1, "Rebuild from truncated file");
+
+            // cr-001 is now gone (orphaned)
+            assert!(db.get_review("cr-001").unwrap().is_none());
+            // cr-002 still exists
+            assert!(db.get_review("cr-002").unwrap().is_some());
+        }
+
+        // === Phase 4: Verify backup file was created ===
+        let backup_files: Vec<_> = std::fs::read_dir(crit_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("orphaned-reviews-"))
+            .collect();
+
+        assert_eq!(backup_files.len(), 1, "Should have created one backup file");
+
+        let backup_content = std::fs::read_to_string(backup_files[0].path()).unwrap();
+        let backup: serde_json::Value = serde_json::from_str(&backup_content).unwrap();
+
+        // Verify backup contains cr-001
+        let orphaned = backup["orphaned_reviews"].as_array().unwrap();
+        assert_eq!(orphaned.len(), 1);
+        assert_eq!(orphaned[0]["review_id"], "cr-001");
     }
 }
