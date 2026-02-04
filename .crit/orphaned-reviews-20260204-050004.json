@@ -1,0 +1,13 @@
+{
+  "orphaned_reviews": [
+    {
+      "author": "botcrit-dev",
+      "review_id": "cr-3q1i",
+      "status": "approved",
+      "title": "bd-13r: Add schema migration for next_comment_number column"
+    }
+  ],
+  "reason": "events.jsonl truncation or content mismatch detected",
+  "recovery_hint": "These reviews were in index.db but not in the restored events.jsonl. Check jj history for older versions of events.jsonl using: jj file annotate .crit/events.jsonl",
+  "timestamp": "2026-02-04T05:00:04.825370070+00:00"
+}

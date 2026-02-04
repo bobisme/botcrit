@@ -70,10 +70,40 @@ impl ProjectionDb {
     /// Initialize the database schema.
     ///
     /// Creates all tables, indexes, and views if they don't exist.
+    /// Also runs any necessary migrations for schema changes.
     pub fn init_schema(&self) -> Result<()> {
         self.conn
             .execute_batch(SCHEMA_SQL)
             .context("Failed to initialize schema")?;
+        self.migrate_schema()?;
+        Ok(())
+    }
+
+    /// Run schema migrations for any changes since the database was created.
+    ///
+    /// SQLite's CREATE TABLE IF NOT EXISTS doesn't add new columns to existing
+    /// tables. This migration adds any columns that were added after the initial
+    /// schema was created.
+    fn migrate_schema(&self) -> Result<()> {
+        // Check if next_comment_number column exists in threads table
+        let has_column: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('threads') WHERE name = 'next_comment_number'",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to check for next_comment_number column")?;
+
+        if !has_column {
+            self.conn
+                .execute(
+                    "ALTER TABLE threads ADD COLUMN next_comment_number INTEGER NOT NULL DEFAULT 1",
+                    [],
+                )
+                .context("Failed to add next_comment_number column to threads")?;
+        }
+
         Ok(())
     }
 
@@ -2251,5 +2281,152 @@ mod tests {
         let orphaned = backup["orphaned_reviews"].as_array().unwrap();
         assert_eq!(orphaned.len(), 1);
         assert_eq!(orphaned[0]["review_id"], "cr-001");
+    }
+
+    // ========================================================================
+    // bd-13r: Schema migration tests
+    // ========================================================================
+
+    #[test]
+    fn test_migrate_schema_adds_next_comment_number() {
+        // Simulate an old database that was created before next_comment_number
+        // column was added to the threads table.
+        //
+        // This test creates a database with the full schema but manually
+        // removes the next_comment_number column to simulate upgrading from
+        // an old version.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let db_path = tmp_dir.path().join("test.db");
+
+        // Create an old-style database without next_comment_number
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            // Old threads table schema (matches current schema except no next_comment_number)
+            // We need to create all the tables since SCHEMA_SQL creates indexes and views
+            // that reference them.
+            conn.execute_batch(
+                "CREATE TABLE sync_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_line_number INTEGER NOT NULL DEFAULT 0,
+                    last_event_time TEXT
+                );
+                INSERT INTO sync_state (id) VALUES (1);
+
+                CREATE TABLE reviews (
+                    review_id TEXT PRIMARY KEY,
+                    jj_change_id TEXT NOT NULL,
+                    initial_commit TEXT NOT NULL,
+                    final_commit TEXT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    author TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    status_changed_at TEXT,
+                    status_changed_by TEXT,
+                    abandon_reason TEXT
+                );
+
+                -- Old threads table without next_comment_number
+                CREATE TABLE threads (
+                    thread_id TEXT PRIMARY KEY,
+                    review_id TEXT NOT NULL REFERENCES reviews(review_id),
+                    file_path TEXT NOT NULL,
+                    selection_type TEXT NOT NULL CHECK (selection_type IN ('line', 'range')),
+                    selection_start INTEGER NOT NULL,
+                    selection_end INTEGER,
+                    commit_hash TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'resolved')),
+                    status_changed_at TEXT,
+                    status_changed_by TEXT,
+                    resolve_reason TEXT,
+                    reopen_reason TEXT
+                    -- NOTE: next_comment_number column is intentionally MISSING
+                );
+
+                CREATE TABLE comments (
+                    comment_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES threads(thread_id),
+                    body TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE reviewer_requests (
+                    review_id TEXT NOT NULL REFERENCES reviews(review_id),
+                    reviewer TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    PRIMARY KEY (review_id, reviewer)
+                );
+
+                CREATE TABLE reviewer_votes (
+                    review_id TEXT NOT NULL REFERENCES reviews(review_id),
+                    reviewer TEXT NOT NULL,
+                    vote TEXT NOT NULL,
+                    reason TEXT,
+                    voted_at TEXT NOT NULL,
+                    PRIMARY KEY (review_id, reviewer)
+                );
+
+                -- Add test data: a review and thread
+                INSERT INTO reviews (review_id, jj_change_id, initial_commit, title, author, created_at)
+                VALUES ('cr-001', 'abc123', 'def456', 'Test Review', 'test', '2026-01-01T00:00:00Z');
+
+                INSERT INTO threads (thread_id, review_id, file_path, selection_type,
+                    selection_start, commit_hash, author, created_at)
+                VALUES ('th-001', 'cr-001', 'src/lib.rs', 'line', 42, 'abc123',
+                    'test', '2026-01-01T00:00:00Z');",
+            )
+            .unwrap();
+
+            // Verify no next_comment_number column exists
+            let has_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('threads') WHERE name = 'next_comment_number'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!has_column, "Old database should not have next_comment_number");
+        }
+
+        // Now open with ProjectionDb which should run migration
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            // init_schema should run migrate_schema which adds the column
+            db.init_schema().unwrap();
+
+            // Verify column now exists
+            let has_column: bool = db
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('threads') WHERE name = 'next_comment_number'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(has_column, "Migration should have added next_comment_number");
+
+            // Verify existing row got default value
+            let next_num: i64 = db
+                .conn()
+                .query_row(
+                    "SELECT next_comment_number FROM threads WHERE thread_id = ?",
+                    params!["th-001"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(next_num, 1, "Existing row should have default value 1");
+        }
+
+        // Verify migration is idempotent (can run again without error)
+        {
+            let db = ProjectionDb::open(&db_path).unwrap();
+            db.init_schema().unwrap(); // Should not fail on second run
+        }
     }
 }
