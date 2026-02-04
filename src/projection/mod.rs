@@ -953,6 +953,10 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_thread_id ON comments(thread_id);
 
 -- VIEWS
+-- Note: open_thread_count only counts threads that are truly actionable.
+-- Threads on merged/abandoned reviews are NOT counted as open, even if
+-- they were never explicitly resolved (they're effectively resolved by
+-- the review being completed).
 CREATE VIEW IF NOT EXISTS v_reviews_summary AS
 SELECT
     r.review_id,
@@ -962,16 +966,28 @@ SELECT
     r.jj_change_id,
     r.created_at,
     COUNT(DISTINCT t.thread_id) AS thread_count,
-    COUNT(DISTINCT CASE WHEN t.status = 'open' THEN t.thread_id END) AS open_thread_count
+    COUNT(DISTINCT CASE
+        WHEN t.status = 'open' AND r.status NOT IN ('merged', 'abandoned')
+        THEN t.thread_id
+    END) AS open_thread_count
 FROM reviews r
 LEFT JOIN threads t ON t.review_id = r.review_id
 GROUP BY r.review_id;
 
+-- v_threads_detail includes an effective_status that considers parent review state.
+-- If the review is merged/abandoned, threads are effectively 'resolved' even if
+-- they were never explicitly resolved.
 CREATE VIEW IF NOT EXISTS v_threads_detail AS
 SELECT
     t.*,
     r.title AS review_title,
-    COUNT(c.comment_id) AS comment_count
+    r.status AS review_status,
+    COUNT(c.comment_id) AS comment_count,
+    CASE
+        WHEN t.status = 'resolved' THEN 'resolved'
+        WHEN r.status IN ('merged', 'abandoned') THEN 'resolved'
+        ELSE 'open'
+    END AS effective_status
 FROM threads t
 JOIN reviews r ON r.review_id = t.review_id
 LEFT JOIN comments c ON c.thread_id = t.thread_id

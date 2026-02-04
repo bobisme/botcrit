@@ -301,7 +301,7 @@ impl ProjectionDb {
         file: Option<&str>,
     ) -> Result<Vec<ThreadSummary>> {
         let mut sql = String::from(
-            "SELECT thread_id, file_path, selection_start, selection_end, status, comment_count
+            "SELECT thread_id, file_path, selection_start, selection_end, effective_status, comment_count
              FROM v_threads_detail
              WHERE review_id = ?",
         );
@@ -309,7 +309,7 @@ impl ProjectionDb {
         param_values.push(Box::new(review_id.to_string()));
 
         if let Some(s) = status {
-            sql.push_str(" AND status = ?");
+            sql.push_str(" AND effective_status = ?");
             param_values.push(Box::new(s.to_string()));
         }
         if let Some(f) = file {
@@ -1516,5 +1516,108 @@ mod tests {
         let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
         assert_eq!(awaiting.len(), 1);
         assert_eq!(awaiting[0].review_id, "cr-001");
+    }
+
+    // ========================================================================
+    // bd-16n: Auto-resolve threads when review is merged
+    // ========================================================================
+
+    #[test]
+    fn test_bd_16n_merged_review_threads_not_counted_as_open() {
+        let db = setup_db();
+
+        // Create review with threads
+        apply_event(&db, &make_review("cr-001", "alice", "Review with threads")).unwrap();
+        apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
+        apply_event(&db, &make_thread("th-002", "cr-001", "src/lib.rs", 20)).unwrap();
+
+        // Before merge: 2 threads, 2 open
+        let review = db.get_review("cr-001").unwrap().unwrap();
+        assert_eq!(review.thread_count, 2);
+        assert_eq!(review.open_thread_count, 2);
+
+        // Merge the review WITHOUT resolving threads
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "merger",
+                Event::ReviewMerged(ReviewMerged {
+                    review_id: "cr-001".to_string(),
+                    final_commit: "final".to_string(),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // After merge: 2 threads, but 0 open (they're effectively resolved)
+        let review = db.get_review("cr-001").unwrap().unwrap();
+        assert_eq!(review.thread_count, 2);
+        assert_eq!(review.open_thread_count, 0, "Threads on merged reviews should not count as open");
+    }
+
+    #[test]
+    fn test_bd_16n_merged_review_threads_effective_status() {
+        let db = setup_db();
+
+        // Create review with a thread
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
+
+        // Before merge: thread shows as open
+        let threads = db.list_threads("cr-001", Some("open"), None).unwrap();
+        assert_eq!(threads.len(), 1, "Thread should be open before merge");
+        assert_eq!(threads[0].status, "open");
+
+        // Merge the review
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "merger",
+                Event::ReviewMerged(ReviewMerged {
+                    review_id: "cr-001".to_string(),
+                    final_commit: "final".to_string(),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // After merge: filtering by "open" returns nothing
+        let open_threads = db.list_threads("cr-001", Some("open"), None).unwrap();
+        assert!(open_threads.is_empty(), "No threads should appear open after merge");
+
+        // After merge: filtering by "resolved" returns the thread
+        let resolved_threads = db.list_threads("cr-001", Some("resolved"), None).unwrap();
+        assert_eq!(resolved_threads.len(), 1, "Thread should appear resolved after merge");
+        assert_eq!(resolved_threads[0].status, "resolved");
+    }
+
+    #[test]
+    fn test_bd_16n_abandoned_review_threads_not_counted_as_open() {
+        let db = setup_db();
+
+        // Create review with threads
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
+
+        // Before abandon: 1 open thread
+        let review = db.get_review("cr-001").unwrap().unwrap();
+        assert_eq!(review.open_thread_count, 1);
+
+        // Abandon the review
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "abandoner",
+                Event::ReviewAbandoned(ReviewAbandoned {
+                    review_id: "cr-001".to_string(),
+                    reason: Some("not needed".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // After abandon: 0 open threads
+        let review = db.get_review("cr-001").unwrap().unwrap();
+        assert_eq!(review.open_thread_count, 0, "Threads on abandoned reviews should not count as open");
     }
 }
