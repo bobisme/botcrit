@@ -1,11 +1,17 @@
 //! Append-only event log for botcrit.
 //!
-//! Implements the write path of the event sourcing architecture, storing events
-//! as JSON Lines in `.crit/events.jsonl` with advisory file locking for
-//! concurrent access.
+//! Implements the write path of the event sourcing architecture.
+//!
+//! ## Data Format Versions
+//!
+//! - **v1**: Single `.crit/events.jsonl` for all reviews (legacy)
+//! - **v2**: Per-review event logs at `.crit/reviews/{review_id}/events.jsonl`
+//!
+//! v2 eliminates merge conflicts between concurrent reviews in different
+//! workspaces, as each review has its own isolated event log.
 
 use std::collections::hash_map::DefaultHasher;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -259,6 +265,288 @@ pub fn open_or_create(path: &Path) -> Result<FileLog> {
     Ok(FileLog::new(path))
 }
 
+// ============================================================================
+// v2: Per-review event logs
+// ============================================================================
+
+/// Path to the reviews directory within .crit/
+pub fn reviews_dir(crit_root: &Path) -> PathBuf {
+    crit_root.join(".crit").join("reviews")
+}
+
+/// Path to a specific review's event log.
+pub fn review_events_path(crit_root: &Path, review_id: &str) -> PathBuf {
+    reviews_dir(crit_root).join(review_id).join("events.jsonl")
+}
+
+/// Per-review event log (v2 format).
+///
+/// Each review has its own event log at `.crit/reviews/{review_id}/events.jsonl`.
+/// This eliminates merge conflicts between concurrent reviews.
+#[derive(Debug, Clone)]
+pub struct ReviewLog {
+    crit_root: PathBuf,
+    review_id: String,
+}
+
+impl ReviewLog {
+    /// Create a new ReviewLog for the given review.
+    pub fn new(crit_root: impl Into<PathBuf>, review_id: impl Into<String>) -> Self {
+        Self {
+            crit_root: crit_root.into(),
+            review_id: review_id.into(),
+        }
+    }
+
+    /// Get the path to this review's event log.
+    pub fn path(&self) -> PathBuf {
+        review_events_path(&self.crit_root, &self.review_id)
+    }
+
+    /// Get the review ID.
+    pub fn review_id(&self) -> &str {
+        &self.review_id
+    }
+
+    /// Ensure the review directory exists.
+    fn ensure_dir(&self) -> Result<()> {
+        let dir = reviews_dir(&self.crit_root).join(&self.review_id);
+        if !dir.exists() {
+            fs::create_dir_all(&dir)
+                .with_context(|| format!("Failed to create review directory: {}", dir.display()))?;
+        }
+        Ok(())
+    }
+}
+
+impl AppendLog for ReviewLog {
+    fn append(&self, event: &EventEnvelope) -> Result<()> {
+        self.ensure_dir()?;
+
+        let path = self.path();
+        let json_line = event.to_json_line().context("Failed to serialize event")?;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_exclusive()
+            .context("Failed to acquire exclusive lock")?;
+
+        file.seek(SeekFrom::End(0))
+            .context("Failed to seek to end of file")?;
+
+        writeln!(file, "{}", json_line).context("Failed to write event to log")?;
+
+        file.flush().context("Failed to flush log file")?;
+
+        Ok(())
+    }
+
+    fn read_all(&self) -> Result<Vec<EventEnvelope>> {
+        let path = self.path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            let line_content = line_result
+                .with_context(|| format!("Failed to read line {} from log file", idx))?;
+
+            if line_content.trim().is_empty() {
+                continue;
+            }
+
+            let event = EventEnvelope::from_json_line(&line_content)
+                .with_context(|| format!("Failed to parse event at line {}", idx))?;
+
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
+    fn read_from(&self, line: usize) -> Result<Vec<EventEnvelope>> {
+        let path = self.path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            if idx < line {
+                continue;
+            }
+
+            let line_content = line_result
+                .with_context(|| format!("Failed to read line {} from log file", idx))?;
+
+            if line_content.trim().is_empty() {
+                continue;
+            }
+
+            let event = EventEnvelope::from_json_line(&line_content)
+                .with_context(|| format!("Failed to parse event at line {}", idx))?;
+
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
+    fn len(&self) -> Result<usize> {
+        let path = self.path();
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let file = File::open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let count = reader
+            .lines()
+            .filter_map(|l| l.ok())
+            .filter(|l| !l.trim().is_empty())
+            .count();
+
+        Ok(count)
+    }
+
+    fn total_lines(&self) -> Result<usize> {
+        let path = self.path();
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let file = File::open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let count = reader.lines().filter_map(|l| l.ok()).count();
+
+        Ok(count)
+    }
+
+    fn prefix_hash(&self, n: usize) -> Result<Option<String>> {
+        if n == 0 {
+            return Ok(None);
+        }
+
+        let path = self.path();
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let file = File::open(&path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+
+        file.lock_shared()
+            .context("Failed to acquire shared lock")?;
+
+        let reader = BufReader::new(file);
+        let mut hasher = DefaultHasher::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            if idx >= n {
+                break;
+            }
+            let line = line_result
+                .with_context(|| format!("Failed to read line {} for hashing", idx))?;
+            line.hash(&mut hasher);
+        }
+
+        Ok(Some(format!("{:016x}", hasher.finish())))
+    }
+}
+
+/// List all review IDs that have event logs.
+pub fn list_review_ids(crit_root: &Path) -> Result<Vec<String>> {
+    let dir = reviews_dir(crit_root);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut review_ids = Vec::new();
+    for entry in fs::read_dir(&dir)
+        .with_context(|| format!("Failed to read reviews directory: {}", dir.display()))?
+    {
+        let entry = entry.context("Failed to read directory entry")?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Check if it has an events.jsonl file
+            if path.join("events.jsonl").exists() {
+                if let Some(name) = path.file_name() {
+                    if let Some(name_str) = name.to_str() {
+                        review_ids.push(name_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    review_ids.sort();
+    Ok(review_ids)
+}
+
+/// Read all events from all reviews, sorted by timestamp.
+pub fn read_all_reviews(crit_root: &Path) -> Result<Vec<EventEnvelope>> {
+    let review_ids = list_review_ids(crit_root)?;
+    let mut all_events = Vec::new();
+
+    for review_id in review_ids {
+        let log = ReviewLog::new(crit_root, &review_id);
+        let events = log.read_all()?;
+        all_events.extend(events);
+    }
+
+    // Sort by timestamp
+    all_events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    Ok(all_events)
+}
+
+/// Open or create a review log (v2 format).
+pub fn open_or_create_review(crit_root: &Path, review_id: &str) -> Result<ReviewLog> {
+    let log = ReviewLog::new(crit_root, review_id);
+    log.ensure_dir()?;
+
+    // Create empty file if it doesn't exist
+    let path = log.path();
+    if !path.exists() {
+        File::create(&path)
+            .with_context(|| format!("Failed to create review log: {}", path.display()))?;
+    }
+
+    Ok(log)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +735,140 @@ mod tests {
         assert!(lines[0].contains("cr-001"));
         // Second line should contain cr-002
         assert!(lines[1].contains("cr-002"));
+    }
+
+    // ========================================================================
+    // v2: Per-review event log tests
+    // ========================================================================
+
+    #[test]
+    fn test_review_log_creates_directory() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let log = ReviewLog::new(crit_root, "cr-001");
+        log.append(&make_test_event("cr-001")).unwrap();
+
+        // Check directory structure
+        assert!(crit_root.join(".crit").join("reviews").join("cr-001").exists());
+        assert!(crit_root.join(".crit").join("reviews").join("cr-001").join("events.jsonl").exists());
+    }
+
+    #[test]
+    fn test_review_log_append_and_read() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let log = ReviewLog::new(crit_root, "cr-001");
+
+        let event1 = make_test_event("cr-001");
+        let event2 = make_test_event("cr-001"); // Same review
+
+        log.append(&event1).unwrap();
+        log.append(&event2).unwrap();
+
+        let events = log.read_all().unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn test_review_log_isolation() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        // Create two separate review logs
+        let log1 = ReviewLog::new(crit_root, "cr-001");
+        let log2 = ReviewLog::new(crit_root, "cr-002");
+
+        log1.append(&make_test_event("cr-001")).unwrap();
+        log1.append(&make_test_event("cr-001")).unwrap();
+        log2.append(&make_test_event("cr-002")).unwrap();
+
+        // Each log should only have its own events
+        assert_eq!(log1.len().unwrap(), 2);
+        assert_eq!(log2.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_list_review_ids() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        // Create review logs
+        let log1 = ReviewLog::new(crit_root, "cr-001");
+        let log2 = ReviewLog::new(crit_root, "cr-002");
+        let log3 = ReviewLog::new(crit_root, "cr-003");
+
+        log1.append(&make_test_event("cr-001")).unwrap();
+        log2.append(&make_test_event("cr-002")).unwrap();
+        log3.append(&make_test_event("cr-003")).unwrap();
+
+        let ids = list_review_ids(crit_root).unwrap();
+        assert_eq!(ids, vec!["cr-001", "cr-002", "cr-003"]);
+    }
+
+    #[test]
+    fn test_list_review_ids_empty() {
+        let dir = tempdir().unwrap();
+        let ids = list_review_ids(dir.path()).unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_read_all_reviews() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        // Create events with different timestamps
+        let log1 = ReviewLog::new(crit_root, "cr-001");
+        let log2 = ReviewLog::new(crit_root, "cr-002");
+
+        // Log1 gets 2 events, log2 gets 1
+        log1.append(&make_test_event("cr-001")).unwrap();
+        log2.append(&make_test_event("cr-002")).unwrap();
+        log1.append(&make_test_event("cr-001")).unwrap();
+
+        let all_events = read_all_reviews(crit_root).unwrap();
+        assert_eq!(all_events.len(), 3);
+
+        // Should be sorted by timestamp
+        for i in 0..all_events.len() - 1 {
+            assert!(all_events[i].ts <= all_events[i + 1].ts);
+        }
+    }
+
+    #[test]
+    fn test_open_or_create_review() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let log = open_or_create_review(crit_root, "cr-new").unwrap();
+        assert!(log.path().exists());
+        assert_eq!(log.review_id(), "cr-new");
+    }
+
+    #[test]
+    fn test_review_log_path() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let expected = crit_root.join(".crit").join("reviews").join("cr-abc").join("events.jsonl");
+        assert_eq!(review_events_path(crit_root, "cr-abc"), expected);
+
+        let log = ReviewLog::new(crit_root, "cr-abc");
+        assert_eq!(log.path(), expected);
+    }
+
+    #[test]
+    fn test_review_log_nonexistent() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let log = ReviewLog::new(crit_root, "cr-nonexistent");
+
+        // Should return empty, not error
+        let events = log.read_all().unwrap();
+        assert!(events.is_empty());
+        assert_eq!(log.len().unwrap(), 0);
     }
 }

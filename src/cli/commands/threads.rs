@@ -3,16 +3,15 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
+use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
 use crate::events::{
     get_agent_identity, new_thread_id, CodeSelection, Event, EventEnvelope, ThreadCreated,
     ThreadReopened, ThreadResolved,
 };
 use crate::jj::context::{extract_context, format_context};
 use crate::jj::JjRepo;
-use crate::log::{open_or_create, AppendLog};
+use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log_with_backup, ProjectionDb};
 
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
@@ -89,7 +88,7 @@ pub fn run_threads_create(
         }),
     );
 
-    let log = open_or_create(&events_path(crit_root))?;
+    let log = open_or_create_review(crit_root, review_id)?;
     log.append(&event)?;
 
     // Output result
@@ -466,7 +465,6 @@ pub fn run_threads_resolve(
 
     let db = open_and_sync(repo_root)?;
     let author = get_agent_identity(author)?;
-    let log = open_or_create(&events_path(repo_root))?;
 
     let mut resolved_count = 0;
     let mut resolved_ids = Vec::new();
@@ -487,6 +485,8 @@ pub fn run_threads_resolve(
                         reason: reason.clone(),
                     }),
                 );
+                // Write to the per-review log (v2)
+                let log = open_or_create_review(repo_root, &review.review_id)?;
                 log.append(&event)?;
                 resolved_ids.push(thread.thread_id);
                 resolved_count += 1;
@@ -496,13 +496,13 @@ pub fn run_threads_resolve(
         // Resolve one or more threads by ID
         for tid in thread_ids {
             let thread = db.get_thread(tid)?;
-            match &thread {
+            let thread = match thread {
                 None => return Err(thread_not_found_error(&tid)),
                 Some(t) if t.status == "resolved" => {
                     bail!("Thread is already resolved: {}", tid);
                 }
-                _ => {}
-            }
+                Some(t) => t,
+            };
 
             let event = EventEnvelope::new(
                 &author,
@@ -511,6 +511,8 @@ pub fn run_threads_resolve(
                     reason: reason.clone(),
                 }),
             );
+            // Write to the per-review log (v2)
+            let log = open_or_create_review(repo_root, &thread.review_id)?;
             log.append(&event)?;
             resolved_ids.push(tid.to_string());
             resolved_count += 1;
@@ -542,7 +544,7 @@ pub fn run_threads_reopen(
     let db = open_and_sync(repo_root)?;
     let thread = db.get_thread(thread_id)?;
 
-    match &thread {
+    let thread = match thread {
         None => return Err(thread_not_found_error(&thread_id)),
         Some(t) if t.status != "resolved" => {
             bail!(
@@ -551,8 +553,8 @@ pub fn run_threads_reopen(
                 thread_id
             );
         }
-        _ => {}
-    }
+        Some(t) => t,
+    };
 
     let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
@@ -563,7 +565,8 @@ pub fn run_threads_reopen(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    // Write to the per-review log (v2)
+    let log = open_or_create_review(repo_root, &thread.review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -581,22 +584,6 @@ pub fn run_threads_reopen(
 // ============================================================================
 // Helpers
 // ============================================================================
-
-fn ensure_initialized(repo_root: &Path) -> Result<()> {
-    if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
-    }
-    Ok(())
-}
-
-fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
-    let db = ProjectionDb::open(&index_path(repo_root))?;
-    db.init_schema()?;
-    let log = open_or_create(&events_path(repo_root))?;
-    let crit_dir = repo_root.join(CRIT_DIR);
-    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
-    Ok(db)
-}
 
 /// Parse a line selection string like "42" or "10-20".
 pub fn parse_line_selection(lines: &str) -> Result<CodeSelection> {

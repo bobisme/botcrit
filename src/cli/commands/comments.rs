@@ -3,16 +3,15 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
+use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
 use crate::cli::commands::threads::parse_line_selection;
 use crate::events::{
     get_agent_identity, make_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
     ThreadCreated,
 };
 use crate::jj::JjRepo;
-use crate::log::{open_or_create, AppendLog};
+use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log_with_backup, ProjectionDb};
 
 /// Helper to create actionable "thread not found" error messages.
 fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
@@ -42,11 +41,17 @@ pub fn run_comments_add(
 
     let db = open_and_sync(repo_root)?;
 
-    // Verify thread exists and get next comment number
-    let comment_number = db.get_next_comment_number(thread_id)?;
-    let Some(comment_number) = comment_number else {
-        return Err(thread_not_found_error(&thread_id));
+    // Verify thread exists and get its review_id
+    let thread = db.get_thread(thread_id)?;
+    let thread = match thread {
+        None => return Err(thread_not_found_error(&thread_id)),
+        Some(t) => t,
     };
+
+    // Get next comment number
+    let comment_number = db
+        .get_next_comment_number(thread_id)?
+        .expect("thread exists but has no comment number");
 
     let comment_id = make_comment_id(thread_id, comment_number);
     let author = get_agent_identity(author)?;
@@ -60,7 +65,8 @@ pub fn run_comments_add(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    // Write to the per-review log (v2)
+    let log = open_or_create_review(repo_root, &thread.review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -153,7 +159,8 @@ pub fn run_comment(
                 }),
             );
 
-            let log = open_or_create(&events_path(crit_root))?;
+            // Write to the per-review log (v2)
+            let log = open_or_create_review(crit_root, review_id)?;
             log.append(&thread_event)?;
 
             // New thread starts at comment number 1
@@ -174,7 +181,8 @@ pub fn run_comment(
         }),
     );
 
-    let log = open_or_create(&events_path(crit_root))?;
+    // Write to the per-review log (v2)
+    let log = open_or_create_review(crit_root, review_id)?;
     log.append(&comment_event)?;
 
     // Output result
@@ -213,22 +221,3 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
     Ok(())
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn ensure_initialized(repo_root: &Path) -> Result<()> {
-    if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
-    }
-    Ok(())
-}
-
-fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
-    let db = ProjectionDb::open(&index_path(repo_root))?;
-    db.init_schema()?;
-    let log = open_or_create(&events_path(repo_root))?;
-    let crit_dir = repo_root.join(CRIT_DIR);
-    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
-    Ok(db)
-}

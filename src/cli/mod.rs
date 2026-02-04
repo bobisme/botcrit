@@ -55,6 +55,17 @@ pub enum Commands {
     /// Health check - verify jj, .crit/, and sync status
     Doctor,
 
+    /// Migrate from v1 (single events.jsonl) to v2 (per-review event logs)
+    Migrate {
+        /// Show what would be migrated without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Keep backup of old events.jsonl (default: true)
+        #[arg(long, default_value = "true")]
+        backup: bool,
+    },
+
     /// Manage AGENTS.md integration
     #[command(subcommand)]
     Agents(AgentsCommands),

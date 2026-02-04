@@ -4,15 +4,15 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
+use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
 };
 use crate::jj::JjRepo;
-use crate::log::{open_or_create, AppendLog};
+use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log_with_backup, ProjectionDb};
+use crate::version::require_v2;
 
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
@@ -94,8 +94,11 @@ pub fn run_reviews_create(
         }),
     );
 
-    // Use crit_root for storage
-    let log = open_or_create(&events_path(crit_root))?;
+    // Enforce v2 format
+    require_v2(crit_root)?;
+
+    // Write to per-review event log (v2)
+    let log = open_or_create_review(crit_root, &review_id)?;
     log.append(&event)?;
 
     // Output the result
@@ -215,7 +218,7 @@ pub fn run_reviews_request(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create_review(repo_root, review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -261,7 +264,7 @@ pub fn run_reviews_approve(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create_review(repo_root, review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -308,7 +311,7 @@ pub fn run_reviews_abandon(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create_review(repo_root, review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -366,7 +369,7 @@ pub fn run_reviews_merge(
                     review_id: review_id.to_string(),
                 }),
             );
-            let log = open_or_create(&events_path(crit_root))?;
+            let log = open_or_create_review(crit_root, review_id)?;
             log.append(&approve_event)?;
         }
         _ => {}
@@ -413,7 +416,7 @@ pub fn run_reviews_merge(
         }),
     );
 
-    let log = open_or_create(&events_path(crit_root))?;
+    let log = open_or_create_review(crit_root, review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -500,7 +503,7 @@ fn run_vote(
         }),
     );
 
-    let log = open_or_create(&events_path(repo_root))?;
+    let log = open_or_create_review(repo_root, review_id)?;
     log.append(&event)?;
 
     // Auto-approve on LGTM if review is open and no blocking votes from others
@@ -917,22 +920,3 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
     Ok(())
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn ensure_initialized(repo_root: &Path) -> Result<()> {
-    if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
-    }
-    Ok(())
-}
-
-fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
-    let db = ProjectionDb::open(&index_path(repo_root))?;
-    db.init_schema()?;
-    let log = open_or_create(&events_path(repo_root))?;
-    let crit_dir = repo_root.join(CRIT_DIR);
-    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
-    Ok(db)
-}

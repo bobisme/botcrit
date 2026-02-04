@@ -27,7 +27,7 @@ use crate::events::{
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, ThreadCreated, ThreadReopened,
     ThreadResolved,
 };
-use crate::log::AppendLog;
+use crate::log::{read_all_reviews, AppendLog};
 
 /// Database for projected state from events.
 pub struct ProjectionDb {
@@ -437,6 +437,144 @@ fn rebuild_projection_with_orphan_detection(
     tx.execute(
         "UPDATE sync_state SET last_line_number = ?, last_sync_ts = ?, events_file_hash = ? WHERE id = 1",
         params![count as i64, now, new_hash],
+    )
+    .context("Failed to update sync_state after rebuild")?;
+
+    tx.commit().context("Failed to commit rebuild")?;
+
+    Ok(count)
+}
+
+// ============================================================================
+// v2: Per-review event log sync
+// ============================================================================
+
+/// Sync the projection from per-review event logs (v2 format).
+///
+/// In v2, each review has its own event log at `.crit/reviews/{review_id}/events.jsonl`.
+/// This function reads all events from all review logs and applies them.
+///
+/// The sync strategy is timestamp-based:
+/// 1. Read `last_sync_ts` from sync_state
+/// 2. Read all events from all review logs
+/// 3. Filter to events with `ts > last_sync_ts`
+/// 4. Apply events in timestamp order
+///
+/// If no events have been synced yet (new database), applies all events.
+pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usize> {
+    // Get last sync timestamp
+    let last_sync_ts: Option<String> = db
+        .conn
+        .query_row("SELECT last_sync_ts FROM sync_state WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+        .context("Failed to query last_sync_ts")?
+        .flatten();
+
+    let last_ts: Option<DateTime<Utc>> = last_sync_ts
+        .as_ref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc));
+
+    // Read all events from all review logs
+    let all_events = read_all_reviews(crit_root)?;
+
+    // Filter to events newer than last sync
+    let new_events: Vec<_> = if let Some(ts) = last_ts {
+        all_events.into_iter().filter(|e| e.ts > ts).collect()
+    } else {
+        all_events
+    };
+
+    if new_events.is_empty() {
+        return Ok(0);
+    }
+
+    let count = new_events.len();
+
+    // Find the latest timestamp for sync state
+    let max_ts = new_events
+        .iter()
+        .map(|e| &e.ts)
+        .max()
+        .expect("new_events is not empty");
+
+    // Process events in a transaction
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .context("Failed to begin transaction")?;
+
+    for event in &new_events {
+        apply_event_inner(&tx, event).with_context(|| {
+            format!(
+                "Failed to apply event (type: {:?})",
+                event_type_name(&event.event)
+            )
+        })?;
+    }
+
+    // Update sync state
+    tx.execute(
+        "UPDATE sync_state SET last_sync_ts = ? WHERE id = 1",
+        params![max_ts.to_rfc3339()],
+    )
+    .context("Failed to update sync_state")?;
+
+    tx.commit().context("Failed to commit transaction")?;
+
+    Ok(count)
+}
+
+/// Rebuild the projection from per-review event logs (v2 format).
+///
+/// Wipes all data and re-applies all events from all review logs.
+pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usize> {
+    // Read all events from all review logs
+    let all_events = read_all_reviews(crit_root)?;
+    let count = all_events.len();
+
+    if count == 0 {
+        return Ok(0);
+    }
+
+    // Find the latest timestamp for sync state
+    let max_ts = all_events
+        .iter()
+        .map(|e| &e.ts)
+        .max()
+        .expect("all_events is not empty");
+
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .context("Failed to begin rebuild transaction")?;
+
+    // Wipe all projection data (order matters for foreign keys)
+    tx.execute_batch(
+        "DELETE FROM comments;
+         DELETE FROM threads;
+         DELETE FROM reviewer_votes;
+         DELETE FROM review_reviewers;
+         DELETE FROM reviews;",
+    )
+    .context("Failed to wipe projection tables")?;
+
+    // Apply all events
+    for event in &all_events {
+        apply_event_inner(&tx, event).with_context(|| {
+            format!(
+                "Failed to apply event during rebuild (type: {:?})",
+                event_type_name(&event.event)
+            )
+        })?;
+    }
+
+    // Update sync state
+    tx.execute(
+        "UPDATE sync_state SET last_line_number = 0, last_sync_ts = ?, events_file_hash = NULL WHERE id = 1",
+        params![max_ts.to_rfc3339()],
     )
     .context("Failed to update sync_state after rebuild")?;
 

@@ -7,3 +7,4 @@ pub mod log;
 pub mod output;
 pub mod projection;
 pub mod tui;
+pub mod version;

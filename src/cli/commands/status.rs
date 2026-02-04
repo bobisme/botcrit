@@ -1,15 +1,14 @@
 //! Implementation of `crit status` and `crit diff` commands.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
+use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
 use crate::jj::drift::{calculate_drift, DriftResult};
 use crate::jj::JjRepo;
-use crate::log::open_or_create;
 use crate::output::{Formatter, OutputFormat};
-use crate::projection::{sync_from_log_with_backup, ProjectionDb, ThreadSummary};
+use crate::projection::ThreadSummary;
 
 /// Helper to create actionable "review not found" error messages.
 fn review_not_found_error(review_id: &str) -> anyhow::Error {
@@ -276,22 +275,3 @@ fn group_threads_by_file(threads: &[ThreadSummary]) -> serde_json::Value {
         .collect::<Vec<_>>())
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn ensure_initialized(repo_root: &Path) -> Result<()> {
-    if !is_initialized(repo_root) {
-        bail!("Not a crit repository. Run 'crit --agent <your-name> init' first.");
-    }
-    Ok(())
-}
-
-fn open_and_sync(repo_root: &Path) -> Result<ProjectionDb> {
-    let db = ProjectionDb::open(&index_path(repo_root))?;
-    db.init_schema()?;
-    let log = open_or_create(&events_path(repo_root))?;
-    let crit_dir = repo_root.join(CRIT_DIR);
-    sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
-    Ok(db)
-}
