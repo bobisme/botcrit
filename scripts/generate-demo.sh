@@ -449,22 +449,207 @@ crit_as "quiet-owl" reviews abandon "$R3" \
 echo "  1 thread, abandoned" >&2
 
 # ============================================================================
+# Review 4: Multi-workspace demo (feature branch in separate workspace)
+# ============================================================================
+
+# Create a workspace for a feature branch
+mkdir -p .workspaces
+jj workspace add .workspaces/api-feature 2>/dev/null
+
+# In the new workspace, make changes and create a review
+pushd .workspaces/api-feature >/dev/null
+
+# Make API-related changes
+cat > src/api.rs << 'RUST'
+use crate::auth;
+use crate::config::Config;
+
+pub struct ApiServer {
+    config: Config,
+}
+
+impl ApiServer {
+    pub fn new(config: Config) -> Self {
+        ApiServer { config }
+    }
+
+    pub fn handle_request(&self, token: &str, path: &str) -> Response {
+        if !auth::validate_token(token) {
+            return Response::unauthorized();
+        }
+
+        match path {
+            "/health" => Response::ok("healthy"),
+            "/config" => Response::ok(&format!("bind: {}", self.config.bind_addr)),
+            _ => Response::not_found(),
+        }
+    }
+}
+
+pub struct Response {
+    pub status: u16,
+    pub body: String,
+}
+
+impl Response {
+    pub fn ok(body: &str) -> Self {
+        Response { status: 200, body: body.to_string() }
+    }
+    pub fn unauthorized() -> Self {
+        Response { status: 401, body: "Unauthorized".to_string() }
+    }
+    pub fn not_found() -> Self {
+        Response { status: 404, body: "Not Found".to_string() }
+    }
+}
+RUST
+
+# Update main.rs to include api module
+cat > src/main.rs << 'RUST'
+use std::env;
+
+mod api;
+mod auth;
+mod config;
+mod server;
+
+fn main() {
+    let config = config::load();
+    let addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+
+    println!("Starting server on {}", addr);
+
+    // Initialize auth module
+    auth::init_sessions();
+
+    // Create API server
+    let api = api::ApiServer::new(config.clone());
+
+    server::run(&addr, &config);
+}
+RUST
+
+jj describe -m "feat(api): add REST API handler with auth integration
+
+Adds ApiServer struct with request handling for /health and /config endpoints.
+Integrates with auth module for token validation." 2>/dev/null
+
+# Initialize crit in the workspace (it should find parent .crit)
+"$CRIT" --agent setup-bot init >/dev/null 2>&1 || true
+
+# Create review in this workspace
+R4=$(crit_as "mystic-pine" --json reviews create \
+	--title "API: add REST handler with auth" \
+	--desc "New api.rs module with authenticated endpoints. Adds /health and /config routes." \
+	2>/dev/null | extract_id review_id)
+
+echo "Review 4: $R4 (in workspace api-feature)" >&2
+
+# Request review
+crit_as "mystic-pine" reviews request "$R4" --reviewers "swift-falcon" >/dev/null 2>&1
+
+# Swift-falcon reviews from default workspace perspective
+crit_as "swift-falcon" comment "$R4" --file src/api.rs --line 15 \
+	"Nice pattern matching for routes. Consider extracting route definitions to a separate module as we add more." >/dev/null 2>&1
+
+crit_as "swift-falcon" comment "$R4" --file src/api.rs --line 27 \
+	"Should Response implement Display or Debug for logging?" >/dev/null 2>&1
+
+# LGTM
+crit_as "swift-falcon" lgtm "$R4" -m "Good foundation for the API layer." >/dev/null 2>&1
+
+popd >/dev/null
+
+echo "  2 threads, 1 LGTM (in api-feature workspace)" >&2
+
+# ============================================================================
+# Review 5: Another workspace - logging feature
+# ============================================================================
+
+jj workspace add .workspaces/logging-feature 2>/dev/null
+
+pushd .workspaces/logging-feature >/dev/null
+
+cat > src/logging.rs << 'RUST'
+use std::time::SystemTime;
+
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+pub fn log(level: LogLevel, message: &str) {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let level_str = match level {
+        LogLevel::Debug => "DEBUG",
+        LogLevel::Info => "INFO",
+        LogLevel::Warn => "WARN",
+        LogLevel::Error => "ERROR",
+    };
+
+    println!("[{}] {} {}", now, level_str, message);
+}
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => {
+        $crate::logging::log($crate::logging::LogLevel::Info, &format!($($arg)*))
+    };
+}
+RUST
+
+jj describe -m "feat(logging): add structured logging module
+
+Adds LogLevel enum and log() function with timestamp.
+Includes info! macro for convenient logging." 2>/dev/null
+
+"$CRIT" --agent setup-bot init >/dev/null 2>&1 || true
+
+R5=$(crit_as "bold-tiger" --json reviews create \
+	--title "Logging: add structured logging module" \
+	--desc "New logging.rs with LogLevel enum, timestamp formatting, and convenience macros." \
+	2>/dev/null | extract_id review_id)
+
+echo "Review 5: $R5 (in workspace logging-feature)" >&2
+
+crit_as "bold-tiger" reviews request "$R5" --reviewers "quiet-owl" >/dev/null 2>&1
+
+crit_as "quiet-owl" comment "$R5" --file src/logging.rs --line 11 \
+	"Consider using the log crate's standard levels for ecosystem compatibility." >/dev/null 2>&1
+
+popd >/dev/null
+
+echo "  1 thread, awaiting review (in logging-feature workspace)" >&2
+
+# ============================================================================
 # Summary
 # ============================================================================
 
 echo "" >&2
 echo "=== Demo project created at: $DEMO_DIR ===" >&2
 echo "" >&2
-echo "Reviews:" >&2
+echo "Reviews in default workspace:" >&2
 echo "  $R1  (open, active discussion)" >&2
 echo "  $R2  (merged)" >&2
 echo "  $R3  (abandoned)" >&2
 echo "" >&2
+echo "Reviews in workspaces:" >&2
+echo "  $R4  (api-feature workspace, approved)" >&2
+echo "  $R5  (logging-feature workspace, open)" >&2
+echo "" >&2
 echo "Try:" >&2
 echo "  cd $DEMO_DIR" >&2
 echo "  crit --agent demo-viewer reviews list" >&2
+echo "  crit --agent demo-viewer reviews list --all-workspaces" >&2
 echo "  crit --agent demo-viewer review $R1" >&2
 echo "  crit --agent bold-tiger inbox" >&2
+echo "  crit --agent bold-tiger inbox --all-workspaces" >&2
 echo "" >&2
 
 echo "$DEMO_DIR"

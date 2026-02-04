@@ -1,8 +1,10 @@
 {
-  "version": "1.0.4",
+  "version": "1.0.6",
   "project": {
     "name": "botcrit",
-    "type": ["cli"],
+    "type": [
+      "cli"
+    ],
     "default_agent": "botcrit-dev",
     "channel": "botcrit"
   },
@@ -15,7 +17,9 @@
   },
   "review": {
     "enabled": true,
-    "reviewers": ["security"]
+    "reviewers": [
+      "security"
+    ]
   },
   "pushMain": false,
   "agents": {
