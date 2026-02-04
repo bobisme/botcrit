@@ -48,7 +48,7 @@ crit comment <id> --file src/main.rs --line 42 "Consider Option here"
 crit reply <thread_id> "Good point, will fix"    # Reply to existing thread
 crit lgtm <id> -m "Looks good"                   # Approve
 crit block <id> -r "Need tests"                  # Request changes
-crit reviews merge <id>                          # Mark as merged
+crit reviews mark-merged <id>                    # Mark as merged
 ```
 
 All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.

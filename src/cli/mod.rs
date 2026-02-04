@@ -251,8 +251,9 @@ pub enum ReviewsCommands {
         reason: Option<String>,
     },
 
-    /// Mark a review as merged
-    Merge {
+    /// Mark a review as merged (records that the code has landed)
+    #[command(name = "mark-merged")]
+    MarkMerged {
         /// Review ID
         review_id: String,
 

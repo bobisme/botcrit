@@ -406,10 +406,10 @@ crit reviews approve <review_id>
 
 # Mark as merged (after jj squash/merge)
 # Note: Will fail if there are blocking votes
-crit reviews merge <review_id>
+crit reviews mark-merged <review_id>
 
-# Self-approve and merge in one step (solo workflows)
-crit reviews merge <review_id> --self-approve
+# Self-approve and mark merged in one step (solo workflows)
+crit reviews mark-merged <review_id> --self-approve
 ```
 
 ### Checking Your Inbox

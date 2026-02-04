@@ -144,7 +144,7 @@ fn main() -> Result<()> {
             ReviewsCommands::Abandon { review_id, reason } => {
                 run_reviews_abandon(&crit_root, &review_id, reason, identity.as_deref(), format)?;
             }
-            ReviewsCommands::Merge {
+            ReviewsCommands::MarkMerged {
                 review_id,
                 commit,
                 self_approve,

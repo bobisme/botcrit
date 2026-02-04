@@ -1739,7 +1739,7 @@ mod tests {
             (1, "crit lgtm (attempt 3)"),            // event 16
             (1, "crit lgtm (attempt 4)"),            // event 17
             (1, "crit reviews approve"),             // event 18
-            (1, "crit reviews merge"),               // event 19
+            (1, "crit reviews mark-merged"),         // event 19
         ];
 
         let dir = tempdir().unwrap();

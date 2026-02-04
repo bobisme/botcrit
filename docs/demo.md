@@ -149,5 +149,5 @@ healthy: true
 | `lgtm` | Reviews 1, 2 |
 | `block` | Review 1 |
 | `reviews approve` | Review 2 |
-| `reviews merge` | Review 2 |
+| `reviews mark-merged` | Review 2 |
 | `reviews abandon` | Review 3 |

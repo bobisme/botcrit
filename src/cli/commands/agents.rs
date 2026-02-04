@@ -51,7 +51,7 @@ crit --agent {name} reply <thread_id> "M"               # Reply to an existing t
 crit --agent {name} lgtm <id> -m "..."                  # Approve (LGTM)
 crit --agent {name} block <id> -r "..."                 # Request changes
 crit --agent {name} threads resolve <id> --reason "..." # Resolve a thread
-crit --agent {name} reviews merge <id> --self-approve   # Approve + merge (solo workflow)
+crit --agent {name} reviews mark-merged <id> --self-approve   # Approve + mark merged (solo workflow)
 ```
 
 ### Workflow
@@ -61,7 +61,7 @@ crit --agent {name} reviews merge <id> --self-approve   # Approve + merge (solo 
 3. **Reply**: `crit --agent {name} reply <thread_id> "response"` to respond to existing threads
 4. **Vote**: `crit --agent {name} lgtm <id>` or `crit --agent {name} block <id> -r "reason"`
 5. **Resolve threads**: `crit --agent {name} threads resolve <id>` after addressing feedback
-6. **Merge**: `crit --agent {name} reviews merge <id>` (fails if blocking votes exist)
+6. **Mark merged**: `crit --agent {name} reviews mark-merged <id>` (fails if blocking votes exist)
 
 ### Key Points
 
