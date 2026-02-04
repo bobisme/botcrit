@@ -563,6 +563,22 @@ crit lgtm cr-abc -m "Changes look good"
 - **crit reply** responds to an existing thread
 - Works across jj workspaces (shared .crit/ in main repo)
 
+### Architecture Constraint: Reviews Live With Code
+
+**Hard requirement**: Review data (`.crit/events.jsonl`) MUST be checked into the repository. This is a core design principle of crit - reviews travel with the code, are versioned with the code, and can be examined historically.
+
+**Consequence**: jj working copy operations (squash, rebase, workspace merge) can replace `events.jsonl` with an older version, causing review data loss.
+
+**Mitigations in place** (these detect loss, they don't prevent it):
+- Truncation detection: rebuilds projection if file is shorter than expected
+- Content hash detection: rebuilds if file content changed
+- Orphan backup: saves lost review IDs to `.crit/orphaned-reviews-{timestamp}.json`
+- Recovery hints: points to `jj file annotate .crit/events.jsonl` for history
+
+**When reviews are lost**: Check `.crit/orphaned-reviews-*.json` for affected review IDs, then use `jj file annotate .crit/events.jsonl` to find and restore from history.
+
+**Do NOT propose**: Moving `events.jsonl` to external storage (~/.local/share, .jj/, etc.). This defeats the core value proposition of crit.
+
 ### Output Guidelines
 
 Crit is frequently invoked by agents with **no prior context**. Every piece of tool output must be self-contained and actionable.

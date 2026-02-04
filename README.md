@@ -82,6 +82,19 @@ Identity    = agent name passed via --agent flag or env var
 
 Reviews live entirely in `.crit/` — portable, versionable, no server needed.
 
+## Reviews Travel With Code
+
+**Core design principle**: Review data is checked into the repository alongside the code it reviews.
+
+- Clone a repo → get full review history
+- Branch or fork → reviews come along
+- Archive a project → reviews are preserved
+- No external server, no accounts, no network dependency
+
+This is intentional and non-negotiable. Unlike GitHub PRs (stored on GitHub's servers) or Gerrit (stored in a separate database), crit reviews are first-class repository content.
+
+**Trade-off**: jj working copy operations (squash, rebase, workspace merge) can occasionally restore older versions of the event log. Crit detects this and saves affected reviews to `.crit/orphaned-reviews-*.json` for recovery via `jj file annotate`.
+
 ## Quick Start
 
 ```bash
