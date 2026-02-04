@@ -168,11 +168,8 @@ async function hasWork() {
 		// - Reviews that were re-requested after voting
 		// Reviews disappear from inbox after voting until re-requested.
 		const result = await runCommand('crit', ['inbox', '--agent', AGENT, '--format', 'json']);
-		const inbox = JSON.parse(result.stdout || '{}');
-		// inbox is an object with reviews_awaiting_vote, threads_with_new_responses, etc.
-		const reviews = inbox.reviews_awaiting_vote || [];
-		const threads = inbox.threads_with_new_responses || [];
-		return reviews.length > 0 || threads.length > 0;
+		const inbox = JSON.parse(result.stdout || '[]');
+		return Array.isArray(inbox) && inbox.length > 0;
 	} catch (err) {
 		console.error('Error checking inbox:', err.message);
 		return false;

@@ -95,6 +95,23 @@ Arguments:
 	}
 }
 
+// --- Helper: get commits on main since origin ---
+async function getCommitsSinceOrigin() {
+	try {
+		const { stdout } = await runCommand('jj', [
+			'log',
+			'-r',
+			'main@origin..main',
+			'--no-graph',
+			'--template',
+			'commit_id.short() ++ " " ++ description.first_line() ++ "\\n"',
+		]);
+		return stdout.trim().split('\n').filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
 // --- Helper: run command and get output ---
 async function runCommand(cmd, args = []) {
 	return new Promise((resolve, reject) => {
@@ -200,6 +217,8 @@ function buildPrompt(lastIteration) {
 	return `You are lead dev agent "${AGENT}" for project "${PROJECT}".
 
 IMPORTANT: Use --agent ${AGENT} on ALL bus and crit commands. Use --actor ${AGENT} on ALL mutating br commands. Use --author ${AGENT} on br comments add. Set BOTBOX_PROJECT=${PROJECT}. ${reviewInstructions}.
+
+CRITICAL - HUMAN MESSAGE PRIORITY: If you see a system reminder with "STOP:" showing unread botbus messages, these are from humans or other agents trying to reach you. IMMEDIATELY check inbox and respond before continuing your current task. Human questions, clarifications, and redirects take priority over heads-down work.
 ${previousContext}
 Execute exactly ONE dev cycle. Triage inbox, assess ready beads, either work on one yourself
 or dispatch multiple workers in parallel, monitor progress, merge results. Then STOP.
@@ -267,7 +286,10 @@ If REVIEW is true:
   11. Create review: crit reviews create --agent ${AGENT} --title "<title>" --description "<summary>"
   12. br comments add --actor ${AGENT} --author ${AGENT} <id> "Review requested: <review-id>, workspace: \$WS (\$WS_PATH)"
   13. bus statuses set --agent ${AGENT} "Review: <review-id>"
-  14. bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id>" -L review-request
+  14. Request security review (if project has security reviewer):
+      - Assign: crit reviews request <review-id> --reviewers ${PROJECT}-security --agent ${AGENT}
+      - Spawn via @mention: bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id> @${PROJECT}-security" -L review-request
+      (The @mention triggers the auto-spawn hook — without it, no reviewer spawns!)
   15. STOP this iteration — wait for reviewer.
 
 If REVIEW is false:
@@ -319,7 +341,10 @@ For each completed bead with a workspace:
 If REVIEW is true:
   1. crit reviews create --agent ${AGENT} --title "<title>" --description "<summary of changes>"
   2. br comments add --actor ${AGENT} --author ${AGENT} <id> "Review requested: <review-id>"
-  3. bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id>" -L review-request
+  3. Request security review (if project has security reviewer):
+     - Assign: crit reviews request <review-id> --reviewers ${PROJECT}-security --agent ${AGENT}
+     - Spawn via @mention: bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id> @${PROJECT}-security" -L review-request
+     (The @mention triggers the auto-spawn hook — without it, no reviewer spawns!)
   4. STOP — wait for reviewer
 
 If REVIEW is false:
@@ -460,6 +485,9 @@ async function main() {
 	// Set starting status
 	await runCommand('bus', ['statuses', 'set', '--agent', AGENT, 'Starting loop', '--ttl', '10m']);
 
+	// Capture baseline commits for release tracking
+	const baselineCommits = await getCommitsSinceOrigin();
+
 	// Main loop
 	for (let i = 1; i <= MAX_LOOPS; i++) {
 		console.log(`\n--- Dev loop ${i}/${MAX_LOOPS} ---`);
@@ -512,6 +540,17 @@ async function main() {
 		if (i < MAX_LOOPS) {
 			await new Promise((resolve) => setTimeout(resolve, LOOP_PAUSE * 1000));
 		}
+	}
+
+	// Show what landed since session start (for release decisions)
+	const finalCommits = await getCommitsSinceOrigin();
+	const newCommits = finalCommits.filter((c) => !baselineCommits.includes(c));
+	if (newCommits.length > 0) {
+		console.log('\n--- Commits landed this session ---');
+		for (const commit of newCommits) {
+			console.log(`  ${commit}`);
+		}
+		console.log('\nIf any are user-visible (feat/fix), consider a release.');
 	}
 
 	await cleanup();

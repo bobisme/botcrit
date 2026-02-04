@@ -168,6 +168,8 @@ function buildPrompt() {
 
 IMPORTANT: Use --agent ${AGENT} on ALL bus and crit commands. Use --actor ${AGENT} on ALL mutating br commands (create, update, close, comments add, dep add, label add). Also use --owner ${AGENT} on br create and --author ${AGENT} on br comments add. Set BOTBOX_PROJECT=${PROJECT}.
 
+CRITICAL - HUMAN MESSAGE PRIORITY: If you see a system reminder with "STOP:" showing unread botbus messages, these are from humans or other agents trying to reach you. IMMEDIATELY check inbox and respond before continuing your current task. Human questions, clarifications, and redirects take priority over heads-down work.
+
 Execute exactly ONE cycle of the worker loop. Complete one task (or determine there is no work),
 then STOP. Do not start a second task — the outer loop handles iteration.
 
@@ -239,7 +241,10 @@ At the end of your work, output exactly one of these completion signals:
    Create review: crit reviews create --agent ${AGENT} --title "<title>" --description "<summary>".
    Add bead comment: br comments add --actor ${AGENT} --author ${AGENT} <id> "Review requested: <review-id>, workspace: \$WS (\$WS_PATH)".
    bus statuses set --agent ${AGENT} "Review: <review-id>".
-   Announce: bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id>: <title>" -L review-request.
+   Request security review (if project has security reviewer):
+     - Assign: crit reviews request <review-id> --reviewers ${PROJECT}-security --agent ${AGENT}
+     - Spawn via @mention: bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id> @${PROJECT}-security" -L review-request
+     (The @mention triggers the auto-spawn hook — without it, no reviewer spawns!)
    Do NOT close the bead. Do NOT merge the workspace. Do NOT release claims.
    Output: <promise>COMPLETE</promise>
    STOP this iteration. The reviewer will process the review.
