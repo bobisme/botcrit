@@ -395,10 +395,10 @@ crit_as "swift-falcon" reply "$T_BUILDER" \
 crit_as "swift-falcon" threads resolve "$T_BUILDER" \
 	--reason "Agreed to defer" >/dev/null 2>&1
 
-# Approve and merge
+# Approve and merge (LGTM auto-approves when no blocking votes)
 crit_as "swift-falcon" lgtm "$R2" -m "Clean implementation. Good defaults." >/dev/null 2>&1
-crit_as "bold-tiger" reviews approve "$R2" >/dev/null 2>&1
-crit_as "bold-tiger" reviews merge "$R2" --self-approve >/dev/null 2>&1
+# Review is now auto-approved, mark it as merged
+crit_as "bold-tiger" reviews mark-merged "$R2" >/dev/null 2>&1
 
 echo "  1 thread (resolved), merged" >&2
 
@@ -447,6 +447,12 @@ crit_as "quiet-owl" reviews abandon "$R3" \
 	--reason "Superseded by async server approach" >/dev/null 2>&1
 
 echo "  1 thread, abandoned" >&2
+
+# ============================================================================
+# Commit default workspace reviews before creating feature workspaces
+# ============================================================================
+# This ensures feature workspaces see the final state of all default reviews
+jj commit -m "chore: commit default workspace reviews" 2>/dev/null
 
 # ============================================================================
 # Review 4: Multi-workspace demo (feature branch in separate workspace)
