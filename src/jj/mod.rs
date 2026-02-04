@@ -365,6 +365,69 @@ impl JjRepo {
             .collect())
     }
 
+    /// List all workspaces with their change IDs and paths.
+    ///
+    /// Returns a vector of (workspace_name, change_id, workspace_path) tuples.
+    /// The default workspace path is the repo root itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the jj command fails.
+    pub fn list_workspaces(&self) -> Result<Vec<(String, String, PathBuf)>> {
+        let output = self
+            .run_jj(&["workspace", "list"])
+            .context("Failed to list workspaces")?;
+
+        let mut workspaces = Vec::new();
+
+        // Parse output: format is "workspace_name: change_id [commit_id]"
+        // Example: "default: qxoswoqq 12345678"
+        //          "my-workspace: abcdefgh 87654321"
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let workspace_name = parts[0];
+            let change_info = parts[1];
+
+            // Extract change_id (first word before space) - this is the SHORT form
+            let change_id_short = change_info.split_whitespace().next().unwrap_or("");
+
+            // Get the workspace path
+            let workspace_path = if workspace_name == "default" {
+                self.repo_path.clone()
+            } else {
+                // Check both .workspaces/ (maw) and current dir (jj)
+                let maw_path = self.repo_path.join(".workspaces").join(workspace_name);
+                let jj_path = self.repo_path.join(workspace_name);
+
+                if maw_path.exists() {
+                    maw_path
+                } else if jj_path.exists() {
+                    jj_path
+                } else {
+                    // Workspace might have been destroyed, use .workspaces convention
+                    maw_path
+                }
+            };
+
+            workspaces.push((
+                workspace_name.to_string(),
+                change_id_short.to_string(),
+                workspace_path,
+            ));
+        }
+
+        Ok(workspaces)
+    }
+
     /// Find which workspace contains a given change_id.
     ///
     /// Returns (workspace_name, workspace_path) if found, None if the change

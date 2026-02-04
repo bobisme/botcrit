@@ -18,6 +18,7 @@ use super::ProjectionDb;
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewSummary {
     pub review_id: String,
+    pub jj_change_id: String,
     pub title: String,
     pub author: String,
     pub status: String,
@@ -171,7 +172,7 @@ impl ProjectionDb {
         has_unresolved: bool,
     ) -> Result<Vec<ReviewSummary>> {
         let mut sql = String::from(
-            "SELECT DISTINCT v.review_id, v.title, v.author, v.status, v.thread_count, v.open_thread_count
+            "SELECT DISTINCT v.review_id, v.jj_change_id, v.title, v.author, v.status, v.thread_count, v.open_thread_count
              FROM v_reviews_summary v",
         );
         let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -212,11 +213,12 @@ impl ProjectionDb {
             .query_map(params.as_slice(), |row| {
                 Ok(ReviewSummary {
                     review_id: row.get(0)?,
-                    title: row.get(1)?,
-                    author: row.get(2)?,
-                    status: row.get(3)?,
-                    thread_count: row.get(4)?,
-                    open_thread_count: row.get(5)?,
+                    jj_change_id: row.get(1)?,
+                    title: row.get(2)?,
+                    author: row.get(3)?,
+                    status: row.get(4)?,
+                    thread_count: row.get(5)?,
+                    open_thread_count: row.get(6)?,
                 })
             })
             .context("Failed to execute list_reviews query")?;
