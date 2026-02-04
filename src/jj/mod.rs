@@ -605,4 +605,55 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Not in a jj repository"));
     }
+
+    #[test]
+    fn test_list_workspaces() {
+        let repo = test_repo();
+        let workspaces = repo.list_workspaces().unwrap();
+
+        // Should always have at least the default workspace
+        assert!(!workspaces.is_empty(), "Should have at least one workspace");
+
+        // Find default workspace
+        let default = workspaces
+            .iter()
+            .find(|(name, _, _)| name == "default")
+            .expect("Should have a 'default' workspace");
+
+        // Default workspace should have a change_id (8 chars short form)
+        assert!(
+            !default.1.is_empty(),
+            "Default workspace should have a change_id"
+        );
+
+        // Default workspace path should be the repo root
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        assert_eq!(
+            default.2,
+            PathBuf::from(&manifest_dir),
+            "Default workspace path should be repo root"
+        );
+    }
+
+    #[test]
+    fn test_list_workspaces_change_id_format() {
+        let repo = test_repo();
+        let workspaces = repo.list_workspaces().unwrap();
+
+        for (name, change_id, _path) in &workspaces {
+            // jj workspace list shows short change IDs (8 chars typically)
+            assert!(
+                !change_id.is_empty(),
+                "Workspace {} should have a change_id",
+                name
+            );
+            // Should be lowercase letters (jj change_id format)
+            assert!(
+                change_id.chars().all(|c| c.is_ascii_lowercase()),
+                "Change ID for {} should be lowercase letters: {}",
+                name,
+                change_id
+            );
+        }
+    }
 }

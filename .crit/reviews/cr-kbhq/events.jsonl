@@ -1,0 +1,5 @@
+{"ts":"2026-02-03T22:11:13.021594054Z","author":"botcrit-dev","event":"ReviewCreated","data":{"review_id":"cr-kbhq","jj_change_id":"nwmznpzymmvlxzpslmpllrntyommklsq","initial_commit":"9e23d1ff25ff07cf2d1a09dd93e88f45a79d1a63","title":"bd-2m6: Add orphan review backup on events.jsonl truncation","description":"When truncation or content mismatch is detected during sync, the system now saves orphaned review details to a backup file before rebuilding. This prevents silent data loss when jj workspace operations restore older events.jsonl versions."}}
+{"ts":"2026-02-03T22:11:34.839462378Z","author":"botcrit-dev","event":"ReviewersRequested","data":{"review_id":"cr-kbhq","reviewers":["botcrit-security"]}}
+{"ts":"2026-02-03T22:13:25.460880304Z","author":"botcrit-security","event":"ReviewerVoted","data":{"review_id":"cr-kbhq","vote":"lgtm"}}
+{"ts":"2026-02-03T22:16:05.273013808Z","author":"botcrit-dev","event":"ReviewApproved","data":{"review_id":"cr-kbhq"}}
+{"ts":"2026-02-03T22:16:07.854020273Z","author":"botcrit-dev","event":"ReviewMerged","data":{"review_id":"cr-kbhq","final_commit":"3310d0d0549a7de708be3e7e4737d44e3c9942bf"}}
