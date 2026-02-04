@@ -13,11 +13,42 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve the local jj repo/workspace root from any path within the repo.
+///
+/// This returns the directory containing `.jj/`, WITHOUT following workspace pointers.
+/// Use this when you need the current workspace's root (e.g., for writing files that
+/// should be tracked in the workspace's working copy).
+///
+/// # Algorithm
+/// 1. Start from `start_path` and walk up to find `.jj/` directory
+/// 2. Return the parent of `.jj/` (the workspace root)
+///
+/// # Errors
+///
+/// Returns an error if no `.jj/` directory is found.
+pub fn resolve_workspace_root(start_path: &Path) -> Result<PathBuf> {
+    // Walk up to find .jj directory
+    let mut current = start_path.to_path_buf();
+    loop {
+        let jj_path = current.join(".jj");
+        if jj_path.exists() {
+            return Ok(current);
+        }
+        if !current.pop() {
+            bail!("Not in a jj repository (no .jj directory found)");
+        }
+    }
+}
+
 /// Resolve the canonical jj repo root from any path within the repo.
 ///
 /// In jj workspaces, each workspace has its own working copy directory,
 /// but `.jj/repo` is a file containing the path to the main repo's `.jj/repo` directory.
 /// This function follows that pointer to find the main repo root.
+///
+/// NOTE: For most crit operations, use `resolve_workspace_root()` instead.
+/// This function is useful when you need to find the main repo (e.g., for
+/// cross-workspace operations).
 ///
 /// # Algorithm
 /// 1. Start from `start_path` and walk up to find `.jj/` directory
@@ -486,5 +517,29 @@ mod tests {
             assert!(!file.is_empty());
             assert!(!file.contains('\n'));
         }
+    }
+
+    #[test]
+    fn test_resolve_workspace_root() {
+        // Use CARGO_MANIFEST_DIR which points to the botcrit repo root
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        let manifest_path = Path::new(&manifest_dir);
+
+        // resolve_workspace_root should return the directory containing .jj
+        let root = resolve_workspace_root(manifest_path).unwrap();
+        assert!(root.join(".jj").exists(), "Root should contain .jj directory");
+
+        // Should also work from a subdirectory
+        let subdir = manifest_path.join("src");
+        let root_from_subdir = resolve_workspace_root(&subdir).unwrap();
+        assert_eq!(root, root_from_subdir, "Should find same root from subdirectory");
+    }
+
+    #[test]
+    fn test_resolve_workspace_root_not_in_repo() {
+        // /tmp is unlikely to be inside a jj repo
+        let result = resolve_workspace_root(Path::new("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Not in a jj repository"));
     }
 }

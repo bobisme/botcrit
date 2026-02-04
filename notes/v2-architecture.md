@@ -50,12 +50,23 @@ Each review gets its own event log:
 | Centralized helpers | `src/cli/commands/helpers.rs` | `open_and_sync()` (version-aware), `ensure_initialized()` |
 | Command write paths | `reviews.rs`, `threads.rs`, `comments.rs` | All write to per-review logs via `open_or_create_review()` |
 | Version enforcement | All commands | `require_v2()` called in `open_and_sync()` |
+| Workspace isolation | `src/jj/mod.rs`, `main.rs` | `resolve_workspace_root()` - writes go to workspace-local .crit |
+
+### ✅ Workspace Behavior
+
+**Problem solved (bd-50e):** Previously `resolve_repo_root()` followed jj's workspace pointer back to main repo, so crit changes from a workspace weren't tracked in the workspace's jj working copy. This meant `maw ws merge` wouldn't include crit changes.
+
+**Fix:** Added `resolve_workspace_root()` which returns the local workspace path (directory containing `.jj/`) without following the pointer. Main.rs now uses this for `crit_root`.
+
+**Result:**
+- Crit writes to workspace-local `.crit/`
+- Changes tracked in workspace's jj working copy
+- `maw ws merge` includes crit changes
+- Different reviews = different files = no merge conflicts
 
 ### ❌ Remaining
 
 1. **Edge case testing** - Aggressive /tmp testing for:
-   - Concurrent writes to same review
-   - Concurrent writes to different reviews
    - Partial migration (crash mid-way)
    - Corrupt single review log (graceful handling)
 
@@ -108,12 +119,12 @@ run_migrate(crit_root, dry_run, backup, format)?;
 
 ## Beads
 
-- **bd-37x**: Epic - Per-review event log architecture
-- **bd-3rv**: Version detection (implemented)
-- **bd-3a4**: Per-review log read/write (implemented)
-- **bd-15h**: Projection scan per-review logs (implemented, needs command integration)
-- **bd-146**: Migration tool (implemented)
-- **bd-50e**: Workspace isolation for writes (remaining - commands still write to crit_root)
+- **bd-37x**: Epic - Per-review event log architecture (all sub-tasks complete)
+- **bd-3rv**: Version detection ✅
+- **bd-3a4**: Per-review log read/write ✅
+- **bd-15h**: Projection scan per-review logs ✅
+- **bd-146**: Migration tool ✅
+- **bd-50e**: Workspace isolation for writes ✅
 
 ## Migration Path for Users
 
