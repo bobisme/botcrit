@@ -1,1 +1,9 @@
-Checked review status for cr-5tjx (bd-339 .critignore support). Review still open with no votes - security reviewer not yet active. Re-sent @botcrit-security mention to trigger reviewer spawn. Only one bead (bd-339) exists and it's awaiting review. No other work available. Awaiting security LGTM on cr-5tjx before merge.
+Inbox: Processed security review feedback on cr-1s0w (bd-2r8) — 3 findings (HIGH path traversal, MEDIUM dedup collision, LOW info disclosure). Also found cr-5tjx (bd-339) had been approved.
+
+Beads completed:
+- bd-339 (.critignore): cr-5tjx approved by botcrit-security, marked merged, bead closed.
+
+Beads worked:
+- bd-2r8 (migration fix): Addressed all 3 security findings in workspace shadow-reef — added is_review_id() validation, improved dedup keys, sanitized eprintln output. Added regression test. Re-requested security review on cr-1s0w.
+
+Status: bd-2r8 awaiting security re-review on cr-1s0w. No other ready beads.
