@@ -64,6 +64,11 @@ pub enum Commands {
         /// Keep backup of old events.jsonl (default: true)
         #[arg(long, default_value = "true")]
         backup: bool,
+
+        /// Re-migrate from v1 backup even if already on v2.
+        /// Use this to recover data lost by a buggy earlier migration.
+        #[arg(long)]
+        from_backup: bool,
     },
 
     /// Manage AGENTS.md integration

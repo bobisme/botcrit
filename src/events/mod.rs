@@ -6,7 +6,7 @@ pub mod identity;
 pub mod ids;
 
 pub use identity::{get_agent_identity, get_user_identity};
-pub use ids::{make_comment_id, new_review_id, new_thread_id};
+pub use ids::{is_review_id, make_comment_id, new_review_id, new_thread_id};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

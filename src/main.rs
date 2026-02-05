@@ -67,8 +67,12 @@ fn main() -> Result<()> {
             run_doctor(&crit_root, format)?;
         }
 
-        Commands::Migrate { dry_run, backup } => {
-            run_migrate(&crit_root, dry_run, backup, format)?;
+        Commands::Migrate {
+            dry_run,
+            backup,
+            from_backup,
+        } => {
+            run_migrate(&crit_root, dry_run, backup, from_backup, format)?;
         }
 
         Commands::Agents(cmd) => match cmd {
