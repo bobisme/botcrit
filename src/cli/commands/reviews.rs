@@ -1016,6 +1016,13 @@ pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: Ou
         let mut seen_reviews: HashSet<String> = HashSet::new();
         let mut seen_threads: HashSet<String> = HashSet::new();
 
+        // Cross-workspace exclusion sets. Stale workspaces may lack recent events,
+        // so a review can appear "awaiting vote" in a stale workspace even though
+        // the agent already voted in the up-to-date one. We collect exclusions from
+        // ALL workspaces, then post-filter the combined inbox.
+        let mut voted_reviews: HashSet<String> = HashSet::new();
+        let mut terminal_reviews: HashSet<String> = HashSet::new();
+
         let mut combined_inbox = InboxSummary {
             reviews_awaiting_vote: Vec::new(),
             threads_with_new_responses: Vec::new(),
@@ -1033,6 +1040,14 @@ pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: Ou
             }
 
             if let Ok(db) = open_and_sync(&ws_crit.parent().unwrap_or(ws_path)) {
+                // Collect exclusions from every workspace
+                if let Ok(v) = db.get_voted_reviews(agent) {
+                    voted_reviews.extend(v);
+                }
+                if let Ok(t) = db.get_terminal_reviews() {
+                    terminal_reviews.extend(t);
+                }
+
                 if let Ok(inbox) = db.get_inbox(agent) {
                     for r in inbox.reviews_awaiting_vote {
                         if !seen_reviews.contains(&r.review_id) {
@@ -1059,6 +1074,15 @@ pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: Ou
                 }
             }
         }
+
+        // Filter out reviews the agent already voted on (in any workspace)
+        // or that reached terminal status in any workspace
+        combined_inbox.reviews_awaiting_vote.retain(|r| {
+            !voted_reviews.contains(&r.review_id) && !terminal_reviews.contains(&r.review_id)
+        });
+        // Filter thread items for reviews in terminal status
+        combined_inbox.threads_with_new_responses.retain(|t| !terminal_reviews.contains(&t.review_id));
+        combined_inbox.open_threads_on_my_reviews.retain(|t| !terminal_reviews.contains(&t.review_id));
 
         let inbox = combined_inbox;
 

@@ -4,6 +4,8 @@
 //! with optional filtering. All result types implement Serialize
 //! for TOON/JSON output.
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
@@ -598,6 +600,49 @@ impl ProjectionDb {
             results.push(row.context("Failed to read review row")?);
         }
         Ok(results)
+    }
+
+    /// Get review IDs where the agent has voted and the vote is still effective
+    /// (no re-request came after their vote).
+    ///
+    /// Used by `--all-workspaces` to cross-reference across stale workspace projections.
+    pub fn get_voted_reviews(&self, agent: &str) -> Result<HashSet<String>> {
+        let mut voted = HashSet::new();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT rr.review_id
+             FROM review_reviewers rr
+             JOIN reviewer_votes v ON v.review_id = rr.review_id AND v.reviewer = rr.reviewer
+             WHERE rr.reviewer = ?
+               AND v.voted_at >= rr.requested_at",
+        ).context("Failed to prepare voted reviews query")?;
+
+        let rows = stmt.query_map(params![agent], |row| row.get::<_, String>(0))
+            .context("Failed to execute voted reviews query")?;
+        for row in rows {
+            voted.insert(row.context("Failed to read voted review row")?);
+        }
+
+        Ok(voted)
+    }
+
+    /// Get review IDs that are in terminal states (merged or abandoned).
+    ///
+    /// Used by `--all-workspaces` to cross-reference across stale workspace projections.
+    pub fn get_terminal_reviews(&self) -> Result<HashSet<String>> {
+        let mut terminal = HashSet::new();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT review_id FROM reviews WHERE status IN ('merged', 'abandoned')",
+        ).context("Failed to prepare terminal reviews query")?;
+
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            .context("Failed to execute terminal reviews query")?;
+        for row in rows {
+            terminal.insert(row.context("Failed to read terminal review row")?);
+        }
+
+        Ok(terminal)
     }
 
     /// Get threads where the agent has commented but there are newer comments from others.
@@ -1621,5 +1666,91 @@ mod tests {
         // After abandon: 0 open threads
         let review = db.get_review("cr-001").unwrap().unwrap();
         assert_eq!(review.open_thread_count, 0, "Threads on abandoned reviews should not count as open");
+    }
+
+    // ========================================================================
+    // bd-1nf: Cross-workspace inbox exclusion helpers
+    // ========================================================================
+
+    #[test]
+    fn test_get_voted_reviews_returns_effectively_voted() {
+        let db = setup_db();
+
+        let t0 = Utc::now();
+        let t1 = t0 + Duration::hours(1);
+        let t2 = t0 + Duration::hours(2);
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review 1")).unwrap();
+        apply_event(&db, &make_review("cr-002", "alice", "Review 2")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t0),
+        )
+        .unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-002", vec!["bob"], "alice", t0),
+        )
+        .unwrap();
+
+        // Bob votes on cr-001 at t1
+        apply_event(&db, &make_vote_at("bob", "cr-001", VoteType::Lgtm, t1)).unwrap();
+
+        let voted = db.get_voted_reviews("bob").unwrap();
+        assert!(voted.contains("cr-001"), "cr-001 should be in voted set");
+        assert!(!voted.contains("cr-002"), "cr-002 should not be in voted set");
+
+        // Re-request cr-001 at t2 (after vote) → vote no longer effective
+        apply_event(
+            &db,
+            &make_reviewers_requested_at("cr-001", vec!["bob"], "alice", t2),
+        )
+        .unwrap();
+
+        let voted = db.get_voted_reviews("bob").unwrap();
+        assert!(
+            !voted.contains("cr-001"),
+            "cr-001 should not be in voted set after re-request"
+        );
+    }
+
+    #[test]
+    fn test_get_terminal_reviews_returns_merged_and_abandoned() {
+        let db = setup_db();
+
+        apply_event(&db, &make_review("cr-001", "alice", "Open review")).unwrap();
+        apply_event(&db, &make_review("cr-002", "alice", "Merged review")).unwrap();
+        apply_event(&db, &make_review("cr-003", "alice", "Abandoned review")).unwrap();
+
+        // Merge cr-002
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "merger",
+                Event::ReviewMerged(ReviewMerged {
+                    review_id: "cr-002".to_string(),
+                    final_commit: "final".to_string(),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Abandon cr-003
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "abandoner",
+                Event::ReviewAbandoned(ReviewAbandoned {
+                    review_id: "cr-003".to_string(),
+                    reason: Some("not needed".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        let terminal = db.get_terminal_reviews().unwrap();
+        assert!(!terminal.contains("cr-001"), "open review should not be terminal");
+        assert!(terminal.contains("cr-002"), "merged review should be terminal");
+        assert!(terminal.contains("cr-003"), "abandoned review should be terminal");
     }
 }
