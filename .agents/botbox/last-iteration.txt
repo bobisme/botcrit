@@ -1,9 +1,9 @@
-Inbox: Processed security review feedback on cr-1s0w (bd-2r8) — 3 findings (HIGH path traversal, MEDIUM dedup collision, LOW info disclosure). Also found cr-5tjx (bd-339) had been approved.
+Processed Bob's bug report: crit inbox --all-workspaces was showing reviews after voting due to stale workspace projections. Root cause: each workspace has its own events.jsonl snapshot, and stale workspaces missing vote/merge events produced false positives in the combined inbox.
 
-Beads completed:
-- bd-339 (.critignore): cr-5tjx approved by botcrit-security, marked merged, bead closed.
+Created bd-1nf, implemented fix in workspace amber-panther:
+- Added [36mget_voted_reviews()[0m and [36mget_terminal_reviews()[0m query helpers to ProjectionDb (query.rs)
+- Modified [36m--all-workspaces[0m inbox path in reviews.rs to collect exclusion sets across ALL workspaces, then post-filter combined results
+- Added 2 new tests (185/185 pass)
+- Created review cr-v486, requested security review from @botcrit-security (spawned via hook)
 
-Beads worked:
-- bd-2r8 (migration fix): Addressed all 3 security findings in workspace shadow-reef — added is_review_id() validation, improved dedup keys, sanitized eprintln output. Added regression test. Re-requested security review on cr-1s0w.
-
-Status: bd-2r8 awaiting security re-review on cr-1s0w. No other ready beads.
+Awaiting security re-review on cr-v486 before merge.
