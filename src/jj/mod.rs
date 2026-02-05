@@ -167,6 +167,12 @@ impl JjRepo {
         }
     }
 
+    /// Get the repository root path.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.repo_path
+    }
+
     /// Execute a jj command and return its stdout.
     ///
     /// Always uses `--color=never` for parseable output.

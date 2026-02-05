@@ -5,6 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::critignore::{AllFilesIgnoredError, CritIgnore};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
@@ -79,6 +80,25 @@ pub fn run_reviews_create(
     let commit_id = jj
         .get_current_commit()
         .context("Failed to get current commit")?;
+
+    // Check if there are any non-ignored files to review
+    let parent_commit = jj.get_parent_commit(&commit_id)?;
+    let all_files = jj.changed_files_between(&parent_commit, &commit_id)?;
+    let critignore = CritIgnore::load(crit_root);
+    let (reviewable_files, ignored_count) = critignore.filter_files(all_files);
+
+    if reviewable_files.is_empty() {
+        if ignored_count > 0 {
+            // All files were ignored
+            return Err(AllFilesIgnoredError {
+                ignored_count,
+                has_critignore: CritIgnore::has_critignore_file(crit_root),
+            }
+            .into());
+        }
+        // No files changed at all
+        bail!("No files changed in this commit. Nothing to review.");
+    }
 
     let review_id = new_review_id();
     let author = get_agent_identity(author)?;

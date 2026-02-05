@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::critignore::{AllFilesIgnoredError, CritIgnore};
 use crate::jj::drift::{calculate_drift, DriftResult};
 use crate::jj::JjRepo;
 use crate::output::{Formatter, OutputFormat};
@@ -212,8 +213,19 @@ pub fn run_diff(
     // Get the diff between base and target
     let diff = jj.diff_git(&base_commit, &target_commit)?;
 
-    // Get changed files from the diff
-    let changed_files = extract_changed_files_from_diff(&diff);
+    // Get changed files from the diff and filter with critignore
+    let all_files = extract_changed_files_from_diff(&diff);
+    let critignore = CritIgnore::load(crit_root);
+    let (changed_files, ignored_count) = critignore.filter_files(all_files);
+
+    // Check if all files were ignored
+    if changed_files.is_empty() && ignored_count > 0 {
+        return Err(AllFilesIgnoredError {
+            ignored_count,
+            has_critignore: CritIgnore::has_critignore_file(crit_root),
+        }
+        .into());
+    }
 
     // Get threads for context
     let threads = db.list_threads(review_id, None, None)?;

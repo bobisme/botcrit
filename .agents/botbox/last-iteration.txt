@@ -1,1 +1,1 @@
-Merged bd-3to (thread child IDs) after security LGTM. Resolved conflicts in issues.jsonl, pushed to main. No ready beads remain.
+Checked review status for cr-5tjx (bd-339 .critignore support). Review still open with no votes - security reviewer not yet active. Re-sent @botcrit-security mention to trigger reviewer spawn. Only one bead (bd-339) exists and it's awaiting review. No other work available. Awaiting security LGTM on cr-5tjx before merge.

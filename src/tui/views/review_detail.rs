@@ -16,6 +16,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::critignore::CritIgnore;
 use crate::jj::JjRepo;
 use crate::projection::{Comment, ProjectionDb, ReviewDetail, ThreadSummary};
 use crate::tui::theme;
@@ -143,13 +144,13 @@ impl ReviewDetailView {
             .unwrap_or_else(|_| review.initial_commit.clone());
 
         // Get changed files between base and target commits
-        let changed_files: Vec<String> = jj
+        let all_files: Vec<String> = jj
             .changed_files_between(&base_commit, target_commit)
-            .unwrap_or_default()
-            .into_iter()
-            // Filter out .crit/ metadata files - they're not part of the code review
-            .filter(|f| !f.starts_with(".crit/"))
-            .collect();
+            .unwrap_or_default();
+
+        // Load critignore patterns and filter files
+        let critignore = CritIgnore::load(jj.root());
+        let (changed_files, _ignored_count) = critignore.filter_files(all_files);
 
         let mut sections = Vec::new();
 
