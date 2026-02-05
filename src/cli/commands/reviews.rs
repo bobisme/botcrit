@@ -188,18 +188,28 @@ pub fn run_reviews_list(
             }
 
             // Try to open and sync this workspace's .crit/
-            if let Ok(db) = open_and_sync(&ws_crit.parent().unwrap_or(ws_path)) {
-                if let Ok(reviews) = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved) {
-                    for review in reviews {
-                        // Only add if we haven't seen this review_id before
-                        if !seen_review_ids.contains(&review.review_id) {
-                            seen_review_ids.insert(review.review_id.clone());
-                            all_reviews.insert(
-                                review.review_id.clone(),
-                                (review, ws_name.clone(), ws_path.clone()),
-                            );
+            match open_and_sync(&ws_crit.parent().unwrap_or(ws_path)) {
+                Ok(db) => {
+                    match db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved) {
+                        Ok(reviews) => {
+                            for review in reviews {
+                                // Only add if we haven't seen this review_id before
+                                if !seen_review_ids.contains(&review.review_id) {
+                                    seen_review_ids.insert(review.review_id.clone());
+                                    all_reviews.insert(
+                                        review.review_id.clone(),
+                                        (review, ws_name.clone(), ws_path.clone()),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: failed to list reviews in workspace {}: {}", ws_name, e);
                         }
                     }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to sync workspace {}: {}", ws_name, e);
                 }
             }
         }
