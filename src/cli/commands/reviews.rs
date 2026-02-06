@@ -15,14 +15,6 @@ use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::version::require_v2;
 
-/// Helper to create actionable "review not found" error messages.
-fn review_not_found_error(review_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
-}
-
 /// Parse a --since value into a DateTime.
 /// Supports:
 /// - ISO 8601 timestamps: "2026-01-27T23:00:00Z"
@@ -339,21 +331,27 @@ pub fn run_reviews_list(
 }
 
 /// Show details for a specific review.
+///
+/// If the review is not found locally, searches all workspaces.
+/// When found in another workspace, prints a hint about the --path flag.
 pub fn run_reviews_show(repo_root: &Path, review_id: &str, format: OutputFormat) -> Result<()> {
+    use crate::cli::commands::helpers::get_review_or_suggest_path;
+
     ensure_initialized(repo_root)?;
 
-    let db = open_and_sync(repo_root)?;
-    let review = db.get_review(review_id)?;
+    let (review, workspace_info) = get_review_or_suggest_path(repo_root, review_id)?;
 
-    match review {
-        Some(r) => {
-            let formatter = Formatter::new(format);
-            formatter.print(&r)?;
-        }
-        None => {
-            return Err(review_not_found_error(&review_id));
-        }
+    // If found in another workspace, print a hint
+    if let Some((ws_name, ws_path)) = workspace_info {
+        eprintln!(
+            "Note: Found in workspace '{}' ({})",
+            ws_name,
+            ws_path.display()
+        );
     }
+
+    let formatter = Formatter::new(format);
+    formatter.print(&review)?;
 
     Ok(())
 }
@@ -366,13 +364,12 @@ pub fn run_reviews_request(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::require_local_review;
+
     ensure_initialized(repo_root)?;
 
-    // Verify review exists
-    let db = open_and_sync(repo_root)?;
-    if db.get_review(review_id)?.is_none() {
-        return Err(review_not_found_error(&review_id));
-    }
+    // Verify review exists locally (need to write to its log)
+    require_local_review(repo_root, review_id)?;
 
     let reviewer_list: Vec<String> = reviewers
         .split(',')
@@ -414,21 +411,18 @@ pub fn run_reviews_approve(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::require_local_review;
+
     ensure_initialized(repo_root)?;
 
-    // Verify review exists and is open
-    let db = open_and_sync(repo_root)?;
-    let review = db.get_review(review_id)?;
-    match &review {
-        None => return Err(review_not_found_error(&review_id)),
-        Some(r) if r.status != "open" => {
-            bail!(
-                "Cannot approve review with status '{}': {}",
-                r.status,
-                review_id
-            );
-        }
-        _ => {}
+    // Verify review exists locally and is open
+    let review = require_local_review(repo_root, review_id)?;
+    if review.status != "open" {
+        bail!(
+            "Cannot approve review with status '{}': {}",
+            review.status,
+            review_id
+        );
     }
 
     let author = get_agent_identity(author)?;
@@ -461,20 +455,17 @@ pub fn run_reviews_abandon(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::require_local_review;
+
     ensure_initialized(repo_root)?;
 
-    // Verify review exists and is not already abandoned/merged
-    let db = open_and_sync(repo_root)?;
-    let review = db.get_review(review_id)?;
-    match &review {
-        None => return Err(review_not_found_error(&review_id)),
-        Some(r) if r.status == "abandoned" => {
-            bail!("Review is already abandoned: {}", review_id);
-        }
-        Some(r) if r.status == "merged" => {
-            bail!("Cannot abandon merged review: {}", review_id);
-        }
-        _ => {}
+    // Verify review exists locally and is not already abandoned/merged
+    let review = require_local_review(repo_root, review_id)?;
+    if review.status == "abandoned" {
+        bail!("Review is already abandoned: {}", review_id);
+    }
+    if review.status == "merged" {
+        bail!("Cannot abandon merged review: {}", review_id);
     }
 
     let author = get_agent_identity(author)?;
@@ -516,39 +507,39 @@ pub fn run_reviews_merge(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::require_local_review;
+
     ensure_initialized(crit_root)?;
 
-    // Verify review exists
-    let db = open_and_sync(crit_root)?;
-    let review = db.get_review(review_id)?;
-    match &review {
-        None => return Err(review_not_found_error(&review_id)),
-        Some(r) if r.status == "merged" => {
-            bail!("Review is already merged: {}", review_id);
-        }
-        Some(r) if r.status == "abandoned" => {
-            bail!("Cannot merge abandoned review: {}", review_id);
-        }
-        Some(r) if r.status == "open" && !self_approve => {
-            bail!(
-                "Cannot merge unapproved review: {}. Approve it first, or use --self-approve.",
-                review_id
-            );
-        }
-        Some(r) if r.status == "open" && self_approve => {
-            // Auto-approve the review first
-            let author_str = get_agent_identity(author)?;
-            let approve_event = EventEnvelope::new(
-                &author_str,
-                Event::ReviewApproved(ReviewApproved {
-                    review_id: review_id.to_string(),
-                }),
-            );
-            let log = open_or_create_review(crit_root, review_id)?;
-            log.append(&approve_event)?;
-        }
-        _ => {}
+    // Verify review exists locally (need to write to its log)
+    let review = require_local_review(crit_root, review_id)?;
+    if review.status == "merged" {
+        bail!("Review is already merged: {}", review_id);
     }
+    if review.status == "abandoned" {
+        bail!("Cannot merge abandoned review: {}", review_id);
+    }
+    if review.status == "open" && !self_approve {
+        bail!(
+            "Cannot merge unapproved review: {}. Approve it first, or use --self-approve.",
+            review_id
+        );
+    }
+    if review.status == "open" && self_approve {
+        // Auto-approve the review first
+        let author_str = get_agent_identity(author)?;
+        let approve_event = EventEnvelope::new(
+            &author_str,
+            Event::ReviewApproved(ReviewApproved {
+                review_id: review_id.to_string(),
+            }),
+        );
+        let log = open_or_create_review(crit_root, review_id)?;
+        log.append(&approve_event)?;
+    }
+
+    // Re-open the database to get fresh state after any approval
+    let db = open_and_sync(crit_root)?;
 
     // Check for blocking votes
     if db.has_blocking_votes(review_id)? {
@@ -651,22 +642,20 @@ fn run_vote(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::require_local_review;
+
     ensure_initialized(repo_root)?;
 
-    // Verify review exists and is open or approved (approved reviews can still
+    // Verify review exists locally and is open or approved (approved reviews can still
     // receive votes, e.g., to change a block to lgtm after issues are fixed)
-    let db = open_and_sync(repo_root)?;
-    let review = db.get_review(review_id)?;
-    let review_status = match &review {
-        None => return Err(review_not_found_error(&review_id)),
-        Some(r) if r.status == "merged" => {
-            bail!("Cannot vote on merged review: {}", review_id);
-        }
-        Some(r) if r.status == "abandoned" => {
-            bail!("Cannot vote on abandoned review: {}", review_id);
-        }
-        Some(r) => r.status.clone(),
-    };
+    let review = require_local_review(repo_root, review_id)?;
+    if review.status == "merged" {
+        bail!("Cannot vote on merged review: {}", review_id);
+    }
+    if review.status == "abandoned" {
+        bail!("Cannot vote on abandoned review: {}", review_id);
+    }
+    let review_status = review.status.clone();
 
     let author = get_agent_identity(author)?;
     let event = EventEnvelope::new(
@@ -733,16 +722,28 @@ pub fn run_review(
     since: Option<DateTime<Utc>>,
     format: OutputFormat,
 ) -> Result<()> {
+    use crate::cli::commands::helpers::get_review_or_suggest_path;
     use crate::jj::context::{extract_context, format_context};
 
     ensure_initialized(crit_root)?;
 
-    let db = open_and_sync(crit_root)?;
-    let review = db.get_review(review_id)?;
+    // Find review (may be in another workspace)
+    let (review, workspace_info_hint) = get_review_or_suggest_path(crit_root, review_id)?;
 
-    let Some(review) = review else {
-        return Err(review_not_found_error(&review_id));
+    // Determine which path to use for database lookups
+    let effective_root = if let Some((ref ws_name, ref ws_path)) = workspace_info_hint {
+        eprintln!(
+            "Note: Found in workspace '{}' ({})",
+            ws_name,
+            ws_path.display()
+        );
+        ws_path.as_path()
+    } else {
+        crit_root
     };
+
+    // Open db at the correct path for thread/comment lookups
+    let db = open_and_sync(effective_root)?;
 
     let jj = JjRepo::new(workspace_root);
 
