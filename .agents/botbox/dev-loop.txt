@@ -1,0 +1,20 @@
+
+--- 2026-02-06T03:26:19.268Z | jj:knzzuyzkztxv ---
+[1mCompleted this iteration:[0m
+
+1. [1mChecked unfinished work[0m - No in_progress beads from previous session
+2. [1mProcessed inbox[0m - Read messages from maw-dev about workspace merge behavior (informational only, bd-3mr already filed)
+3. [1mTriaged ready beads[0m - Found 2 ready bugs:
+   - bd-epa: maw merge allows without reviewer voting (maw issue)
+   - bd-3av: Reviews in workspaces not visible from repo root (crit issue)
+4. [1mWorked on bd-3av[0m (sequential, 1 bead at a time):
+   - Created workspace crystal-hawk
+   - Implemented [36mfind_review_in_workspaces()[0m, [36mget_review_or_suggest_path()[0m, [36mrequire_local_review()[0m helpers in helpers.rs
+   - Updated [36mrun_reviews_show[0m to search workspaces for read-only display
+   - Updated [36mrun_reviews_request[0m, [36mrun_reviews_approve[0m, [36mrun_reviews_abandon[0m, [36mrun_reviews_merge[0m, [36mrun_vote[0m, [36mrun_review[0m to use workspace-aware lookups
+   - Created review cr-5a4g
+   - Requested security review from @botcrit-security (spawned via hook)
+
+[1mRemaining work:[0m
+- bd-epa still open (P2 bug about reviewer vote checking in maw)
+- cr-5a4g awaiting security review before merge
