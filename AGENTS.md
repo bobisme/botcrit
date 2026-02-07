@@ -604,7 +604,7 @@ botbus --agent botcrit-dev send botcrit "crit vX.Y.Z released - [summary of chan
 | View ready work | `br ready` |
 | Show bead | `br show <id>` |
 | Create | `br create --actor $AGENT --owner $AGENT --title="..." --type=task --priority=2` |
-| Start work | `br update --actor $AGENT <id> --status=in_progress` |
+| Start work | `br update --actor $AGENT <id> --status=in_progress --owner=$AGENT` |
 | Add comment | `br comments add --actor $AGENT --author $AGENT <id> "message"` |
 | Close | `br close --actor $AGENT <id>` |
 | Add dependency | `br dep add --actor $AGENT <blocked> <blocker>` |
@@ -676,6 +676,10 @@ When you have questions, feedback, or issues with tools from other projects:
 
 This includes: bugs, feature requests, confusion about APIs, UX problems, or just questions.
 
+### Session Search (optional)
+
+Use `cass search "error or problem"` to find how similar issues were solved in past sessions.
+
 
 ### Design Guidelines
 
@@ -686,11 +690,14 @@ This includes: bugs, feature requests, confusion about APIs, UX problems, or jus
 - [Close bead, merge workspace, release claims, sync](.agents/botbox/finish.md)
 - [groom](.agents/botbox/groom.md)
 - [Verify approval before merge](.agents/botbox/merge-check.md)
+- [Turn specs/PRDs into actionable beads](.agents/botbox/planning.md)
 - [Validate toolchain health](.agents/botbox/preflight.md)
+- [Create and validate proposals before implementation](.agents/botbox/proposal.md)
 - [Report bugs/features to other projects](.agents/botbox/report-issue.md)
 - [Reviewer agent loop](.agents/botbox/review-loop.md)
 - [Request a review](.agents/botbox/review-request.md)
 - [Handle reviewer feedback (fix/address/defer)](.agents/botbox/review-response.md)
+- [Explore unfamiliar code before planning](.agents/botbox/scout.md)
 - [Claim bead, create workspace, announce](.agents/botbox/start.md)
 - [Find work from inbox and beads](.agents/botbox/triage.md)
 - [Change bead status (open/in_progress/blocked/done)](.agents/botbox/update.md)

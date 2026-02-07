@@ -115,6 +115,45 @@ async function getAgentName() {
 	}
 }
 
+// --- Helper: check if a review is pending (don't run Claude, just wait) ---
+async function hasPendingReview() {
+	try {
+		let result = await runCommand('br', ['list', '--status', 'in_progress', '--assignee', AGENT, '--json']);
+		let beads = JSON.parse(result.stdout || '[]');
+		if (!Array.isArray(beads)) beads = [];
+
+		for (let bead of beads) {
+			try {
+				let commentsResult = await runCommand('br', ['comments', bead.id, '--json']);
+				let comments = JSON.parse(commentsResult.stdout || '[]');
+				let arr = Array.isArray(comments) ? comments : comments.comments || [];
+
+				let hasReview = arr.some(
+					(/** @type {any} */ c) =>
+						c.body?.includes('Review created:') ||
+						c.body?.includes('Review requested:') ||
+						c.content?.includes('Review created:') ||
+						c.content?.includes('Review requested:'),
+				);
+				if (!hasReview) continue;
+
+				let hasCompleted = arr.some(
+					(/** @type {any} */ c) =>
+						c.body?.includes('Completed by') || c.content?.includes('Completed by'),
+				);
+				if (hasCompleted) continue;
+
+				return bead.id;
+			} catch {
+				// Can't read comments, skip
+			}
+		}
+	} catch {
+		// Can't list beads, skip
+	}
+	return null;
+}
+
 // --- Helper: check if there is work ---
 async function hasWork() {
 	try {
@@ -142,8 +181,9 @@ async function hasWork() {
 			'--format',
 			'json',
 		]);
-		const inbox = JSON.parse(inboxResult.stdout || '{}');
-		if (inbox.total_unread > 0) return true;
+		const inboxParsed = JSON.parse(inboxResult.stdout || '0');
+		const unreadCount = typeof inboxParsed === 'number' ? inboxParsed : (inboxParsed.total_unread ?? 0);
+		if (unreadCount > 0) return true;
 
 		// Check ready beads
 		const readyResult = await runCommand('br', ['ready', '--json']);
@@ -160,9 +200,7 @@ async function hasWork() {
 
 // --- Build worker prompt ---
 function buildPrompt() {
-	const pushMainStep = PUSH_MAIN
-		? '\n   Push to GitHub: jj bookmark set main -r @- && jj git push (if fails, announce issue).'
-		: '';
+	const pushMainStep = PUSH_MAIN ? '\n   Push to GitHub: maw push (if fails, announce issue).' : '';
 
 	return `You are worker agent "${AGENT}" for project "${PROJECT}".
 
@@ -182,12 +220,14 @@ At the end of your work, output exactly one of these completion signals:
    If you hold a bead:// claim, you have an in-progress bead from a previous iteration.
    - Run: br comments <bead-id> to understand what was done before and what remains.
    - Look for workspace info in comments (workspace name and path).
-   - If a "Review requested: <review-id>" comment exists:
-     * Check review status: crit review <review-id>
+   - If a "Review created: <review-id>" comment exists:
+     * Find the review: crit reviews list --all-workspaces | grep <review-id>
+     * Check review status: crit reviews show <review-id> --path <workspace-path>
      * If LGTM (approved): proceed to FINISH (step 7) — merge the review and close the bead.
      * If BLOCKED (changes requested): follow .agents/botbox/review-response.md to fix issues
        in the workspace, re-request review, then STOP this iteration.
      * If PENDING (no votes yet): STOP this iteration. Wait for the reviewer.
+     * If review not found: DO NOT merge or create a new review. The reviewer may still be starting up (hooks have latency). STOP this iteration and wait. Only create a new review if the workspace was destroyed AND 3+ iterations have passed since the review comment.
    - If no review comment (work was in progress when session ended):
      * Read the workspace code to see what's already done.
      * Complete the remaining work in the EXISTING workspace — do NOT create a new one.
@@ -200,7 +240,7 @@ At the end of your work, output exactly one of these completion signals:
    For each message:
    - Task request (-L task-request or asks for work): create a bead with br create.
    - Status check or question: reply on bus, do NOT create a bead.
-   - Feedback (-L feedback): review referenced beads, reply with triage result.
+   - Feedback (-L feedback): if it contains a bug report, feature request, or actionable work — create a bead. Evaluate critically: is this a real issue? Is it well-scoped? Set priority accordingly. Then acknowledge on bus.
    - Announcements from other agents ("Working on...", "Completed...", "online"): ignore, no action.
    - Duplicate of existing bead: do NOT create another bead, note it covers the request.
 
@@ -211,7 +251,7 @@ At the end of your work, output exactly one of these completion signals:
    br create + br dep add, then bv --robot-next again. If a bead is claimed
    (bus claims check --agent ${AGENT} "bead://${PROJECT}/<id>"), skip it.
 
-3. START: br update --actor ${AGENT} <id> --status=in_progress.
+3. START: br update --actor ${AGENT} <id> --status=in_progress --owner=${AGENT}.
    bus claims stake --agent ${AGENT} "bead://${PROJECT}/<id>" -m "<id>".
    Create workspace: run maw ws create --random. Note the workspace name AND absolute path
    from the output (e.g., name "frost-castle", path "/abs/path/.workspaces/frost-castle").
@@ -238,11 +278,15 @@ At the end of your work, output exactly one of these completion signals:
 
 6. REVIEW REQUEST:
    Describe the change: maw ws jj \$WS describe -m "<id>: <summary>".
-   Create review: crit reviews create --agent ${AGENT} --title "<title>" --description "<summary>".
-   Add bead comment: br comments add --actor ${AGENT} --author ${AGENT} <id> "Review requested: <review-id>, workspace: \$WS (\$WS_PATH)".
+   CHECK for existing review first:
+     - Run: br comments <id> | grep "Review created:"
+     - If found, extract <review-id> and skip to requesting security review (don't create duplicate)
+   Create review (only if none exists):
+     - crit reviews create --agent ${AGENT} --title "<id>: <title>" --description "<summary>" --path \$WS_PATH
+     - IMMEDIATELY record: br comments add --actor ${AGENT} --author ${AGENT} <id> "Review created: <review-id> in workspace \$WS"
    bus statuses set --agent ${AGENT} "Review: <review-id>".
    Request security review (if project has security reviewer):
-     - Assign: crit reviews request <review-id> --reviewers ${PROJECT}-security --agent ${AGENT}
+     - Assign: crit reviews request <review-id> --reviewers ${PROJECT}-security --agent ${AGENT} --path \$WS_PATH
      - Spawn via @mention: bus send --agent ${AGENT} ${PROJECT} "Review requested: <review-id> for <id> @${PROJECT}-security" -L review-request
      (The @mention triggers the auto-spawn hook — without it, no reviewer spawns!)
    Do NOT close the bead. Do NOT merge the workspace. Do NOT release claims.
@@ -256,10 +300,21 @@ At the end of your work, output exactly one of these completion signals:
      crit reviews mark-merged <review-id> --agent ${AGENT}.
    br comments add --actor ${AGENT} --author ${AGENT} <id> "Completed by ${AGENT}".
    br close --actor ${AGENT} <id> --reason="Completed" --suggest-next.
-   maw ws merge \$WS --destroy (if conflict, preserve and announce).
+   maw ws merge \$WS --destroy (maw v0.22.0+ produces linear squashed history and auto-moves main; if conflict, preserve and announce).
    bus claims release --agent ${AGENT} --all.
    br sync --flush-only.${pushMainStep}
    bus send --agent ${AGENT} ${PROJECT} "Completed <id>: <title>" -L task-done.
+   Then proceed to step 8 (RELEASE CHECK).
+
+8. RELEASE CHECK (before signaling COMPLETE):
+   Check for unreleased commits: jj log -r 'tags()..main' --no-graph -T 'description.first_line() ++ "\\n"'
+   If any commits start with "feat:" or "fix:" (user-visible changes), a release is needed:
+   - Bump version in Cargo.toml/package.json (semantic versioning)
+   - Update changelog if one exists
+   - maw push (if not already pushed)
+   - Tag: jj tag set vX.Y.Z -r main && jj git push --remote origin
+   - Announce: bus send --agent ${AGENT} ${PROJECT} "<project> vX.Y.Z released - <summary>" -L release
+   If only "chore:", "docs:", "refactor:" commits, no release needed.
    Output: <promise>COMPLETE</promise>
 
 Key rules:
@@ -310,20 +365,25 @@ async function runClaude(prompt) {
 	});
 }
 
+// Track if we already announced sign-off (to avoid duplicate messages)
+let alreadySignedOff = false;
+
 // --- Cleanup handler ---
 async function cleanup() {
 	console.log('Cleaning up...');
-	try {
-		await runCommand('bus', [
-			'send',
-			'--agent',
-			AGENT,
-			PROJECT,
-			`Agent ${AGENT} signing off.`,
-			'-L',
-			'agent-idle',
-		]);
-	} catch {}
+	if (!alreadySignedOff) {
+		try {
+			await runCommand('bus', [
+				'send',
+				'--agent',
+				AGENT,
+				PROJECT,
+				`Agent ${AGENT} signing off.`,
+				'-L',
+				'agent-idle',
+			]);
+		} catch {}
+	}
 	try {
 		await runCommand('bus', ['statuses', 'clear', '--agent', AGENT]);
 	} catch {}
@@ -370,24 +430,19 @@ async function main() {
 		process.exit(1);
 	}
 
-	// Refresh or stake agent lease
+	// Stake agent claim (ignore failure — may already be held from previous run)
 	try {
-		await runCommand('bus', ['claims', 'refresh', '--agent', AGENT, `agent://${AGENT}`]);
+		await runCommand('bus', [
+			'claims',
+			'stake',
+			'--agent',
+			AGENT,
+			`agent://${AGENT}`,
+			'-m',
+			`worker-loop for ${PROJECT}`,
+		]);
 	} catch {
-		try {
-			await runCommand('bus', [
-				'claims',
-				'stake',
-				'--agent',
-				AGENT,
-				`agent://${AGENT}`,
-				'-m',
-				`worker-loop for ${PROJECT}`,
-			]);
-		} catch {
-			// Claim held by another agent - they're orchestrating, continue
-			console.log(`Claim held by another agent, continuing`);
-		}
+		// Already held — will refresh in the loop
 	}
 
 	// Announce
@@ -408,6 +463,13 @@ async function main() {
 	for (let i = 1; i <= MAX_LOOPS; i++) {
 		console.log(`\n--- Loop ${i}/${MAX_LOOPS} ---`);
 
+		// Refresh agent claim TTL (ignore failure)
+		try {
+			await runCommand('bus', ['claims', 'refresh', '--agent', AGENT, `agent://${AGENT}`]);
+		} catch {
+			// Claim may have expired or been released — not fatal
+		}
+
 		if (!(await hasWork())) {
 			await runCommand('bus', ['statuses', 'set', '--agent', AGENT, 'Idle']);
 			console.log('No work available. Exiting cleanly.');
@@ -420,7 +482,27 @@ async function main() {
 				'-L',
 				'agent-idle',
 			]);
+			alreadySignedOff = true;
 			break;
+		}
+
+		// Guard: if a review is pending, don't run Claude — just wait
+		let pendingBeadId = await hasPendingReview();
+		if (pendingBeadId) {
+			console.log(`Review pending for ${pendingBeadId} — waiting (not running Claude)`);
+			try {
+				await runCommand('bus', [
+					'statuses',
+					'set',
+					'--agent',
+					AGENT,
+					`Waiting: review for ${pendingBeadId}`,
+					'--ttl',
+					'10m',
+				]);
+			} catch {}
+			await new Promise((resolve) => setTimeout(resolve, 30_000));
+			continue;
 		}
 
 		// Run Claude
@@ -431,6 +513,7 @@ async function main() {
 			// Check for completion signals
 			if (result.output.includes('<promise>COMPLETE</promise>')) {
 				console.log('✓ Task cycle complete');
+				alreadySignedOff = true; // Agent likely sent its own sign-off
 			} else if (result.output.includes('<promise>BLOCKED</promise>')) {
 				console.log('⚠ Agent blocked');
 			} else {
