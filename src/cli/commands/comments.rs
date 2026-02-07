@@ -3,7 +3,9 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::cli::commands::helpers::{
+    ensure_initialized, open_and_sync, review_not_found_error, thread_not_found_error,
+};
 use crate::cli::commands::threads::parse_line_selection;
 use crate::events::{
     get_agent_identity, make_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
@@ -12,22 +14,6 @@ use crate::events::{
 use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-
-/// Helper to create actionable "thread not found" error messages.
-fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
-        thread_id
-    )
-}
-
-/// Helper to create actionable "review not found" error messages.
-fn review_not_found_error(review_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
-}
 
 /// Add a comment to a thread.
 pub fn run_comments_add(
@@ -44,7 +30,7 @@ pub fn run_comments_add(
     // Verify thread exists and get its review_id
     let thread = db.get_thread(thread_id)?;
     let thread = match thread {
-        None => return Err(thread_not_found_error(&thread_id)),
+        None => return Err(thread_not_found_error(repo_root, thread_id)),
         Some(t) => t,
     };
 
@@ -108,7 +94,7 @@ pub fn run_comment(
     // Verify review exists and is open
     let review = db.get_review(review_id)?;
     match &review {
-        None => return Err(review_not_found_error(&review_id)),
+        None => return Err(review_not_found_error(crit_root, review_id)),
         Some(r) if r.status != "open" => {
             bail!(
                 "Cannot comment on review with status '{}': {}",
@@ -210,7 +196,7 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
 
     // Verify thread exists
     if db.get_thread(thread_id)?.is_none() {
-        return Err(thread_not_found_error(&thread_id));
+        return Err(thread_not_found_error(repo_root, thread_id));
     }
 
     let comments = db.list_comments(thread_id)?;

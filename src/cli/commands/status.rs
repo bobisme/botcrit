@@ -4,20 +4,12 @@ use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::cli::commands::helpers::{ensure_initialized, open_and_sync, review_not_found_error};
 use crate::critignore::{AllFilesIgnoredError, CritIgnore};
 use crate::jj::drift::{calculate_drift, DriftResult};
 use crate::jj::JjRepo;
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::ThreadSummary;
-
-/// Helper to create actionable "review not found" error messages.
-fn review_not_found_error(review_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
-}
 
 /// Thread status with drift information.
 #[derive(Debug, Clone, Serialize)]
@@ -66,7 +58,7 @@ pub fn run_status(
         let review = db.get_review(rid)?;
         match review {
             Some(r) => vec![r],
-            None => return Err(review_not_found_error(&rid)),
+            None => return Err(review_not_found_error(crit_root, rid)),
         }
     } else {
         // Get all open reviews
@@ -191,7 +183,7 @@ pub fn run_diff(
     let review = db.get_review(review_id)?;
     let review = match review {
         Some(r) => r,
-        None => return Err(review_not_found_error(&review_id)),
+        None => return Err(review_not_found_error(crit_root, review_id)),
     };
 
     // Get target commit: resolve the review's change_id to its current commit

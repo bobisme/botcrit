@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::commands::init::{index_path, is_initialized, CRIT_DIR};
 use crate::jj::{resolve_repo_root, JjRepo};
-use crate::projection::{sync_from_review_logs, ProjectionDb, ReviewDetail};
+use crate::projection::{sync_from_review_logs, ProjectionDb, ReviewDetail, ThreadDetail};
 use crate::version::{detect_version, require_v2, DataVersion};
 
 /// Ensure crit is initialized in the given directory.
@@ -199,6 +199,106 @@ pub fn require_local_review(crit_root: &Path, review_id: &str) -> Result<ReviewD
     bail!(
         "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
         review_id
+    )
+}
+
+/// Result of finding a thread across workspaces.
+pub struct WorkspaceThread {
+    /// The thread data
+    pub thread: ThreadDetail,
+    /// The workspace name where the thread was found
+    pub workspace_name: String,
+    /// The workspace path
+    pub workspace_path: PathBuf,
+}
+
+/// Find a thread by ID, searching all workspaces if not found locally.
+///
+/// Returns `Ok(None)` if the thread is not found anywhere.
+pub fn find_thread_in_workspaces(
+    crit_root: &Path,
+    thread_id: &str,
+) -> Result<Option<WorkspaceThread>> {
+    // First try locally
+    if let Ok(db) = open_and_sync(crit_root) {
+        if let Ok(Some(thread)) = db.get_thread(thread_id) {
+            return Ok(Some(WorkspaceThread {
+                thread,
+                workspace_name: "default".to_string(),
+                workspace_path: crit_root.to_path_buf(),
+            }));
+        }
+    }
+
+    // Not found locally - search workspaces
+    let repo_root = match resolve_repo_root(crit_root) {
+        Ok(root) => root,
+        Err(_) => return Ok(None),
+    };
+
+    let jj = JjRepo::new(&repo_root);
+    let workspaces = jj.list_workspaces().context("Failed to list workspaces")?;
+
+    for (ws_name, _ws_change_id, ws_path) in workspaces {
+        if ws_path == crit_root || ws_path == repo_root {
+            continue;
+        }
+
+        let ws_crit = ws_path.join(".crit");
+        if !ws_crit.exists() {
+            continue;
+        }
+
+        if let Ok(db) = open_and_sync(&ws_path) {
+            if let Ok(Some(thread)) = db.get_thread(thread_id) {
+                return Ok(Some(WorkspaceThread {
+                    thread,
+                    workspace_name: ws_name,
+                    workspace_path: ws_path,
+                }));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Create a workspace-aware "review not found" error.
+///
+/// Searches all workspaces before returning "not found". If the review is
+/// found in another workspace, the error message suggests using --path.
+pub fn review_not_found_error(crit_root: &Path, review_id: &str) -> anyhow::Error {
+    if let Ok(Some(ws)) = find_review_in_workspaces(crit_root, review_id) {
+        return anyhow::anyhow!(
+            "Review {} found in workspace '{}'\n  To fix: crit --path {} <command>",
+            review_id,
+            ws.workspace_name,
+            ws.workspace_path.display()
+        );
+    }
+    anyhow::anyhow!(
+        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
+        review_id
+    )
+}
+
+/// Create a workspace-aware "thread not found" error.
+///
+/// Searches all workspaces before returning "not found". If the thread is
+/// found in another workspace, the error message suggests using --path.
+pub fn thread_not_found_error(crit_root: &Path, thread_id: &str) -> anyhow::Error {
+    if let Ok(Some(ws)) = find_thread_in_workspaces(crit_root, thread_id) {
+        return anyhow::anyhow!(
+            "Thread {} found in workspace '{}' (review {})\n  To fix: crit --path {} <command>",
+            thread_id,
+            ws.workspace_name,
+            ws.thread.review_id,
+            ws.workspace_path.display()
+        );
+    }
+    anyhow::anyhow!(
+        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
+        thread_id
     )
 }
 

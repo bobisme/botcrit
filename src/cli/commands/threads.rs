@@ -3,7 +3,9 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
+use crate::cli::commands::helpers::{
+    ensure_initialized, open_and_sync, review_not_found_error, thread_not_found_error,
+};
 use crate::events::{
     get_agent_identity, new_thread_id, CodeSelection, Event, EventEnvelope, ThreadCreated,
     ThreadReopened, ThreadResolved,
@@ -12,22 +14,6 @@ use crate::jj::context::{extract_context, format_context};
 use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
-
-/// Helper to create actionable "review not found" error messages.
-fn review_not_found_error(review_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
-}
-
-/// Helper to create actionable "thread not found" error messages.
-fn thread_not_found_error(thread_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
-        thread_id
-    )
-}
 
 /// Create a new comment thread on a file.
 ///
@@ -49,7 +35,7 @@ pub fn run_threads_create(
     let db = open_and_sync(crit_root)?;
     let review = db.get_review(review_id)?;
     match &review {
-        None => return Err(review_not_found_error(&review_id)),
+        None => return Err(review_not_found_error(crit_root, review_id)),
         Some(r) if r.status != "open" => {
             bail!(
                 "Cannot create thread on review with status '{}': {}",
@@ -124,7 +110,7 @@ pub fn run_threads_list(
 
     // Verify review exists
     if db.get_review(review_id)?.is_none() {
-        return Err(review_not_found_error(&review_id));
+        return Err(review_not_found_error(repo_root, review_id));
     }
 
     let threads = db.list_threads(review_id, status, file)?;
@@ -287,7 +273,7 @@ pub fn run_threads_show(
             }
         }
         None => {
-            return Err(thread_not_found_error(&thread_id));
+            return Err(thread_not_found_error(crit_root, thread_id));
         }
     }
 
@@ -497,7 +483,7 @@ pub fn run_threads_resolve(
         for tid in thread_ids {
             let thread = db.get_thread(tid)?;
             let thread = match thread {
-                None => return Err(thread_not_found_error(&tid)),
+                None => return Err(thread_not_found_error(repo_root, tid)),
                 Some(t) if t.status == "resolved" => {
                     bail!("Thread is already resolved: {}", tid);
                 }
@@ -545,7 +531,7 @@ pub fn run_threads_reopen(
     let thread = db.get_thread(thread_id)?;
 
     let thread = match thread {
-        None => return Err(thread_not_found_error(&thread_id)),
+        None => return Err(thread_not_found_error(repo_root, thread_id)),
         Some(t) if t.status != "resolved" => {
             bail!(
                 "Cannot reopen thread with status '{}': {}",
