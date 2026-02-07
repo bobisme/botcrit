@@ -1,27 +1,33 @@
 
 --- 2026-02-06T03:26:19.268Z | jj:knzzuyzkztxv ---
-[1mCompleted this iteration:[0m
+Completed this iteration:
 
-1. [1mChecked unfinished work[0m - No in_progress beads from previous session
-2. [1mProcessed inbox[0m - Read messages from maw-dev about workspace merge behavior (informational only, bd-3mr already filed)
-3. [1mTriaged ready beads[0m - Found 2 ready bugs:
+1. Checked unfinished work - No in_progress beads from previous session
+2. Processed inbox - Read messages from maw-dev about workspace merge behavior (informational only, bd-3mr already filed)
+3. Triaged ready beads - Found 2 ready bugs:
    - bd-epa: maw merge allows without reviewer voting (maw issue)
    - bd-3av: Reviews in workspaces not visible from repo root (crit issue)
-4. [1mWorked on bd-3av[0m (sequential, 1 bead at a time):
+4. Worked on bd-3av (sequential, 1 bead at a time):
    - Created workspace crystal-hawk
-   - Implemented [36mfind_review_in_workspaces()[0m, [36mget_review_or_suggest_path()[0m, [36mrequire_local_review()[0m helpers in helpers.rs
-   - Updated [36mrun_reviews_show[0m to search workspaces for read-only display
-   - Updated [36mrun_reviews_request[0m, [36mrun_reviews_approve[0m, [36mrun_reviews_abandon[0m, [36mrun_reviews_merge[0m, [36mrun_vote[0m, [36mrun_review[0m to use workspace-aware lookups
+   - Implemented find_review_in_workspaces(), get_review_or_suggest_path(), require_local_review() helpers in helpers.rs
+   - Updated run_reviews_show to search workspaces for read-only display
+   - Updated run_reviews_request, run_reviews_approve, run_reviews_abandon, run_reviews_merge, run_vote, run_review to use workspace-aware lookups
    - Created review cr-5a4g
    - Requested security review from @botcrit-security (spawned via hook)
 
-[1mRemaining work:[0m
+Remaining work:
 - bd-epa still open (P2 bug about reviewer vote checking in maw)
 - cr-5a4g awaiting security review before merge
 
 --- 2026-02-06T03:31:16.094Z | jj:kqktstrszxzk ---
-1. [1mResumed from previous session[0m - Found in_progress bead bd-3av with review cr-5a4g awaiting security review
-2. [1mReview approved[0m - Security reviewer (botcrit-security) had voted LGTM on cr-5a4g
-3. [1mMerged and closed[0m - Marked review as merged, merged workspace crystal-hawk, resolved beads conflict, closed bd-3av
-4. [1mReleased v0.14.0[0m - Bumped version, tagged, pushed, installed locally. Feature: review commands now auto-search workspaces when review not found locally
-5. [1mTriaged bd-epa[0m - Commented that this is a maw issue (maw ws merge should check crit votes), notified maw-dev via botbus
+1. Resumed from previous session - Found in_progress bead bd-3av with review cr-5a4g awaiting security review
+2. Review approved - Security reviewer (botcrit-security) had voted LGTM on cr-5a4g
+3. Merged and closed - Marked review as merged, merged workspace crystal-hawk, resolved beads conflict, closed bd-3av
+4. Released v0.14.0 - Bumped version, tagged, pushed, installed locally. Feature: review commands now auto-search workspaces when review not found locally
+5. Triaged bd-epa - Commented that this is a maw issue (maw ws merge should check crit votes), notified maw-dev via botbus
+
+--- 2026-02-07T03:49:39.257Z | jj:qptplutkumwx ---
+Processed inbox: botbox-dev reported FK constraint bug when workspace destroyed after review creation (orphaned ThreadCreated/CommentAdded events without ReviewCreated). Created bd-2ys, implemented fix in storm-sentinel workspace — added filter_orphaned_events() with two-pass analysis (collect known reviews, then filter orphaned events). 6 new tests, all 194 tests pass. Created review cr-21wy, security reviewer botcrit-security spawned. Acknowledged botbox-dev feedback. Waiting for security review.
+
+--- 2026-02-07T03:50:18.349Z | jj:qptplutkumwx ---
+Checked unfinished work: bd-2ys still in_progress with review cr-21wy pending security review from botcrit-security. Reviewer announced online at 22:49. No votes or threads yet on the review. No other ready beads available. Claims active with ~55min TTL. Waiting for security review completion.
