@@ -24,14 +24,27 @@ fn random_seed() -> [u8; 16] {
     buf
 }
 
+/// Generate a valid ID, retrying if the hash doesn't satisfy terseid's
+/// parse rules (e.g., 4+ char hashes must contain at least one digit).
+fn generate_valid_id(gen: &IdGenerator) -> String {
+    for _ in 0..100 {
+        let id = gen.candidate(&random_seed(), HASH_LENGTH);
+        if parse_id(&id).is_ok() {
+            return id;
+        }
+    }
+    // Extremely unlikely: 100 consecutive all-letter hashes
+    panic!("failed to generate a valid ID after 100 attempts");
+}
+
 /// Generate a new review ID (e.g., "cr-1d3f")
 pub fn new_review_id() -> String {
-    review_generator().candidate(&random_seed(), HASH_LENGTH)
+    generate_valid_id(&review_generator())
 }
 
 /// Generate a new thread ID (e.g., "th-99az")
 pub fn new_thread_id() -> String {
-    thread_generator().candidate(&random_seed(), HASH_LENGTH)
+    generate_valid_id(&thread_generator())
 }
 
 /// Generate a comment ID as a child of a thread (e.g., "th-abc.1")
@@ -114,6 +127,17 @@ mod tests {
         for _ in 0..100 {
             let id = new_review_id();
             assert!(ids.insert(id.clone()), "Generated duplicate ID: {}", id);
+        }
+    }
+
+    #[test]
+    fn test_generated_ids_always_valid() {
+        // Stress test: all generated IDs must pass parse_id validation
+        for _ in 0..500 {
+            let rid = new_review_id();
+            assert!(is_review_id(&rid), "Generated invalid review ID: {}", rid);
+            let tid = new_thread_id();
+            assert!(is_thread_id(&tid), "Generated invalid thread ID: {}", tid);
         }
     }
 
