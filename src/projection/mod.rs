@@ -16,6 +16,7 @@ pub use query::{
     ReviewerVote, ThreadDetail, ThreadSummary, ThreadWithNewResponses,
 };
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -446,6 +447,136 @@ fn rebuild_projection_with_orphan_detection(
 }
 
 // ============================================================================
+// Orphaned event detection (bd-2ys)
+// ============================================================================
+
+/// Extract review_id from an event, if it directly carries one.
+fn event_review_id(event: &Event) -> Option<&str> {
+    match event {
+        Event::ReviewCreated(e) => Some(&e.review_id),
+        Event::ReviewersRequested(e) => Some(&e.review_id),
+        Event::ReviewerVoted(e) => Some(&e.review_id),
+        Event::ReviewApproved(e) => Some(&e.review_id),
+        Event::ReviewMerged(e) => Some(&e.review_id),
+        Event::ReviewAbandoned(e) => Some(&e.review_id),
+        Event::ThreadCreated(e) => Some(&e.review_id),
+        // These only carry thread_id:
+        Event::ThreadResolved(_) | Event::ThreadReopened(_) | Event::CommentAdded(_) => None,
+    }
+}
+
+/// Extract thread_id from an event, if it carries one.
+fn event_thread_id(event: &Event) -> Option<&str> {
+    match event {
+        Event::ThreadCreated(e) => Some(&e.thread_id),
+        Event::ThreadResolved(e) => Some(&e.thread_id),
+        Event::ThreadReopened(e) => Some(&e.thread_id),
+        Event::CommentAdded(e) => Some(&e.thread_id),
+        _ => None,
+    }
+}
+
+/// Filter out orphaned events that reference reviews without a ReviewCreated event.
+///
+/// When a workspace is destroyed after review creation, the ReviewCreated event
+/// may be lost while ThreadCreated/CommentAdded events remain. This function
+/// detects and removes such orphaned events, printing a warning.
+///
+/// Returns the filtered events and the count of skipped events.
+fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, usize) {
+    // Pass 1: collect known review_ids (from ReviewCreated) and thread→review map
+    let mut known_reviews: HashSet<String> = HashSet::new();
+    let mut thread_to_review: HashMap<String, String> = HashMap::new();
+
+    for env in &events {
+        if let Event::ReviewCreated(e) = &env.event {
+            known_reviews.insert(e.review_id.clone());
+        }
+        if let Event::ThreadCreated(e) = &env.event {
+            thread_to_review.insert(e.thread_id.clone(), e.review_id.clone());
+        }
+    }
+
+    // Pass 2: identify orphaned review_ids
+    let mut orphaned_reviews: HashSet<String> = HashSet::new();
+    for env in &events {
+        // Check events that carry review_id directly
+        if let Some(rid) = event_review_id(&env.event) {
+            if !known_reviews.contains(rid) {
+                orphaned_reviews.insert(rid.to_string());
+            }
+        }
+        // Check thread-only events via thread→review map
+        if event_review_id(&env.event).is_none() {
+            if let Some(tid) = event_thread_id(&env.event) {
+                if let Some(rid) = thread_to_review.get(tid) {
+                    if !known_reviews.contains(rid.as_str()) {
+                        orphaned_reviews.insert(rid.clone());
+                    }
+                }
+                // If thread_id not in map at all, that thread's ThreadCreated
+                // is also missing — it will be caught as an FK error on threads
+                // table, so also treat it as orphaned.
+                if !thread_to_review.contains_key(tid) {
+                    orphaned_reviews.insert(format!("unknown-thread:{tid}"));
+                }
+            }
+        }
+    }
+
+    if orphaned_reviews.is_empty() {
+        return (events, 0);
+    }
+
+    // Warn about orphaned reviews
+    let real_orphans: Vec<&String> = orphaned_reviews
+        .iter()
+        .filter(|r| !r.starts_with("unknown-thread:"))
+        .collect();
+    if !real_orphans.is_empty() {
+        eprintln!(
+            "WARNING: {} review(s) have events but no ReviewCreated — skipping orphaned events",
+            real_orphans.len()
+        );
+        for rid in &real_orphans {
+            eprintln!("  {rid}");
+        }
+        eprintln!("  To find lost reviews: crit reviews list --all-workspaces");
+    }
+
+    // Pass 3: filter out orphaned events
+    let mut skipped = 0;
+    let filtered: Vec<EventEnvelope> = events
+        .into_iter()
+        .filter(|env| {
+            // Check direct review_id
+            if let Some(rid) = event_review_id(&env.event) {
+                if orphaned_reviews.contains(rid) {
+                    skipped += 1;
+                    return false;
+                }
+            }
+            // Check thread-only events
+            if event_review_id(&env.event).is_none() {
+                if let Some(tid) = event_thread_id(&env.event) {
+                    let is_orphan = match thread_to_review.get(tid) {
+                        Some(rid) => orphaned_reviews.contains(rid.as_str()),
+                        None => orphaned_reviews.contains(&format!("unknown-thread:{tid}")),
+                    };
+                    if is_orphan {
+                        skipped += 1;
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
+
+    (filtered, skipped)
+}
+
+// ============================================================================
 // v2: Per-review event log sync
 // ============================================================================
 
@@ -491,6 +622,12 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
         return Ok(0);
     }
 
+    // Filter out orphaned events (bd-2ys)
+    let (new_events, orphaned_count) = filter_orphaned_events(new_events);
+    if new_events.is_empty() {
+        return Ok(orphaned_count);
+    }
+
     let count = new_events.len();
 
     // Find the latest timestamp for sync state
@@ -524,7 +661,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
 
     tx.commit().context("Failed to commit transaction")?;
 
-    Ok(count)
+    Ok(count + orphaned_count)
 }
 
 /// Rebuild the projection from per-review event logs (v2 format).
@@ -533,9 +670,15 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
 pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usize> {
     // Read all events from all review logs
     let all_events = read_all_reviews(crit_root)?;
-    let count = all_events.len();
 
-    if count == 0 {
+    if all_events.is_empty() {
+        return Ok(0);
+    }
+
+    // Filter out orphaned events (bd-2ys)
+    let (all_events, _orphaned_count) = filter_orphaned_events(all_events);
+
+    if all_events.is_empty() {
         return Ok(0);
     }
 
@@ -580,7 +723,7 @@ pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<u
 
     tx.commit().context("Failed to commit rebuild")?;
 
-    Ok(count)
+    Ok(all_events.len())
 }
 
 /// Apply a single event to the projection database.
@@ -2582,5 +2725,153 @@ mod tests {
             let db = ProjectionDb::open(&db_path).unwrap();
             db.init_schema().unwrap(); // Should not fail on second run
         }
+    }
+
+    // ========================================================================
+    // bd-2ys: Orphaned event filtering tests
+    // ========================================================================
+
+    fn make_comment_added(comment_id: &str, thread_id: &str) -> EventEnvelope {
+        EventEnvelope::new(
+            "test_author",
+            Event::CommentAdded(CommentAdded {
+                comment_id: comment_id.to_string(),
+                thread_id: thread_id.to_string(),
+                body: "Test comment".to_string(),
+            }),
+        )
+    }
+
+    fn make_thread_resolved(thread_id: &str) -> EventEnvelope {
+        EventEnvelope::new(
+            "test_author",
+            Event::ThreadResolved(ThreadResolved {
+                thread_id: thread_id.to_string(),
+                reason: Some("Fixed".to_string()),
+            }),
+        )
+    }
+
+    #[test]
+    fn test_bd_2ys_filter_orphaned_skips_events_without_review_created() {
+        // Simulate: ThreadCreated + CommentAdded for cr-orphan (no ReviewCreated)
+        let events = vec![
+            make_thread_created("th-001", "cr-orphan"),
+            make_comment_added("th-001.1", "th-001"),
+        ];
+
+        let (filtered, skipped) = filter_orphaned_events(events);
+        assert_eq!(skipped, 2);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_bd_2ys_filter_orphaned_keeps_valid_events() {
+        // cr-good has ReviewCreated; cr-orphan does not
+        let events = vec![
+            make_review_created("cr-good"),
+            make_thread_created("th-001", "cr-good"),
+            make_comment_added("th-001.1", "th-001"),
+            make_thread_created("th-002", "cr-orphan"),
+            make_comment_added("th-002.1", "th-002"),
+        ];
+
+        let (filtered, skipped) = filter_orphaned_events(events);
+        assert_eq!(skipped, 2, "should skip 2 orphaned events");
+        assert_eq!(filtered.len(), 3, "should keep 3 valid events");
+    }
+
+    #[test]
+    fn test_bd_2ys_filter_orphaned_handles_thread_only_events() {
+        // ThreadResolved references a thread whose review is orphaned
+        let events = vec![
+            make_review_created("cr-good"),
+            make_thread_created("th-001", "cr-good"),
+            make_thread_created("th-002", "cr-orphan"),
+            make_thread_resolved("th-002"),
+            make_comment_added("th-002.1", "th-002"),
+        ];
+
+        let (filtered, skipped) = filter_orphaned_events(events);
+        assert_eq!(skipped, 3, "should skip ThreadCreated + ThreadResolved + CommentAdded for orphan");
+        assert_eq!(filtered.len(), 2, "should keep ReviewCreated + ThreadCreated for cr-good");
+    }
+
+    #[test]
+    fn test_bd_2ys_filter_orphaned_no_orphans_passes_through() {
+        let events = vec![
+            make_review_created("cr-001"),
+            make_thread_created("th-001", "cr-001"),
+            make_comment_added("th-001.1", "th-001"),
+        ];
+
+        let (filtered, skipped) = filter_orphaned_events(events);
+        assert_eq!(skipped, 0);
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_bd_2ys_orphaned_events_dont_crash_sync() {
+        // Integration test: orphaned events should not cause FK error during sync
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        // Write events WITHOUT ReviewCreated (simulating destroyed workspace)
+        let log = crate::log::ReviewLog::new(crit_root, "cr-orphan");
+        log.append(&make_thread_created("th-001", "cr-orphan")).unwrap();
+        log.append(&make_comment_added("th-001.1", "th-001")).unwrap();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // This should NOT fail with FK constraint error
+        let result = sync_from_review_logs(&db, crit_root);
+        assert!(result.is_ok(), "sync should succeed even with orphaned events: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_bd_2ys_orphaned_events_dont_crash_rebuild() {
+        // Integration test: orphaned events should not cause FK error during rebuild
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        // Write a valid review
+        let good_log = crate::log::ReviewLog::new(crit_root, "cr-good");
+        good_log.append(&make_review_created("cr-good")).unwrap();
+        good_log.append(&make_thread_created("th-good", "cr-good")).unwrap();
+
+        // Write orphaned events (no ReviewCreated)
+        let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan");
+        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
+        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Rebuild should succeed, applying only cr-good events
+        let count = rebuild_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(count, 2, "should apply 2 events from cr-good");
+
+        // Verify cr-good was indexed
+        let title: String = db
+            .conn()
+            .query_row(
+                "SELECT title FROM reviews WHERE review_id = ?",
+                params!["cr-good"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Review cr-good");
+
+        // Verify cr-orphan was NOT indexed
+        let orphan_exists: bool = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM reviews WHERE review_id = ?",
+                params!["cr-orphan"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!orphan_exists, "orphaned review should not be in the projection");
     }
 }
