@@ -1008,8 +1008,6 @@ pub fn run_review(
 /// Show inbox - reviews and threads needing the agent's attention.
 pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: OutputFormat) -> Result<()> {
     use crate::jj::resolve_repo_root;
-    use crate::projection::InboxSummary;
-    use std::collections::HashSet;
 
     ensure_initialized(repo_root)?;
 
@@ -1022,27 +1020,13 @@ pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: Ou
         // Get all workspaces
         let workspaces = jj.list_workspaces()?;
 
-        // Collect inbox items from all workspace .crit/ directories
-        // Track seen review_ids and thread_ids to avoid duplicates
-        let mut seen_reviews: HashSet<String> = HashSet::new();
-        let mut seen_threads: HashSet<String> = HashSet::new();
-
-        // Cross-workspace exclusion sets. Stale workspaces may lack recent events,
-        // so a review can appear "awaiting vote" in a stale workspace even though
-        // the agent already voted in the up-to-date one. We collect exclusions from
-        // ALL workspaces, then post-filter the combined inbox.
-        let mut voted_reviews: HashSet<String> = HashSet::new();
-        let mut terminal_reviews: HashSet<String> = HashSet::new();
-
-        let mut combined_inbox = InboxSummary {
-            reviews_awaiting_vote: Vec::new(),
-            threads_with_new_responses: Vec::new(),
-            open_threads_on_my_reviews: Vec::new(),
-        };
-
-        // Map review_id to workspace name for annotation
-        let mut review_workspace: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut thread_workspace: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        // Merge all events from all workspaces into a single in-memory DB.
+        // This prevents false-positive orphan detection when events are split
+        // across workspaces (e.g., ReviewCreated in workspace A, ReviewersRequested
+        // in the root). By merging first, orphan detection sees the complete
+        // picture and FK constraints are satisfied.
+        let mut all_events = Vec::new();
+        let mut review_source: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         for (ws_name, _ws_change_id, ws_path) in &workspaces {
             let ws_crit = ws_path.join(".crit");
@@ -1050,52 +1034,44 @@ pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: Ou
                 continue;
             }
 
-            if let Ok(db) = open_and_sync(&ws_crit.parent().unwrap_or(ws_path)) {
-                // Collect exclusions from every workspace
-                if let Ok(v) = db.get_voted_reviews(agent) {
-                    voted_reviews.extend(v);
-                }
-                if let Ok(t) = db.get_terminal_reviews() {
-                    terminal_reviews.extend(t);
-                }
-
-                if let Ok(inbox) = db.get_inbox(agent) {
-                    for r in inbox.reviews_awaiting_vote {
-                        if !seen_reviews.contains(&r.review_id) {
-                            seen_reviews.insert(r.review_id.clone());
-                            review_workspace.insert(r.review_id.clone(), ws_name.clone());
-                            combined_inbox.reviews_awaiting_vote.push(r);
-                        }
-                    }
-                    for t in inbox.threads_with_new_responses {
-                        if !seen_threads.contains(&t.thread_id) {
-                            seen_threads.insert(t.thread_id.clone());
-                            thread_workspace.insert(t.thread_id.clone(), ws_name.clone());
-                            combined_inbox.threads_with_new_responses.push(t);
-                        }
-                    }
-                    for t in inbox.open_threads_on_my_reviews {
-                        let key = format!("{}:{}", t.review_id, t.thread_id);
-                        if !seen_threads.contains(&key) {
-                            seen_threads.insert(key);
-                            thread_workspace.insert(t.thread_id.clone(), ws_name.clone());
-                            combined_inbox.open_threads_on_my_reviews.push(t);
-                        }
+            if let Ok(events) = crate::log::read_all_reviews(ws_path) {
+                // Track which workspace each review's events came from
+                // (prefer the workspace that has ReviewCreated)
+                for env in &events {
+                    if let crate::events::Event::ReviewCreated(e) = &env.event {
+                        review_source.insert(e.review_id.clone(), ws_name.clone());
                     }
                 }
+                all_events.extend(events);
             }
         }
 
-        // Filter out reviews the agent already voted on (in any workspace)
-        // or that reached terminal status in any workspace
-        combined_inbox.reviews_awaiting_vote.retain(|r| {
-            !voted_reviews.contains(&r.review_id) && !terminal_reviews.contains(&r.review_id)
-        });
-        // Filter thread items for reviews in terminal status
-        combined_inbox.threads_with_new_responses.retain(|t| !terminal_reviews.contains(&t.review_id));
-        combined_inbox.open_threads_on_my_reviews.retain(|t| !terminal_reviews.contains(&t.review_id));
+        // Sort all events by timestamp for correct application order
+        all_events.sort_by(|a, b| a.ts.cmp(&b.ts));
 
-        let inbox = combined_inbox;
+        // Build a merged projection in memory
+        let db = crate::projection::ProjectionDb::open_in_memory()
+            .context("Failed to create in-memory projection")?;
+        db.init_schema()?;
+
+        // Apply merged events (orphan filtering now has the complete picture)
+        crate::projection::rebuild_from_events(&db, all_events)?;
+
+        let inbox = db.get_inbox(agent)?;
+
+        // Map review_id to workspace name for annotation
+        let review_workspace = review_source;
+        let mut thread_workspace: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for t in &inbox.threads_with_new_responses {
+            if let Some(ws) = review_workspace.get(&t.review_id) {
+                thread_workspace.insert(t.thread_id.clone(), ws.clone());
+            }
+        }
+        for t in &inbox.open_threads_on_my_reviews {
+            if let Some(ws) = review_workspace.get(&t.review_id) {
+                thread_workspace.insert(t.thread_id.clone(), ws.clone());
+            }
+        }
 
         if matches!(format, OutputFormat::Json) {
             let formatter = Formatter::new(format);

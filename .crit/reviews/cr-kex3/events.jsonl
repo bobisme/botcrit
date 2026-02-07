@@ -1,0 +1,6 @@
+{"ts":"2026-02-07T20:50:31.668788909Z","author":"botcrit-dev","event":"ReviewCreated","data":{"review_id":"cr-kex3","jj_change_id":"qvttxwnkluzwnkxrwzknkmsloutvxzmo","initial_commit":"a89dc6ba24c38a1384eec73e8eb1b65c46ca9dc5","title":"bd-2qa: fix inbox --all-workspaces false orphan detection","description":"Fixes inbox --all-workspaces falsely classifying cross-workspace events as orphaned. Merges all events from all workspaces into an in-memory projection before querying inbox."}}
+{"ts":"2026-02-07T20:50:38.820712240Z","author":"botcrit-dev","event":"ReviewersRequested","data":{"review_id":"cr-kex3","reviewers":["botcrit-security"]}}
+{"ts":"2026-02-07T20:51:40.806627672Z","author":"botcrit-dev","event":"ReviewersRequested","data":{"review_id":"cr-kex3","reviewers":["botcrit-security"]}}
+{"ts":"2026-02-07T20:52:52.818733185Z","author":"botcrit-dev","event":"ReviewApproved","data":{"review_id":"cr-kex3"}}
+{"ts":"2026-02-07T20:52:58.592042337Z","author":"botcrit-dev","event":"ReviewApproved","data":{"review_id":"cr-kex3"}}
+{"ts":"2026-02-07T20:53:26.930431833Z","author":"botcrit-dev","event":"ReviewApproved","data":{"review_id":"cr-kex3"}}

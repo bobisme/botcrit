@@ -59,8 +59,10 @@ impl ProjectionDb {
         Ok(Self { conn })
     }
 
-    /// Create an in-memory projection database (for testing).
-    #[cfg(test)]
+    /// Create an in-memory projection database.
+    ///
+    /// Used for temporary merged projections (e.g., `inbox --all-workspaces`)
+    /// and in tests.
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -482,11 +484,23 @@ fn event_thread_id(event: &Event) -> Option<&str> {
 /// may be lost while ThreadCreated/CommentAdded events remain. This function
 /// detects and removes such orphaned events, printing a warning.
 ///
+/// `extra_known_reviews` allows callers to supply review IDs known to exist in
+/// other workspaces, preventing false-positive orphan detection when syncing
+/// cross-workspace events (e.g., `inbox --all-workspaces`).
+///
 /// Returns the filtered events and the count of skipped events.
-fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, usize) {
+fn filter_orphaned_events(
+    events: Vec<EventEnvelope>,
+    extra_known_reviews: Option<&HashSet<String>>,
+) -> (Vec<EventEnvelope>, usize) {
     // Pass 1: collect known review_ids (from ReviewCreated) and thread→review map
     let mut known_reviews: HashSet<String> = HashSet::new();
     let mut thread_to_review: HashMap<String, String> = HashMap::new();
+
+    // Include review IDs known from other workspaces
+    if let Some(extra) = extra_known_reviews {
+        known_reviews.extend(extra.iter().cloned());
+    }
 
     for env in &events {
         if let Event::ReviewCreated(e) = &env.event {
@@ -593,6 +607,27 @@ fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, us
 ///
 /// If no events have been synced yet (new database), applies all events.
 pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usize> {
+    sync_from_review_logs_inner(db, crit_root, None)
+}
+
+/// Sync from review logs, with extra known review IDs from other workspaces.
+///
+/// Used by `inbox --all-workspaces` to prevent false-positive orphan detection
+/// when a review's ReviewCreated lives in a different workspace than the
+/// ReviewersRequested/ReviewerVoted events being synced.
+pub fn sync_from_review_logs_with_known(
+    db: &ProjectionDb,
+    crit_root: &Path,
+    extra_known_reviews: &HashSet<String>,
+) -> Result<usize> {
+    sync_from_review_logs_inner(db, crit_root, Some(extra_known_reviews))
+}
+
+fn sync_from_review_logs_inner(
+    db: &ProjectionDb,
+    crit_root: &Path,
+    extra_known_reviews: Option<&HashSet<String>>,
+) -> Result<usize> {
     // Get last sync timestamp
     let last_sync_ts: Option<String> = db
         .conn
@@ -623,7 +658,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
     }
 
     // Filter out orphaned events (bd-2ys)
-    let (new_events, orphaned_count) = filter_orphaned_events(new_events);
+    let (new_events, orphaned_count) = filter_orphaned_events(new_events, extra_known_reviews);
     if new_events.is_empty() {
         return Ok(orphaned_count);
     }
@@ -676,7 +711,7 @@ pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<u
     }
 
     // Filter out orphaned events (bd-2ys)
-    let (all_events, _orphaned_count) = filter_orphaned_events(all_events);
+    let (all_events, _orphaned_count) = filter_orphaned_events(all_events, None);
 
     if all_events.is_empty() {
         return Ok(0);
@@ -724,6 +759,54 @@ pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<u
     tx.commit().context("Failed to commit rebuild")?;
 
     Ok(all_events.len())
+}
+
+/// Build a projection from pre-collected events (no file I/O).
+///
+/// Used by `inbox --all-workspaces` to merge events from multiple workspaces
+/// into a single in-memory DB. Events should be sorted by timestamp.
+/// Orphan filtering is applied to the merged set, so cross-workspace events
+/// (e.g., ReviewCreated in workspace A, ReviewersRequested in root) are
+/// handled correctly.
+pub fn rebuild_from_events(db: &ProjectionDb, events: Vec<EventEnvelope>) -> Result<usize> {
+    if events.is_empty() {
+        return Ok(0);
+    }
+
+    let (events, _orphaned_count) = filter_orphaned_events(events, None);
+    if events.is_empty() {
+        return Ok(0);
+    }
+
+    let max_ts = events
+        .iter()
+        .map(|e| &e.ts)
+        .max()
+        .expect("events is not empty");
+
+    let tx = db
+        .conn
+        .unchecked_transaction()
+        .context("Failed to begin transaction")?;
+
+    for event in &events {
+        apply_event_inner(&tx, event).with_context(|| {
+            format!(
+                "Failed to apply event (type: {:?})",
+                event_type_name(&event.event)
+            )
+        })?;
+    }
+
+    tx.execute(
+        "UPDATE sync_state SET last_sync_ts = ? WHERE id = 1",
+        params![max_ts.to_rfc3339()],
+    )
+    .context("Failed to update sync_state")?;
+
+    tx.commit().context("Failed to commit")?;
+
+    Ok(events.len())
 }
 
 /// Apply a single event to the projection database.
@@ -2760,7 +2843,7 @@ mod tests {
             make_comment_added("th-001.1", "th-001"),
         ];
 
-        let (filtered, skipped) = filter_orphaned_events(events);
+        let (filtered, skipped) = filter_orphaned_events(events, None);
         assert_eq!(skipped, 2);
         assert!(filtered.is_empty());
     }
@@ -2776,7 +2859,7 @@ mod tests {
             make_comment_added("th-002.1", "th-002"),
         ];
 
-        let (filtered, skipped) = filter_orphaned_events(events);
+        let (filtered, skipped) = filter_orphaned_events(events, None);
         assert_eq!(skipped, 2, "should skip 2 orphaned events");
         assert_eq!(filtered.len(), 3, "should keep 3 valid events");
     }
@@ -2792,7 +2875,7 @@ mod tests {
             make_comment_added("th-002.1", "th-002"),
         ];
 
-        let (filtered, skipped) = filter_orphaned_events(events);
+        let (filtered, skipped) = filter_orphaned_events(events, None);
         assert_eq!(skipped, 3, "should skip ThreadCreated + ThreadResolved + CommentAdded for orphan");
         assert_eq!(filtered.len(), 2, "should keep ReviewCreated + ThreadCreated for cr-good");
     }
@@ -2805,7 +2888,7 @@ mod tests {
             make_comment_added("th-001.1", "th-001"),
         ];
 
-        let (filtered, skipped) = filter_orphaned_events(events);
+        let (filtered, skipped) = filter_orphaned_events(events, None);
         assert_eq!(skipped, 0);
         assert_eq!(filtered.len(), 3);
     }
@@ -2873,5 +2956,163 @@ mod tests {
             )
             .unwrap();
         assert!(!orphan_exists, "orphaned review should not be in the projection");
+    }
+
+    // ========================================================================
+    // bd-2qa: Cross-workspace orphan detection tests
+    // ========================================================================
+
+    #[test]
+    fn test_bd_2qa_extra_known_reviews_prevents_false_orphan() {
+        // Simulate: root .crit/ has ReviewersRequested for cr-ws (no ReviewCreated),
+        // but cr-ws is known to exist in another workspace. With extra_known_reviews,
+        // the event should NOT be treated as orphaned.
+        let events = vec![EventEnvelope::new(
+            "test_author",
+            Event::ReviewersRequested(ReviewersRequested {
+                review_id: "cr-ws".to_string(),
+                reviewers: vec!["security-bot".to_string()],
+            }),
+        )];
+
+        // Without extra known reviews: should be orphaned
+        let (filtered, skipped) = filter_orphaned_events(events.clone(), None);
+        assert_eq!(skipped, 1, "without extra known, event should be orphaned");
+        assert!(filtered.is_empty());
+
+        // With extra known reviews: should NOT be orphaned
+        let mut known = HashSet::new();
+        known.insert("cr-ws".to_string());
+        let (filtered, skipped) = filter_orphaned_events(events, Some(&known));
+        assert_eq!(skipped, 0, "with extra known, event should be kept");
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_bd_2qa_extra_known_reviews_still_filters_real_orphans() {
+        // Extra known reviews should not prevent filtering of truly orphaned events.
+        // cr-ws is known from another workspace, but cr-gone is truly orphaned.
+        let events = vec![
+            EventEnvelope::new(
+                "test_author",
+                Event::ReviewersRequested(ReviewersRequested {
+                    review_id: "cr-ws".to_string(),
+                    reviewers: vec!["security-bot".to_string()],
+                }),
+            ),
+            make_thread_created("th-orphan", "cr-gone"),
+            make_comment_added("th-orphan.1", "th-orphan"),
+        ];
+
+        let mut known = HashSet::new();
+        known.insert("cr-ws".to_string());
+        let (filtered, skipped) = filter_orphaned_events(events, Some(&known));
+        assert_eq!(skipped, 2, "cr-gone events should still be orphaned");
+        assert_eq!(filtered.len(), 1, "only cr-ws event should survive");
+    }
+
+    #[test]
+    fn test_bd_2qa_rebuild_from_events_cross_workspace() {
+        // Full integration test: simulate the cross-workspace scenario.
+        // "root" dir has only ReviewersRequested for cr-ws.
+        // "workspace" dir has the full ReviewCreated.
+        // Merging all events and rebuilding should handle cross-workspace events.
+
+        let root_dir = tempdir().unwrap();
+        let ws_dir = tempdir().unwrap();
+
+        // Write ReviewCreated in workspace .crit/
+        let ws_log = crate::log::ReviewLog::new(ws_dir.path(), "cr-ws");
+        ws_log
+            .append(&make_review_created("cr-ws"))
+            .unwrap();
+
+        // Write ReviewersRequested in root .crit/ (no ReviewCreated here)
+        let root_log = crate::log::ReviewLog::new(root_dir.path(), "cr-ws");
+        root_log
+            .append(&EventEnvelope::new(
+                "test_author",
+                Event::ReviewersRequested(ReviewersRequested {
+                    review_id: "cr-ws".to_string(),
+                    reviewers: vec!["security-bot".to_string()],
+                }),
+            ))
+            .unwrap();
+
+        // Collect all events from both "workspaces" (simulating inbox --all-workspaces)
+        let mut all_events = crate::log::read_all_reviews(ws_dir.path()).unwrap();
+        all_events.extend(crate::log::read_all_reviews(root_dir.path()).unwrap());
+        all_events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+        // Build merged projection — should NOT fail with FK error
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        let count = rebuild_from_events(&db, all_events).unwrap();
+        assert_eq!(count, 2, "should apply both ReviewCreated and ReviewersRequested");
+
+        // Verify the review exists with reviewers
+        let review_exists: bool = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM reviews WHERE review_id = ?",
+                params!["cr-ws"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(review_exists, "review should exist in projection");
+
+        let has_reviewer: bool = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM review_reviewers WHERE review_id = ?",
+                params!["cr-ws"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_reviewer, "reviewer should be recorded");
+    }
+
+    #[test]
+    fn test_bd_2qa_merged_events_inbox_shows_review() {
+        // End-to-end test: verify that after merging events from multiple
+        // workspaces, get_inbox correctly returns the review for the reviewer.
+
+        let root_dir = tempdir().unwrap();
+        let ws_dir = tempdir().unwrap();
+
+        // ReviewCreated in workspace
+        let ws_log = crate::log::ReviewLog::new(ws_dir.path(), "cr-ws");
+        ws_log.append(&make_review_created("cr-ws")).unwrap();
+
+        // ReviewersRequested in root (reviewer = "security-bot")
+        let root_log = crate::log::ReviewLog::new(root_dir.path(), "cr-ws");
+        root_log
+            .append(&EventEnvelope::new(
+                "test_author",
+                Event::ReviewersRequested(ReviewersRequested {
+                    review_id: "cr-ws".to_string(),
+                    reviewers: vec!["security-bot".to_string()],
+                }),
+            ))
+            .unwrap();
+
+        // Merge events and build projection
+        let mut all_events = crate::log::read_all_reviews(ws_dir.path()).unwrap();
+        all_events.extend(crate::log::read_all_reviews(root_dir.path()).unwrap());
+        all_events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+        rebuild_from_events(&db, all_events).unwrap();
+
+        // Check inbox for security-bot — should show the review
+        let inbox = db.get_inbox("security-bot").unwrap();
+        assert_eq!(
+            inbox.reviews_awaiting_vote.len(),
+            1,
+            "security-bot should see 1 review awaiting vote"
+        );
+        assert_eq!(inbox.reviews_awaiting_vote[0].review_id, "cr-ws");
     }
 }
