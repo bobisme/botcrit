@@ -167,6 +167,11 @@ async function runCommand(cmd, args = []) {
   })
 }
 
+// --- Helper: run command in default workspace (for br, bv) ---
+function runInDefault(cmd, args = []) {
+  return runCommand("maw", ["exec", "default", "--", cmd, ...args])
+}
+
 // ---------------------------------------------------------------------------
 // Route message based on ! prefix
 // ---------------------------------------------------------------------------
@@ -568,7 +573,7 @@ async function handleBead(route, channel, message) {
     .join(" ")
   if (keywords) {
     try {
-      let result = await runCommand("br", ["search", keywords])
+      let result = await runInDefault("br", ["search", keywords])
       // br search output: "Found N issue(s) matching '...'" followed by bead lines
       if (result.stdout && !result.stdout.includes("Found 0")) {
         // Extract matches — lines containing bd-XXXX
@@ -593,17 +598,18 @@ async function handleBead(route, channel, message) {
     }
   }
 
-  // Create the bead
-  let title =
-    route.body.length > 80 ? route.body.slice(0, 80).trim() : route.body
-  let description = route.body
+  // Create the bead — first line is title, rest is description
+  let lines = route.body.split("\n")
+  let title = lines[0].trim()
+  if (title.length > 80) title = title.slice(0, 80).trim()
+  let description = lines.length > 1 ? lines.slice(1).join("\n").trim() : title
   if (transcript.length > 0) {
     description +=
       "\n\n## Conversation context\n\n" + formatTranscriptForPrompt()
   }
 
   try {
-    let result = await runCommand("br", [
+    let result = await runInDefault("br", [
       "create",
       "--actor",
       AGENT,
