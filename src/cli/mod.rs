@@ -61,7 +61,10 @@ impl Cli {
                 "pretty" => return OutputFormat::Pretty,
                 "text" => return OutputFormat::Text,
                 "json" => return OutputFormat::Json,
-                "toon" => return OutputFormat::Toon,
+                "toon" => {
+                    eprintln!("Warning: 'toon' format has been removed, using 'text' instead");
+                    return OutputFormat::Text;
+                }
                 _ => {
                     eprintln!("Warning: unknown FORMAT value '{format_str}', using auto-detection");
                 }

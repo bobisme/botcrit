@@ -1,6 +1,6 @@
 //! Output formatting module for botcrit
 //!
-//! Provides TOON (human-readable) and JSON output formats for CLI output.
+//! Provides text, JSON, and pretty output formats for CLI output.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -9,18 +9,16 @@ use std::io::{self, Write};
 /// Output format selection
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
-    /// TOON format - compact token-oriented notation
-    #[default]
-    Toon,
     /// JSON format - machine-readable output
     Json,
-    /// Plain text format - simple text output
+    /// Plain text format - concise, token-efficient output
+    #[default]
     Text,
     /// Pretty format - colorized, human-friendly output
     Pretty,
 }
 
-/// Formatter that can output data in TOON or JSON format
+/// Formatter that can output data in text, JSON, or pretty format
 #[derive(Debug, Clone)]
 pub struct Formatter {
     format: OutputFormat,
@@ -40,28 +38,20 @@ impl Formatter {
     /// Returns an error if serialization fails
     pub fn format<T: Serialize>(&self, data: &T) -> Result<String> {
         match self.format {
-            OutputFormat::Toon => {
-                // Convert to serde_json::Value first, then encode with toon
-                let json_value = serde_json::to_value(data)?;
-                let output = toon::encode(&json_value, None);
-                Ok(output)
-            }
             OutputFormat::Json => {
                 let output = serde_json::to_string_pretty(data)?;
                 Ok(output)
             }
             OutputFormat::Text => {
-                // For now, text format is the same as TOON
-                // Commands can override this behavior if they need plain text
-                let json_value = serde_json::to_value(data)?;
-                let output = toon::encode(&json_value, None);
+                // For now, text format uses JSON pretty
+                // bd-rxp.4 will add proper text formatting
+                let output = serde_json::to_string_pretty(data)?;
                 Ok(output)
             }
             OutputFormat::Pretty => {
-                // For now, Pretty format delegates to TOON
+                // For now, Pretty format uses JSON pretty
                 // Future enhancement: add colorization and enhanced formatting
-                let json_value = serde_json::to_value(data)?;
-                let output = toon::encode(&json_value, None);
+                let output = serde_json::to_string_pretty(data)?;
                 Ok(output)
             }
         }
@@ -107,7 +97,7 @@ impl Formatter {
                 writeln!(stdout, "{output}")?;
                 Ok(())
             }
-            OutputFormat::Toon | OutputFormat::Text | OutputFormat::Pretty => {
+            OutputFormat::Text | OutputFormat::Pretty => {
                 if data.is_empty() {
                     let mut stdout = io::stdout().lock();
                     writeln!(stdout, "{empty_message}")?;
@@ -124,15 +114,6 @@ impl Default for Formatter {
     fn default() -> Self {
         Self::new(OutputFormat::default())
     }
-}
-
-/// Print data in TOON (human-readable) format to stdout
-///
-/// # Errors
-///
-/// Returns an error if serialization or writing fails
-pub fn print_toon<T: Serialize>(data: &T) -> Result<()> {
-    Formatter::new(OutputFormat::Toon).print(data)
 }
 
 /// Print data in JSON format to stdout
@@ -166,10 +147,10 @@ mod tests {
 
     #[test]
     fn test_output_format_default() {
-        // The enum default is Toon
+        // The enum default is Text
         // Note: CLI resolution layer may override this based on TTY detection
         let format = OutputFormat::default();
-        assert_eq!(format, OutputFormat::Toon);
+        assert_eq!(format, OutputFormat::Text);
     }
 
     #[test]
@@ -187,12 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn test_formatter_toon_output() {
-        let formatter = Formatter::new(OutputFormat::Toon);
+    fn test_formatter_text_output() {
+        let formatter = Formatter::new(OutputFormat::Text);
         let data = sample_data();
-        let output = formatter.format(&data).expect("TOON formatting failed");
+        let output = formatter.format(&data).expect("Text formatting failed");
 
-        // TOON output should contain the field values in human-readable form
+        // Text output should contain the field values
         assert!(output.contains("test-item") || output.contains("name"));
         assert!(output.contains("42") || output.contains("count"));
     }
@@ -200,7 +181,7 @@ mod tests {
     #[test]
     fn test_formatter_default() {
         let formatter = Formatter::default();
-        assert_eq!(formatter.format, OutputFormat::Toon);
+        assert_eq!(formatter.format, OutputFormat::Text);
     }
 
     #[test]
@@ -226,10 +207,10 @@ mod tests {
         assert!(json_output.contains("items"));
         assert!(json_output.contains("metadata"));
 
-        let toon_formatter = Formatter::new(OutputFormat::Toon);
-        let toon_output = toon_formatter.format(&data).expect("TOON failed");
-        // TOON should produce some output
-        assert!(!toon_output.is_empty());
+        let text_formatter = Formatter::new(OutputFormat::Text);
+        let text_output = text_formatter.format(&data).expect("Text failed");
+        // Text should produce some output
+        assert!(!text_output.is_empty());
     }
 
     #[test]
@@ -240,8 +221,8 @@ mod tests {
         let json_output = json_formatter.format(&data).expect("JSON failed");
         assert_eq!(json_output.trim(), "[]");
 
-        let toon_formatter = Formatter::new(OutputFormat::Toon);
-        let _toon_output = toon_formatter.format(&data).expect("TOON failed");
+        let text_formatter = Formatter::new(OutputFormat::Text);
+        let _text_output = text_formatter.format(&data).expect("Text failed");
     }
 
     #[test]
@@ -280,7 +261,7 @@ mod tests {
         let data = sample_data();
         let output = formatter.format(&data).expect("Pretty formatting failed");
 
-        // Pretty output should contain the field values (delegates to TOON for now)
+        // Pretty output should contain the field values
         assert!(output.contains("test-item") || output.contains("name"));
         assert!(output.contains("42") || output.contains("count"));
         assert!(!output.is_empty());

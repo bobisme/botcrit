@@ -2,7 +2,7 @@
 //!
 //! Provides structured access to reviews, threads, and comments
 //! with optional filtering. All result types implement Serialize
-//! for TOON/JSON output.
+//! for structured output.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Row};

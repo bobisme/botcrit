@@ -267,7 +267,7 @@ pub fn run_threads_show(
                 let formatter = Formatter::new(format);
                 formatter.print(&result)?;
             } else {
-                // For TOON, print thread details then context
+                // For text/pretty, print thread details then context
                 let formatter = Formatter::new(format);
                 formatter.print(&t)?;
 

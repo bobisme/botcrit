@@ -125,8 +125,8 @@ pub fn run_reviews_create(
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
 
-    // Add next steps for TOON format (agents need guidance on what to do next)
-    if format == OutputFormat::Toon {
+    // Add next steps for non-JSON formats (agents need guidance on what to do next)
+    if format != OutputFormat::Json {
         println!();
         println!("Next steps:");
         println!("  • Add reviewers:");
@@ -574,7 +574,7 @@ pub fn run_review(
         let threads = db.list_threads(review_id, None, None)?;
         let mut threads_with_comments = Vec::new();
 
-        // Determine commit for context (same logic as TOON output)
+        // Determine commit for context (same logic as text/pretty output)
         let commit_ref = review
             .final_commit
             .clone()
@@ -643,7 +643,7 @@ pub fn run_review(
         return Ok(());
     }
 
-    // TOON output: human-readable format
+    // Text/pretty output: human-readable format
     let status_symbol = match review.status.as_str() {
         "open" => "○",
         "approved" => "◐",
@@ -821,7 +821,7 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
         return Ok(());
     }
 
-    // TOON output
+    // Text/pretty output
     let total_items = inbox.reviews_awaiting_vote.len()
         + inbox.threads_with_new_responses.len()
         + inbox.open_threads_on_my_reviews.len();

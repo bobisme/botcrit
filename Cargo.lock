@@ -278,7 +278,6 @@ dependencies = [
  "tempfile",
  "terseid",
  "thiserror 2.0.18",
- "toon",
  "which",
 ]
 
@@ -839,18 +838,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843bc0191f75f3e22651ae5f1e72939ab2f72a4bc30fa80a066bd66edefc24d4"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "regex-automata"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1164,16 +1151,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "toon"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fa605a2aa68fefdedc9560bd765ce3ad89d45ac1d3ebad43724621098c9299a"
-dependencies = [
- "regex",
- "serde_json",
 ]
 
 [[package]]

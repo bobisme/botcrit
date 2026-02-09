@@ -559,7 +559,7 @@ mod tests {
         fs::create_dir(crit_root.join(".crit")).unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Check version file created
         let version_content =
@@ -589,7 +589,7 @@ mod tests {
         log.append(&make_comment("th-002", "c-002", "Second comment")).unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Check version file
         let version_content = fs::read_to_string(crit_dir.join("version")).unwrap();
@@ -640,7 +640,7 @@ mod tests {
         log.append(&make_comment("th-001", "c-003", "Not actually fixed")).unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // All 7 events must be present in the per-review log
         let review_log = crate::log::ReviewLog::new(crit_root, "cr-001");
@@ -693,7 +693,7 @@ mod tests {
         log.append(&make_review_created("cr-001")).unwrap();
 
         // Run dry run
-        run_migrate(crit_root, true, true, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, true, true, false, OutputFormat::Text).unwrap();
 
         // Nothing should change
         assert!(legacy_path.exists());
@@ -712,7 +712,7 @@ mod tests {
         fs::write(crit_dir.join("version"), "2\n").unwrap();
 
         // Run migration - should be no-op
-        run_migrate(crit_root, false, true, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Still v2
         let version_content = fs::read_to_string(crit_dir.join("version")).unwrap();
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(pre_events.len(), 2);
 
         // Run --from-backup
-        run_migrate(crit_root, false, true, true, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, true, true, OutputFormat::Text).unwrap();
 
         // Should now have all 5 events (2 existing + 3 recovered)
         let post_events = crate::log::ReviewLog::new(crit_root, "cr-001")
@@ -786,7 +786,7 @@ mod tests {
         log.append(&make_review_created("cr-001")).unwrap();
 
         // Run migration without backup
-        run_migrate(crit_root, false, false, false, OutputFormat::Toon).unwrap();
+        run_migrate(crit_root, false, false, false, OutputFormat::Text).unwrap();
 
         // Original file should be gone, no backup
         assert!(!legacy_path.exists());
@@ -818,7 +818,7 @@ mod tests {
         ))
         .unwrap();
 
-        let result = run_migrate(crit_root, false, true, false, OutputFormat::Toon);
+        let result = run_migrate(crit_root, false, true, false, OutputFormat::Text);
         assert!(result.is_err(), "Should reject invalid review_id");
         let err = result.unwrap_err().to_string();
         assert!(
