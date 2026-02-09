@@ -24,7 +24,7 @@ serde_json = "1.0.149"
 thiserror = "2.0.18"
 getrandom = "0.3"
 ignore = "0.4"
-terseid = { path = "/home/bob/src/terseid" }
+terseid = { path = "/home/bob/src/terseid/ws/default" }
 which = "8.0.0"
 
 [dev-dependencies]
