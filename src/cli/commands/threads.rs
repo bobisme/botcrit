@@ -189,7 +189,12 @@ pub fn run_threads_list(
         }
     } else {
         let formatter = Formatter::new(format);
-        formatter.print_list(&threads, empty_msg)?;
+        formatter.print_list(
+            &threads,
+            empty_msg,
+            "threads",
+            &["crit threads show <id>", "crit threads resolve <id>"],
+        )?;
     }
 
     Ok(())

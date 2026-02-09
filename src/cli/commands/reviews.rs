@@ -170,7 +170,12 @@ pub fn run_reviews_list(
     };
 
     let formatter = Formatter::new(format);
-    formatter.print_list(&reviews, empty_msg)?;
+    formatter.print_list(
+        &reviews,
+        empty_msg,
+        "reviews",
+        &["crit reviews show <id>", "crit lgtm <id> -m \"...\""],
+    )?;
 
     Ok(())
 }

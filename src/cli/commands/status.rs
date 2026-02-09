@@ -158,7 +158,12 @@ pub fn run_status(
     };
 
     let formatter = Formatter::new(format);
-    formatter.print_list(&statuses, empty_msg)?;
+    formatter.print_list(
+        &statuses,
+        empty_msg,
+        "reviews",
+        &["crit review <id>", "crit threads list <id>"],
+    )?;
 
     Ok(())
 }

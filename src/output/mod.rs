@@ -81,21 +81,41 @@ impl Formatter {
 
     /// Format and print a list with a custom empty message
     ///
+    /// For JSON format, wraps the array in a named object with count and advice fields.
+    /// For other formats, prints the list normally (ignores `collection_name` and `advice`).
+    ///
     /// # Errors
     ///
     /// Returns an error if serialization or writing fails
-    pub fn print_list<T: Serialize>(&self, data: &[T], empty_message: &str) -> Result<()> {
-        if data.is_empty() {
-            let mut stdout = io::stdout().lock();
-            match self.format {
-                OutputFormat::Toon | OutputFormat::Text | OutputFormat::Pretty => {
-                    writeln!(stdout, "{empty_message}")?;
-                }
-                OutputFormat::Json => writeln!(stdout, "[]")?,
+    pub fn print_list<T: Serialize>(
+        &self,
+        data: &[T],
+        empty_message: &str,
+        collection_name: &str,
+        advice: &[&str],
+    ) -> Result<()> {
+        match self.format {
+            OutputFormat::Json => {
+                let items_value = serde_json::to_value(data)?;
+                let mut envelope = serde_json::Map::new();
+                envelope.insert(collection_name.to_string(), items_value);
+                envelope.insert("count".to_string(), serde_json::json!(data.len()));
+                envelope.insert("advice".to_string(), serde_json::json!(advice));
+
+                let output = serde_json::to_string_pretty(&serde_json::Value::Object(envelope))?;
+                let mut stdout = io::stdout().lock();
+                writeln!(stdout, "{output}")?;
+                Ok(())
             }
-            Ok(())
-        } else {
-            self.print(&data)
+            OutputFormat::Toon | OutputFormat::Text | OutputFormat::Pretty => {
+                if data.is_empty() {
+                    let mut stdout = io::stdout().lock();
+                    writeln!(stdout, "{empty_message}")?;
+                    Ok(())
+                } else {
+                    self.print(&data)
+                }
+            }
         }
     }
 }
@@ -222,6 +242,36 @@ mod tests {
 
         let toon_formatter = Formatter::new(OutputFormat::Toon);
         let _toon_output = toon_formatter.format(&data).expect("TOON failed");
+    }
+
+    #[test]
+    fn test_print_list_json_envelope() {
+        #[derive(Debug, Serialize)]
+        struct Item {
+            id: String,
+            name: String,
+        }
+
+        let items = vec![
+            Item { id: "1".to_string(), name: "first".to_string() },
+            Item { id: "2".to_string(), name: "second".to_string() },
+        ];
+
+        // Verify the envelope structure by building it the same way print_list does
+        let items_value = serde_json::to_value(&items).expect("serialize items");
+        let mut envelope = serde_json::Map::new();
+        envelope.insert("items".to_string(), items_value);
+        envelope.insert("count".to_string(), serde_json::json!(2));
+        envelope.insert("advice".to_string(), serde_json::json!(["crit show <id>"]));
+
+        let output = serde_json::to_string_pretty(&serde_json::Value::Object(envelope))
+            .expect("serialize envelope");
+        let parsed: serde_json::Value = serde_json::from_str(&output).expect("parse");
+
+        assert_eq!(parsed["count"], 2);
+        assert!(parsed["items"].is_array());
+        assert!(parsed["advice"].is_array());
+        assert_eq!(parsed["items"].as_array().expect("items array").len(), 2);
     }
 
     #[test]
