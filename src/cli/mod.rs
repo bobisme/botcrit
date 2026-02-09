@@ -173,11 +173,7 @@ pub enum Commands {
     },
 
     /// Show reviews and threads needing your attention
-    Inbox {
-        /// Show items from all jj workspaces (requires jj repo)
-        #[arg(long)]
-        all_workspaces: bool,
-    },
+    Inbox,
 }
 
 // ============================================================================
@@ -226,10 +222,6 @@ pub enum ReviewsCommands {
         /// Show only reviews with unresolved threads
         #[arg(long)]
         has_unresolved: bool,
-
-        /// Show reviews from all jj workspaces (requires jj repo)
-        #[arg(long)]
-        all_workspaces: bool,
     },
 
     /// Show review details

@@ -2,11 +2,10 @@
 //!
 //! Provides centralized, version-aware database operations for all commands.
 
-use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
+use anyhow::{bail, Result};
+use std::path::Path;
 
 use crate::cli::commands::init::{index_path, is_initialized, CRIT_DIR};
-use crate::jj::{resolve_repo_root, JjRepo};
 use crate::projection::{sync_from_review_logs, ProjectionDb, ReviewDetail, ThreadDetail};
 use crate::version::{detect_version, require_v2, DataVersion};
 
@@ -77,225 +76,45 @@ pub fn open_and_sync_any_version(repo_root: &Path) -> Result<ProjectionDb> {
     Ok(db)
 }
 
-/// Result of finding a review across workspaces.
-pub struct WorkspaceReview {
-    /// The review data
-    pub review: ReviewDetail,
-    /// The workspace name where the review was found
-    pub workspace_name: String,
-    /// The workspace path
-    pub workspace_path: PathBuf,
-}
-
-/// Find a review by ID, searching all workspaces if not found locally.
-///
-/// This function first checks the local crit_root, then falls back to
-/// searching all jj workspaces for the review.
-///
-/// Returns `Ok(None)` if the review is not found anywhere.
-/// Returns `Err` only for I/O or jj errors.
-pub fn find_review_in_workspaces(
-    crit_root: &Path,
-    review_id: &str,
-) -> Result<Option<WorkspaceReview>> {
-    // First try locally
-    if let Ok(db) = open_and_sync(crit_root) {
-        if let Ok(Some(review)) = db.get_review(review_id) {
-            return Ok(Some(WorkspaceReview {
-                review,
-                workspace_name: "default".to_string(),
-                workspace_path: crit_root.to_path_buf(),
-            }));
-        }
-    }
-
-    // Not found locally - search workspaces
-    let repo_root = match resolve_repo_root(crit_root) {
-        Ok(root) => root,
-        Err(_) => return Ok(None), // Not in a jj repo, can't search workspaces
-    };
-
-    let jj = JjRepo::new(&repo_root);
-    let workspaces = jj.list_workspaces().context("Failed to list workspaces")?;
-
-    for (ws_name, _ws_change_id, ws_path) in workspaces {
-        // Skip current/default workspace (already checked)
-        if ws_path == crit_root || ws_path == repo_root {
-            continue;
-        }
-
-        let ws_crit = ws_path.join(".crit");
-        if !ws_crit.exists() {
-            continue;
-        }
-
-        // Try to find review in this workspace
-        if let Ok(db) = open_and_sync(&ws_path) {
-            if let Ok(Some(review)) = db.get_review(review_id) {
-                return Ok(Some(WorkspaceReview {
-                    review,
-                    workspace_name: ws_name,
-                    workspace_path: ws_path,
-                }));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-/// Get a review by ID, with helpful error message if not found.
-///
-/// If the review exists in a workspace, returns the review and workspace info.
-/// Returns `(review, Some((ws_name, ws_path)))` if found in another workspace.
-pub fn get_review_or_suggest_path(
-    crit_root: &Path,
-    review_id: &str,
-) -> Result<(ReviewDetail, Option<(String, PathBuf)>)> {
-    // First try locally
+/// Get a review by ID, returning an error if not found.
+pub fn get_review(crit_root: &Path, review_id: &str) -> Result<ReviewDetail> {
     let db = open_and_sync(crit_root)?;
-    if let Some(review) = db.get_review(review_id)? {
-        return Ok((review, None));
-    }
-
-    // Search workspaces
-    if let Some(ws_review) = find_review_in_workspaces(crit_root, review_id)? {
-        // Found in another workspace - return the review and workspace info
-        return Ok((
-            ws_review.review,
-            Some((ws_review.workspace_name, ws_review.workspace_path)),
-        ));
-    }
-
-    // Not found anywhere
-    bail!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
+    db.get_review(review_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
+            review_id
+        )
+    })
 }
 
-/// Require a review to exist locally (for write operations).
+/// Require a review to exist (for operations that need the review).
 ///
-/// If the review is found in another workspace, returns a helpful error
-/// suggesting the --path flag. This is for operations that need to write
-/// to the review's event log.
+/// Returns the review if found, or an error with helpful message if not.
 pub fn require_local_review(crit_root: &Path, review_id: &str) -> Result<ReviewDetail> {
-    // Try locally first
+    get_review(crit_root, review_id)
+}
+
+/// Get a thread by ID, returning an error if not found.
+pub fn get_thread(crit_root: &Path, thread_id: &str) -> Result<ThreadDetail> {
     let db = open_and_sync(crit_root)?;
-    if let Some(review) = db.get_review(review_id)? {
-        return Ok(review);
-    }
-
-    // Search workspaces for a helpful error message
-    if let Some(ws_review) = find_review_in_workspaces(crit_root, review_id)? {
-        bail!(
-            "Review {} found in workspace '{}'\n  To fix: crit --path {} <command>",
-            review_id,
-            ws_review.workspace_name,
-            ws_review.workspace_path.display()
-        );
-    }
-
-    bail!(
-        "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
-        review_id
-    )
+    db.get_thread(thread_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
+            thread_id
+        )
+    })
 }
 
-/// Result of finding a thread across workspaces.
-pub struct WorkspaceThread {
-    /// The thread data
-    pub thread: ThreadDetail,
-    /// The workspace name where the thread was found
-    pub workspace_name: String,
-    /// The workspace path
-    pub workspace_path: PathBuf,
-}
-
-/// Find a thread by ID, searching all workspaces if not found locally.
-///
-/// Returns `Ok(None)` if the thread is not found anywhere.
-pub fn find_thread_in_workspaces(
-    crit_root: &Path,
-    thread_id: &str,
-) -> Result<Option<WorkspaceThread>> {
-    // First try locally
-    if let Ok(db) = open_and_sync(crit_root) {
-        if let Ok(Some(thread)) = db.get_thread(thread_id) {
-            return Ok(Some(WorkspaceThread {
-                thread,
-                workspace_name: "default".to_string(),
-                workspace_path: crit_root.to_path_buf(),
-            }));
-        }
-    }
-
-    // Not found locally - search workspaces
-    let repo_root = match resolve_repo_root(crit_root) {
-        Ok(root) => root,
-        Err(_) => return Ok(None),
-    };
-
-    let jj = JjRepo::new(&repo_root);
-    let workspaces = jj.list_workspaces().context("Failed to list workspaces")?;
-
-    for (ws_name, _ws_change_id, ws_path) in workspaces {
-        if ws_path == crit_root || ws_path == repo_root {
-            continue;
-        }
-
-        let ws_crit = ws_path.join(".crit");
-        if !ws_crit.exists() {
-            continue;
-        }
-
-        if let Ok(db) = open_and_sync(&ws_path) {
-            if let Ok(Some(thread)) = db.get_thread(thread_id) {
-                return Ok(Some(WorkspaceThread {
-                    thread,
-                    workspace_name: ws_name,
-                    workspace_path: ws_path,
-                }));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-/// Create a workspace-aware "review not found" error.
-///
-/// Searches all workspaces before returning "not found". If the review is
-/// found in another workspace, the error message suggests using --path.
-pub fn review_not_found_error(crit_root: &Path, review_id: &str) -> anyhow::Error {
-    if let Ok(Some(ws)) = find_review_in_workspaces(crit_root, review_id) {
-        return anyhow::anyhow!(
-            "Review {} found in workspace '{}'\n  To fix: crit --path {} <command>",
-            review_id,
-            ws.workspace_name,
-            ws.workspace_path.display()
-        );
-    }
+/// Create a "review not found" error.
+pub fn review_not_found_error(_crit_root: &Path, review_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "Review not found: {}\n  To fix: crit --agent <your-name> reviews list",
         review_id
     )
 }
 
-/// Create a workspace-aware "thread not found" error.
-///
-/// Searches all workspaces before returning "not found". If the thread is
-/// found in another workspace, the error message suggests using --path.
-pub fn thread_not_found_error(crit_root: &Path, thread_id: &str) -> anyhow::Error {
-    if let Ok(Some(ws)) = find_thread_in_workspaces(crit_root, thread_id) {
-        return anyhow::anyhow!(
-            "Thread {} found in workspace '{}' (review {})\n  To fix: crit --path {} <command>",
-            thread_id,
-            ws.workspace_name,
-            ws.thread.review_id,
-            ws.workspace_path.display()
-        );
-    }
+/// Create a "thread not found" error.
+pub fn thread_not_found_error(_crit_root: &Path, thread_id: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "Thread not found: {}\n  To fix: crit --agent <your-name> threads list <review_id>",
         thread_id

@@ -100,7 +100,6 @@ fn main() -> Result<()> {
                 author,
                 needs_review,
                 has_unresolved,
-                all_workspaces,
             } => {
                 let status_str = status.map(|s| match s {
                     crit::cli::ReviewStatus::Open => "open",
@@ -125,7 +124,6 @@ fn main() -> Result<()> {
                     author_filter.as_deref(),
                     needs_reviewer.as_deref(),
                     has_unresolved,
-                    all_workspaces,
                     format,
                 )?;
             }
@@ -337,9 +335,9 @@ fn main() -> Result<()> {
             run_comments_add(&crit_root, &thread_id, &message, identity.as_deref(), format)?;
         }
 
-        Commands::Inbox { all_workspaces } => {
+        Commands::Inbox => {
             let agent = get_agent_identity(identity.as_deref())?;
-            run_inbox(&crit_root, &agent, all_workspaces, format)?;
+            run_inbox(&crit_root, &agent, format)?;
         }
     }
 

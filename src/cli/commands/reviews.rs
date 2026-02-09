@@ -151,204 +151,37 @@ pub fn run_reviews_list(
     author: Option<&str>,
     needs_reviewer: Option<&str>,
     has_unresolved: bool,
-    all_workspaces: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::jj::resolve_repo_root;
-    use crate::projection::ReviewSummary;
-    use std::collections::{HashMap, HashSet};
-
     ensure_initialized(crit_root)?;
 
-    if all_workspaces {
-        // Get the main repo root (not workspace-local)
-        let repo_root = resolve_repo_root(crit_root)
-            .context("--all-workspaces requires a jj repository")?;
-        let jj = JjRepo::new(&repo_root);
+    let db = open_and_sync(crit_root)?;
+    let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
 
-        // Get all workspaces
-        let workspaces = jj.list_workspaces()?;
-
-        // Collect reviews from all workspace .crit/ directories
-        let mut all_reviews: HashMap<String, (ReviewSummary, String, std::path::PathBuf)> = HashMap::new();
-        let mut seen_review_ids: HashSet<String> = HashSet::new();
-
-        for (ws_name, _ws_change_id, ws_path) in &workspaces {
-            let ws_crit = ws_path.join(".crit");
-            if !ws_crit.exists() {
-                continue;
-            }
-
-            // Try to open and sync this workspace's .crit/
-            match open_and_sync(&ws_crit.parent().unwrap_or(ws_path)) {
-                Ok(db) => {
-                    match db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved) {
-                        Ok(reviews) => {
-                            for review in reviews {
-                                // Only add if we haven't seen this review_id before
-                                if !seen_review_ids.contains(&review.review_id) {
-                                    seen_review_ids.insert(review.review_id.clone());
-                                    all_reviews.insert(
-                                        review.review_id.clone(),
-                                        (review, ws_name.clone(), ws_path.clone()),
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: failed to list reviews in workspace {}: {}", ws_name, e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to sync workspace {}: {}", ws_name, e);
-                }
-            }
-        }
-
-        if all_reviews.is_empty() {
-            println!("No reviews found across workspaces");
-            return Ok(());
-        }
-
-        // Group reviews by workspace, matching review's change_id to workspace's change_id
-        let mut by_workspace: HashMap<String, Vec<&ReviewSummary>> = HashMap::new();
-        let mut no_workspace: Vec<&ReviewSummary> = Vec::new();
-
-        // Build workspace change_id lookup (short prefix -> workspace name)
-        let ws_change_lookup: HashMap<&str, &str> = workspaces
-            .iter()
-            .map(|(name, change_id, _)| (change_id.as_str(), name.as_str()))
-            .collect();
-
-        for (review, _source_ws, _source_path) in all_reviews.values() {
-            // Try to match review's change_id to a workspace
-            let review_change_prefix = &review.jj_change_id[..8.min(review.jj_change_id.len())];
-            if let Some(&ws_name) = ws_change_lookup.get(review_change_prefix) {
-                by_workspace
-                    .entry(ws_name.to_string())
-                    .or_default()
-                    .push(review);
-            } else {
-                no_workspace.push(review);
-            }
-        }
-
-        // Output grouped by workspace
-        if matches!(format, OutputFormat::Json) {
-            // For JSON, output a structured object
-            use serde::Serialize;
-            #[derive(Serialize)]
-            struct WorkspaceReviews<'a> {
-                workspace: &'a str,
-                path: String,
-                reviews: Vec<&'a ReviewSummary>,
-            }
-
-            let mut output: Vec<WorkspaceReviews<'_>> = Vec::new();
-
-            for (ws_name, _ws_change_id, ws_path) in &workspaces {
-                if let Some(reviews) = by_workspace.get(ws_name) {
-                    let rel_path = if ws_name == "default" {
-                        ".".to_string()
-                    } else {
-                        ws_path.strip_prefix(&repo_root)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|_| ws_path.display().to_string())
-                    };
-                    output.push(WorkspaceReviews {
-                        workspace: ws_name,
-                        path: rel_path,
-                        reviews: reviews.iter().copied().collect(),
-                    });
-                }
-            }
-
-            if !no_workspace.is_empty() {
-                output.push(WorkspaceReviews {
-                    workspace: "(no active workspace)",
-                    path: String::new(),
-                    reviews: no_workspace,
-                });
-            }
-
-            let formatter = Formatter::new(format);
-            formatter.print(&output)?;
-        } else {
-            // TOON output - group by workspace with headers
-            for (ws_name, _ws_change_id, ws_path) in &workspaces {
-                if let Some(reviews) = by_workspace.get(ws_name) {
-                    let rel_path = if ws_name == "default" {
-                        ".".to_string()
-                    } else {
-                        ws_path.strip_prefix(&repo_root)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|_| ws_path.display().to_string())
-                    };
-                    println!("=== {} ({}) ===", ws_name, rel_path);
-                    for r in reviews {
-                        println!(
-                            "  {} · {} by {} [{}]",
-                            r.review_id, r.title, r.author, r.status
-                        );
-                    }
-                    println!();
-                }
-            }
-
-            if !no_workspace.is_empty() {
-                println!("=== (no active workspace) ===");
-                for r in &no_workspace {
-                    println!(
-                        "  {} · {} by {} [{}]",
-                        r.review_id, r.title, r.author, r.status
-                    );
-                }
-                println!();
-            }
-        }
+    // Build context-aware empty message
+    let empty_msg = if needs_reviewer.is_some() {
+        "No reviews need your attention"
+    } else if has_unresolved {
+        "No reviews have unresolved threads"
+    } else if status.is_some() || author.is_some() {
+        "No reviews match the filters"
     } else {
-        // Original single-workspace behavior
-        let db = open_and_sync(crit_root)?;
-        let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
+        "No reviews yet"
+    };
 
-        // Build context-aware empty message
-        let empty_msg = if needs_reviewer.is_some() {
-            "No reviews need your attention"
-        } else if has_unresolved {
-            "No reviews have unresolved threads"
-        } else if status.is_some() || author.is_some() {
-            "No reviews match the filters"
-        } else {
-            "No reviews yet"
-        };
-
-        let formatter = Formatter::new(format);
-        formatter.print_list(&reviews, empty_msg)?;
-    }
+    let formatter = Formatter::new(format);
+    formatter.print_list(&reviews, empty_msg)?;
 
     Ok(())
 }
 
 /// Show details for a specific review.
-///
-/// If the review is not found locally, searches all workspaces.
-/// When found in another workspace, prints a hint about the --path flag.
 pub fn run_reviews_show(repo_root: &Path, review_id: &str, format: OutputFormat) -> Result<()> {
-    use crate::cli::commands::helpers::get_review_or_suggest_path;
+    use crate::cli::commands::helpers::get_review;
 
     ensure_initialized(repo_root)?;
 
-    let (review, workspace_info) = get_review_or_suggest_path(repo_root, review_id)?;
-
-    // If found in another workspace, print a hint
-    if let Some((ws_name, ws_path)) = workspace_info {
-        eprintln!(
-            "Note: Found in workspace '{}' ({})",
-            ws_name,
-            ws_path.display()
-        );
-    }
+    let review = get_review(repo_root, review_id)?;
 
     let formatter = Formatter::new(format);
     formatter.print(&review)?;
@@ -722,36 +555,14 @@ pub fn run_review(
     since: Option<DateTime<Utc>>,
     format: OutputFormat,
 ) -> Result<()> {
-    use crate::cli::commands::helpers::get_review_or_suggest_path;
+    use crate::cli::commands::helpers::get_review;
     use crate::jj::context::{extract_context, format_context};
 
     ensure_initialized(crit_root)?;
 
-    // Find review (may be in another workspace)
-    let (review, workspace_info_hint) = get_review_or_suggest_path(crit_root, review_id)?;
-
-    // Determine which path to use for database lookups
-    let effective_root = if let Some((ref ws_name, ref ws_path)) = workspace_info_hint {
-        eprintln!(
-            "Note: Found in workspace '{}' ({})",
-            ws_name,
-            ws_path.display()
-        );
-        ws_path.as_path()
-    } else {
-        crit_root
-    };
-
-    // Open db at the correct path for thread/comment lookups
-    let db = open_and_sync(effective_root)?;
-
+    let review = get_review(crit_root, review_id)?;
+    let db = open_and_sync(crit_root)?;
     let jj = JjRepo::new(workspace_root);
-
-    // Find which workspace contains this change (if any)
-    let workspace_info = jj
-        .find_workspace_for_change(&review.jj_change_id)
-        .ok()
-        .flatten();
 
     // For JSON output, build a complete structure
     if matches!(format, OutputFormat::Json) {
@@ -817,16 +628,8 @@ pub fn run_review(
             }));
         }
 
-        let workspace_json = workspace_info.as_ref().map(|(name, path)| {
-            serde_json::json!({
-                "name": name,
-                "path": path.display().to_string(),
-            })
-        });
-
         let result = serde_json::json!({
             "review": review,
-            "workspace": workspace_json,
             "threads": threads_with_comments,
         });
 
@@ -851,11 +654,6 @@ pub fn run_review(
         review.author,
         &review.created_at[..10]
     );
-
-    // Show workspace info if the change is in a non-default workspace
-    if let Some((workspace_name, workspace_path)) = &workspace_info {
-        println!("  Workspace: {} ({})", workspace_name, workspace_path.display());
-    }
 
     if let Some(desc) = &review.description {
         println!("\n  {}", desc);
@@ -1006,241 +804,91 @@ pub fn run_review(
 }
 
 /// Show inbox - reviews and threads needing the agent's attention.
-pub fn run_inbox(repo_root: &Path, agent: &str, all_workspaces: bool, format: OutputFormat) -> Result<()> {
-    use crate::jj::resolve_repo_root;
-
+pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<()> {
     ensure_initialized(repo_root)?;
 
-    if all_workspaces {
-        // Get the main repo root (not workspace-local)
-        let main_repo_root = resolve_repo_root(repo_root)
-            .context("--all-workspaces requires a jj repository")?;
-        let jj = JjRepo::new(&main_repo_root);
+    let db = open_and_sync(repo_root)?;
+    let inbox = db.get_inbox(agent)?;
 
-        // Get all workspaces
-        let workspaces = jj.list_workspaces()?;
+    if matches!(format, OutputFormat::Json) {
+        let formatter = Formatter::new(format);
+        formatter.print(&inbox)?;
+        return Ok(());
+    }
 
-        // Merge all events from all workspaces into a single in-memory DB.
-        // This prevents false-positive orphan detection when events are split
-        // across workspaces (e.g., ReviewCreated in workspace A, ReviewersRequested
-        // in the root). By merging first, orphan detection sees the complete
-        // picture and FK constraints are satisfied.
-        let mut all_events = Vec::new();
-        let mut review_source: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // TOON output
+    let total_items = inbox.reviews_awaiting_vote.len()
+        + inbox.threads_with_new_responses.len()
+        + inbox.open_threads_on_my_reviews.len();
 
-        for (ws_name, _ws_change_id, ws_path) in &workspaces {
-            let ws_crit = ws_path.join(".crit");
-            if !ws_crit.exists() {
-                continue;
-            }
+    if total_items == 0 {
+        println!("Inbox empty - no items need your attention");
+        return Ok(());
+    }
 
-            if let Ok(events) = crate::log::read_all_reviews(ws_path) {
-                // Track which workspace each review's events came from
-                // (prefer the workspace that has ReviewCreated)
-                for env in &events {
-                    if let crate::events::Event::ReviewCreated(e) = &env.event {
-                        review_source.insert(e.review_id.clone(), ws_name.clone());
-                    }
-                }
-                all_events.extend(events);
-            }
+    println!("Inbox for {} ({} items)", agent, total_items);
+    println!();
+
+    // Section 1: Reviews awaiting vote
+    if !inbox.reviews_awaiting_vote.is_empty() {
+        println!(
+            "Reviews awaiting your vote ({}):",
+            inbox.reviews_awaiting_vote.len()
+        );
+        for r in &inbox.reviews_awaiting_vote {
+            let threads_info = if r.open_thread_count > 0 {
+                format!(" [{} open threads]", r.open_thread_count)
+            } else {
+                String::new()
+            };
+            let status_indicator = if r.request_status == "re-review" {
+                " [re-review]"
+            } else {
+                ""
+            };
+            println!(
+                "  {} · {} by {}{}{}",
+                r.review_id, r.title, r.author, threads_info, status_indicator
+            );
         }
+        println!();
+    }
 
-        // Sort all events by timestamp for correct application order
-        all_events.sort_by(|a, b| a.ts.cmp(&b.ts));
-
-        // Build a merged projection in memory
-        let db = crate::projection::ProjectionDb::open_in_memory()
-            .context("Failed to create in-memory projection")?;
-        db.init_schema()?;
-
-        // Apply merged events (orphan filtering now has the complete picture)
-        crate::projection::rebuild_from_events(&db, all_events)?;
-
-        let inbox = db.get_inbox(agent)?;
-
-        // Map review_id to workspace name for annotation
-        let review_workspace = review_source;
-        let mut thread_workspace: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Section 2: Threads with new responses
+    if !inbox.threads_with_new_responses.is_empty() {
+        println!(
+            "Threads with new responses ({}):",
+            inbox.threads_with_new_responses.len()
+        );
         for t in &inbox.threads_with_new_responses {
-            if let Some(ws) = review_workspace.get(&t.review_id) {
-                thread_workspace.insert(t.thread_id.clone(), ws.clone());
-            }
+            println!(
+                "  {} · {}:{} (+{} new)",
+                t.thread_id, t.file_path, t.selection_start, t.new_response_count
+            );
+            println!("    in {} ({})", t.review_id, t.review_title);
         }
+        println!();
+    }
+
+    // Section 3: Open threads on my reviews
+    if !inbox.open_threads_on_my_reviews.is_empty() {
+        println!(
+            "Open feedback on your reviews ({}):",
+            inbox.open_threads_on_my_reviews.len()
+        );
         for t in &inbox.open_threads_on_my_reviews {
-            if let Some(ws) = review_workspace.get(&t.review_id) {
-                thread_workspace.insert(t.thread_id.clone(), ws.clone());
-            }
+            let comments_info = if t.comment_count > 0 {
+                format!(" ({} comments)", t.comment_count)
+            } else {
+                String::new()
+            };
+            println!(
+                "  {} · {}:{} by {}{}",
+                t.thread_id, t.file_path, t.selection_start, t.thread_author, comments_info
+            );
+            println!("    in {} ({})", t.review_id, t.review_title);
         }
-
-        if matches!(format, OutputFormat::Json) {
-            let formatter = Formatter::new(format);
-            formatter.print(&inbox)?;
-            return Ok(());
-        }
-
-        // TOON output with workspace annotations
-        let total_items = inbox.reviews_awaiting_vote.len()
-            + inbox.threads_with_new_responses.len()
-            + inbox.open_threads_on_my_reviews.len();
-
-        if total_items == 0 {
-            println!("Inbox empty - no items need your attention (across all workspaces)");
-            return Ok(());
-        }
-
-        println!("Inbox for {} ({} items, all workspaces)", agent, total_items);
         println!();
-
-        // Section 1: Reviews awaiting vote
-        if !inbox.reviews_awaiting_vote.is_empty() {
-            println!(
-                "Reviews awaiting your vote ({}):",
-                inbox.reviews_awaiting_vote.len()
-            );
-            for r in &inbox.reviews_awaiting_vote {
-                let threads_info = if r.open_thread_count > 0 {
-                    format!(" [{} open threads]", r.open_thread_count)
-                } else {
-                    String::new()
-                };
-                let status_indicator = if r.request_status == "re-review" {
-                    " [re-review]"
-                } else {
-                    ""
-                };
-                let ws_name = review_workspace.get(&r.review_id).map(|s| s.as_str()).unwrap_or("?");
-                println!(
-                    "  {} · {} by {}{}{} [{}]",
-                    r.review_id, r.title, r.author, threads_info, status_indicator, ws_name
-                );
-            }
-            println!();
-        }
-
-        // Section 2: Threads with new responses
-        if !inbox.threads_with_new_responses.is_empty() {
-            println!(
-                "Threads with new responses ({}):",
-                inbox.threads_with_new_responses.len()
-            );
-            for t in &inbox.threads_with_new_responses {
-                let ws_name = thread_workspace.get(&t.thread_id).map(|s| s.as_str()).unwrap_or("?");
-                println!(
-                    "  {} · {}:{} (+{} new) [{}]",
-                    t.thread_id, t.file_path, t.selection_start, t.new_response_count, ws_name
-                );
-                println!("    in {} ({})", t.review_id, t.review_title);
-            }
-            println!();
-        }
-
-        // Section 3: Open threads on my reviews
-        if !inbox.open_threads_on_my_reviews.is_empty() {
-            println!(
-                "Open feedback on your reviews ({}):",
-                inbox.open_threads_on_my_reviews.len()
-            );
-            for t in &inbox.open_threads_on_my_reviews {
-                let comments_info = if t.comment_count > 0 {
-                    format!(" ({} comments)", t.comment_count)
-                } else {
-                    String::new()
-                };
-                let ws_name = thread_workspace.get(&t.thread_id).map(|s| s.as_str()).unwrap_or("?");
-                println!(
-                    "  {} · {}:{} by {}{} [{}]",
-                    t.thread_id, t.file_path, t.selection_start, t.thread_author, comments_info, ws_name
-                );
-                println!("    in {} ({})", t.review_id, t.review_title);
-            }
-            println!();
-        }
-    } else {
-        // Original single-workspace behavior
-        let db = open_and_sync(repo_root)?;
-        let inbox = db.get_inbox(agent)?;
-
-        if matches!(format, OutputFormat::Json) {
-            let formatter = Formatter::new(format);
-            formatter.print(&inbox)?;
-            return Ok(());
-        }
-
-        // TOON output
-        let total_items = inbox.reviews_awaiting_vote.len()
-            + inbox.threads_with_new_responses.len()
-            + inbox.open_threads_on_my_reviews.len();
-
-        if total_items == 0 {
-            println!("Inbox empty - no items need your attention");
-            return Ok(());
-        }
-
-        println!("Inbox for {} ({} items)", agent, total_items);
-        println!();
-
-        // Section 1: Reviews awaiting vote
-        if !inbox.reviews_awaiting_vote.is_empty() {
-            println!(
-                "Reviews awaiting your vote ({}):",
-                inbox.reviews_awaiting_vote.len()
-            );
-            for r in &inbox.reviews_awaiting_vote {
-                let threads_info = if r.open_thread_count > 0 {
-                    format!(" [{} open threads]", r.open_thread_count)
-                } else {
-                    String::new()
-                };
-                let status_indicator = if r.request_status == "re-review" {
-                    " [re-review]"
-                } else {
-                    ""
-                };
-                println!(
-                    "  {} · {} by {}{}{}",
-                    r.review_id, r.title, r.author, threads_info, status_indicator
-                );
-            }
-            println!();
-        }
-
-        // Section 2: Threads with new responses
-        if !inbox.threads_with_new_responses.is_empty() {
-            println!(
-                "Threads with new responses ({}):",
-                inbox.threads_with_new_responses.len()
-            );
-            for t in &inbox.threads_with_new_responses {
-                println!(
-                    "  {} · {}:{} (+{} new)",
-                    t.thread_id, t.file_path, t.selection_start, t.new_response_count
-                );
-                println!("    in {} ({})", t.review_id, t.review_title);
-            }
-            println!();
-        }
-
-        // Section 3: Open threads on my reviews
-        if !inbox.open_threads_on_my_reviews.is_empty() {
-            println!(
-                "Open feedback on your reviews ({}):",
-                inbox.open_threads_on_my_reviews.len()
-            );
-            for t in &inbox.open_threads_on_my_reviews {
-                let comments_info = if t.comment_count > 0 {
-                    format!(" ({} comments)", t.comment_count)
-                } else {
-                    String::new()
-                };
-                println!(
-                    "  {} · {}:{} by {}{}",
-                    t.thread_id, t.file_path, t.selection_start, t.thread_author, comments_info
-                );
-                println!("    in {} ({})", t.review_id, t.review_title);
-            }
-            println!();
-        }
     }
 
     Ok(())
