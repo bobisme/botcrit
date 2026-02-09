@@ -2,11 +2,10 @@
   "version": "1.0.13",
   "project": {
     "name": "botcrit",
-    "type": [
-      "cli"
-    ],
+    "type": ["cli"],
     "channel": "botcrit",
-    "defaultAgent": "botcrit-dev"
+    "defaultAgent": "botcrit-dev",
+    "installCommand": "just install"
   },
   "tools": {
     "beads": true,
@@ -17,11 +16,9 @@
   },
   "review": {
     "enabled": true,
-    "reviewers": [
-      "security"
-    ]
+    "reviewers": ["security"]
   },
-  "pushMain": false,
+  "pushMain": true,
   "agents": {
     "dev": {
       "model": "opus",
