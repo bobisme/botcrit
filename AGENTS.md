@@ -58,7 +58,6 @@ Reviews anchored to jj Change IDs (survive rebases). `.crit/` is version-control
 `cargo test` runs unit tests (`#[cfg(test)]` in modules). Key coverage: ID generation (500-iteration stress test), event serialization, projection sync/orphan detection, critignore, init idempotence. Integration tests use unique socket paths for botty (`/tmp/botty-test-{uuid}.sock`). Debug: `RUST_LOG=debug cargo test -- --nocapture`.
 
 <!-- botbox:managed-start -->
-
 ## Botbox Workflow
 
 **New here?** Read [worker-loop.md](.agents/botbox/worker-loop.md) first — it covers the complete triage → start → work → finish cycle.
@@ -82,7 +81,6 @@ project-root/          ← bare repo (no source files here)
 ```
 
 **Key rules:**
-
 - `ws/default/` is the main workspace — beads, config, and project files live here
 - **Never merge or destroy the default workspace.** It is where other branches merge INTO, not something you merge.
 - Agent workspaces (`ws/<name>/`) are isolated jj commits for concurrent work
@@ -93,41 +91,40 @@ project-root/          ← bare repo (no source files here)
 
 ### Beads Quick Reference
 
-| Operation       | Command                                                                                              |
-| --------------- | ---------------------------------------------------------------------------------------------------- |
-| View ready work | `maw exec default -- br ready`                                                                       |
-| Show bead       | `maw exec default -- br show <id>`                                                                   |
-| Create          | `maw exec default -- br create --actor $AGENT --owner $AGENT --title="..." --type=task --priority=2` |
-| Start work      | `maw exec default -- br update --actor $AGENT <id> --status=in_progress --owner=$AGENT`              |
-| Add comment     | `maw exec default -- br comments add --actor $AGENT --author $AGENT <id> "message"`                  |
-| Close           | `maw exec default -- br close --actor $AGENT <id>`                                                   |
-| Add dependency  | `maw exec default -- br dep add --actor $AGENT <blocked> <blocker>`                                  |
-| Sync            | `maw exec default -- br sync --flush-only`                                                           |
-| Triage (scores) | `maw exec default -- bv --robot-triage`                                                              |
-| Next bead       | `maw exec default -- bv --robot-next`                                                                |
+| Operation | Command |
+|-----------|---------|
+| View ready work | `maw exec default -- br ready` |
+| Show bead | `maw exec default -- br show <id>` |
+| Create | `maw exec default -- br create --actor $AGENT --owner $AGENT --title="..." --type=task --priority=2` |
+| Start work | `maw exec default -- br update --actor $AGENT <id> --status=in_progress --owner=$AGENT` |
+| Add comment | `maw exec default -- br comments add --actor $AGENT --author $AGENT <id> "message"` |
+| Close | `maw exec default -- br close --actor $AGENT <id>` |
+| Add dependency | `maw exec default -- br dep add --actor $AGENT <blocked> <blocker>` |
+| Sync | `maw exec default -- br sync --flush-only` |
+| Triage (scores) | `maw exec default -- bv --robot-triage` |
+| Next bead | `maw exec default -- bv --robot-next` |
 
 **Required flags**: `--actor $AGENT` on mutations, `--author $AGENT` on comments.
 
 ### Workspace Quick Reference
 
-| Operation           | Command                              |
-| ------------------- | ------------------------------------ |
-| Create workspace    | `maw ws create <name>`               |
-| List workspaces     | `maw ws list`                        |
-| Merge to main       | `maw ws merge <name> --destroy`      |
-| Destroy (no merge)  | `maw ws destroy <name>`              |
+| Operation | Command |
+|-----------|---------|
+| Create workspace | `maw ws create <name>` |
+| List workspaces | `maw ws list` |
+| Merge to main | `maw ws merge <name> --destroy` |
+| Destroy (no merge) | `maw ws destroy <name>` |
 | Run jj in workspace | `maw exec <name> -- jj <jj-args...>` |
 
 **Avoiding divergent commits**: Each workspace owns ONE commit. Only modify your own.
 
-| Safe                                         | Dangerous                                |
-| -------------------------------------------- | ---------------------------------------- |
-| `maw ws merge <agent-ws> --destroy`          | `maw ws merge default --destroy` (NEVER) |
-| `jj describe` (your working copy)            | `jj describe main -m "..."`              |
-| `maw exec <your-ws> -- jj describe -m "..."` | `jj describe <other-change-id>`          |
+| Safe | Dangerous |
+|------|-----------|
+| `maw ws merge <agent-ws> --destroy` | `maw ws merge default --destroy` (NEVER) |
+| `jj describe` (your working copy) | `jj describe main -m "..."` |
+| `maw exec <your-ws> -- jj describe -m "..."` | `jj describe <other-change-id>` |
 
 If you see `(divergent)` in `jj log`:
-
 ```bash
 jj abandon <change-id>/0   # keep one, abandon the divergent copy
 ```
@@ -177,7 +174,6 @@ The @mention triggers the auto-spawn hook for the reviewer.
 2. Post question or feedback: `bus send --agent $AGENT <project> "..." -L feedback`
 3. For bugs, create beads in their repo first
 4. **Always create a local tracking bead** so you check back later:
-
    ```bash
    maw exec default -- br create --actor $AGENT --owner $AGENT --title="[tracking] <summary>" --labels tracking --type=task --priority=3
    ```
@@ -187,6 +183,7 @@ See [cross-channel.md](.agents/botbox/cross-channel.md) for the full workflow.
 ### Session Search (optional)
 
 Use `cass search "error or problem"` to find how similar issues were solved in past sessions.
+
 
 ### Design Guidelines
 
