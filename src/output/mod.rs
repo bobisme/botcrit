@@ -42,17 +42,10 @@ impl Formatter {
                 let output = serde_json::to_string_pretty(data)?;
                 Ok(output)
             }
-            OutputFormat::Text => {
-                // For now, text format uses JSON pretty
-                // bd-rxp.4 will add proper text formatting
-                let output = serde_json::to_string_pretty(data)?;
-                Ok(output)
-            }
-            OutputFormat::Pretty => {
-                // For now, Pretty format uses JSON pretty
-                // Future enhancement: add colorization and enhanced formatting
-                let output = serde_json::to_string_pretty(data)?;
-                Ok(output)
+            OutputFormat::Text | OutputFormat::Pretty => {
+                // Convert to JSON value first, then render as text
+                let json_value = serde_json::to_value(data)?;
+                Ok(render_text(&json_value))
             }
         }
     }
@@ -123,6 +116,68 @@ impl Default for Formatter {
 /// Returns an error if serialization or writing fails
 pub fn print_json<T: Serialize>(data: &T) -> Result<()> {
     Formatter::new(OutputFormat::Json).print(data)
+}
+
+/// Render a JSON value as concise text
+fn render_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Put ID-like fields first (review_id, thread_id, comment_id, id)
+            let mut parts = Vec::new();
+            let id_keys = ["review_id", "thread_id", "comment_id", "id"];
+
+            for key in &id_keys {
+                if let Some(val) = map.get(*key) {
+                    parts.push(render_field_value(val));
+                }
+            }
+
+            for (key, val) in map {
+                if !id_keys.contains(&key.as_str()) {
+                    match val {
+                        serde_json::Value::Array(arr) if arr.is_empty() => {}
+                        serde_json::Value::Null => {}
+                        _ => {
+                            parts.push(format!("{}:{}", key, render_field_value(val)));
+                        }
+                    }
+                }
+            }
+            parts.join("  ")
+        }
+        serde_json::Value::Array(arr) => {
+            arr.iter().map(render_text).collect::<Vec<_>>().join("\n")
+        }
+        _ => render_field_value(value),
+    }
+}
+
+/// Render a single field value as concise text
+fn render_field_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.contains(' ') || s.contains('\n') {
+                format!("\"{}\"", s.replace('\n', "\\n"))
+            } else {
+                s.clone()
+            }
+        }
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(render_field_value).collect();
+            format!("[{}]", items.join(","))
+        }
+        serde_json::Value::Object(map) => {
+            // Compact inline for nested objects
+            let parts: Vec<String> = map.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| format!("{}:{}", k, render_field_value(v)))
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +328,175 @@ mod tests {
         let format = OutputFormat::Pretty;
         let formatter = Formatter::new(format);
         assert_eq!(formatter.format, OutputFormat::Pretty);
+    }
+}
+
+#[cfg(test)]
+mod text_format_tests {
+    use super::*;
+
+    #[test]
+    fn test_text_format_single_object() {
+        #[derive(Debug, Serialize)]
+        struct Review {
+            review_id: String,
+            title: String,
+            status: String,
+            author: String,
+        }
+
+        let review = Review {
+            review_id: "cr-abc".to_string(),
+            title: "Fix login bug".to_string(),
+            status: "open".to_string(),
+            author: "alice".to_string(),
+        };
+
+        let formatter = Formatter::new(OutputFormat::Text);
+        let output = formatter.format(&review).unwrap();
+
+        // Should start with ID
+        assert!(output.starts_with("cr-abc"));
+        // Should contain other fields with labels
+        assert!(output.contains("title:"));
+        assert!(output.contains("status:open"));
+        assert!(output.contains("author:alice"));
+        // Title with spaces should be quoted
+        assert!(output.contains("\"Fix login bug\""));
+    }
+
+    #[test]
+    fn test_text_format_array() {
+        #[derive(Debug, Serialize)]
+        struct Item {
+            id: String,
+            name: String,
+        }
+
+        let items = vec![
+            Item { id: "item-1".to_string(), name: "first".to_string() },
+            Item { id: "item-2".to_string(), name: "second".to_string() },
+        ];
+
+        let formatter = Formatter::new(OutputFormat::Text);
+        let output = formatter.format(&items).unwrap();
+
+        // Should have one item per line
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        
+        // Each line should start with ID
+        assert!(lines[0].starts_with("item-1"));
+        assert!(lines[1].starts_with("item-2"));
+    }
+
+    #[test]
+    fn test_text_format_null_and_empty() {
+        #[derive(Debug, Serialize)]
+        struct Data {
+            id: String,
+            name: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            optional: Option<String>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            tags: Vec<String>,
+        }
+
+        let data = Data {
+            id: "test-1".to_string(),
+            name: "test".to_string(),
+            optional: None,
+            tags: vec![],
+        };
+
+        let formatter = Formatter::new(OutputFormat::Text);
+        let output = formatter.format(&data).unwrap();
+
+        // Should not contain null or empty fields
+        assert!(!output.contains("null"));
+        assert!(!output.contains("optional"));
+        assert!(!output.contains("tags"));
+        assert!(output.contains("test-1"));
+        assert!(output.contains("name:test"));
+    }
+
+    #[test]
+    fn test_text_format_nested_object() {
+        #[derive(Debug, Serialize)]
+        struct Parent {
+            id: String,
+            child: Child,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct Child {
+            name: String,
+            value: i32,
+        }
+
+        let data = Parent {
+            id: "parent-1".to_string(),
+            child: Child {
+                name: "nested".to_string(),
+                value: 42,
+            },
+        };
+
+        let formatter = Formatter::new(OutputFormat::Text);
+        let output = formatter.format(&data).unwrap();
+
+        // Should start with ID
+        assert!(output.starts_with("parent-1"));
+        // Should contain nested object in compact form
+        assert!(output.contains("child:{"));
+        assert!(output.contains("name:nested"));
+        assert!(output.contains("value:42"));
+    }
+
+    #[test]
+    fn test_text_format_id_ordering() {
+        #[derive(Debug, Serialize)]
+        struct MultiId {
+            name: String,
+            review_id: String,
+            thread_id: String,
+            value: i32,
+        }
+
+        let data = MultiId {
+            name: "test".to_string(),
+            review_id: "cr-abc".to_string(),
+            thread_id: "th-xyz".to_string(),
+            value: 42,
+        };
+
+        let formatter = Formatter::new(OutputFormat::Text);
+        let output = formatter.format(&data).unwrap();
+
+        // Should start with review_id, then thread_id (in order of id_keys array)
+        assert!(output.starts_with("cr-abc  th-xyz"));
+    }
+
+    #[test]
+    fn test_pretty_format_uses_text() {
+        #[derive(Debug, Serialize)]
+        struct Item {
+            id: String,
+            name: String,
+        }
+
+        let item = Item {
+            id: "test-1".to_string(),
+            name: "test".to_string(),
+        };
+
+        let text_formatter = Formatter::new(OutputFormat::Text);
+        let pretty_formatter = Formatter::new(OutputFormat::Pretty);
+
+        let text_output = text_formatter.format(&item).unwrap();
+        let pretty_output = pretty_formatter.format(&item).unwrap();
+
+        // Pretty and Text should produce the same output for now
+        assert_eq!(text_output, pretty_output);
     }
 }
