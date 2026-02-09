@@ -2,11 +2,69 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "",
+        "matcher": {},
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/init-agent.sh"
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/check-jj.sh"
+          }
+        ]
+      },
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/init-agent.sh"
+          }
+        ]
+      },
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/claim-agent.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/check-jj.sh"
+          }
+        ]
+      },
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/init-agent.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/claim-agent.sh"
+          }
+        ]
+      },
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/bob/src/botcrit/ws/default/.agents/botbox/hooks/check-bus-inbox.sh"
           }
         ]
       }

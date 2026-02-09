@@ -615,6 +615,7 @@ project-root/          ← bare repo (no source files here)
 
 **Key rules:**
 - `ws/default/` is the main workspace — beads, config, and project files live here
+- **Never merge or destroy the default workspace.** It is where other branches merge INTO, not something you merge.
 - Agent workspaces (`ws/<name>/`) are isolated jj commits for concurrent work
 - Use `maw exec <ws> -- <command>` to run commands in a workspace context
 - Use `maw exec default -- br|bv ...` for beads commands (always in default workspace)
@@ -652,6 +653,7 @@ project-root/          ← bare repo (no source files here)
 
 | Safe | Dangerous |
 |------|-----------|
+| `maw ws merge <agent-ws> --destroy` | `maw ws merge default --destroy` (NEVER) |
 | `jj describe` (your working copy) | `jj describe main -m "..."` |
 | `maw exec <your-ws> -- jj describe -m "..."` | `jj describe <other-change-id>` |
 
@@ -660,11 +662,16 @@ If you see `(divergent)` in `jj log`:
 jj abandon <change-id>/0   # keep one, abandon the divergent copy
 ```
 
+**Working copy snapshots**: jj auto-snapshots your working copy before most operations (`jj new`, `jj rebase`, etc.). Edits go into the **current** commit automatically. To put changes in a **new** commit, run `jj new` first, then edit files.
+
+**Always pass `-m`**: Commands like `jj commit`, `jj squash`, and `jj describe` open an editor by default. Agents cannot interact with editors, so always pass `-m "message"` explicitly.
+
 ### Beads Conventions
 
 - Create a bead before starting work. Update status: `open` → `in_progress` → `closed`.
 - Post progress comments during work for crash recovery.
 - **Push to main** after completing beads (see [finish.md](.agents/botbox/finish.md)).
+- **Install locally** after releasing: `just install`
 
 ### Identity
 
