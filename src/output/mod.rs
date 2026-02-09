@@ -16,6 +16,8 @@ pub enum OutputFormat {
     Json,
     /// Plain text format - simple text output
     Text,
+    /// Pretty format - colorized, human-friendly output
+    Pretty,
 }
 
 /// Formatter that can output data in TOON or JSON format
@@ -55,6 +57,13 @@ impl Formatter {
                 let output = toon::encode(&json_value, None);
                 Ok(output)
             }
+            OutputFormat::Pretty => {
+                // For now, Pretty format delegates to TOON
+                // Future enhancement: add colorization and enhanced formatting
+                let json_value = serde_json::to_value(data)?;
+                let output = toon::encode(&json_value, None);
+                Ok(output)
+            }
         }
     }
 
@@ -79,7 +88,9 @@ impl Formatter {
         if data.is_empty() {
             let mut stdout = io::stdout().lock();
             match self.format {
-                OutputFormat::Toon | OutputFormat::Text => writeln!(stdout, "{empty_message}")?,
+                OutputFormat::Toon | OutputFormat::Text | OutputFormat::Pretty => {
+                    writeln!(stdout, "{empty_message}")?;
+                }
                 OutputFormat::Json => writeln!(stdout, "[]")?,
             }
             Ok(())
@@ -135,6 +146,8 @@ mod tests {
 
     #[test]
     fn test_output_format_default() {
+        // The enum default is Toon
+        // Note: CLI resolution layer may override this based on TTY detection
         let format = OutputFormat::default();
         assert_eq!(format, OutputFormat::Toon);
     }
@@ -209,5 +222,25 @@ mod tests {
 
         let toon_formatter = Formatter::new(OutputFormat::Toon);
         let _toon_output = toon_formatter.format(&data).expect("TOON failed");
+    }
+
+    #[test]
+    fn test_formatter_pretty_output() {
+        let formatter = Formatter::new(OutputFormat::Pretty);
+        let data = sample_data();
+        let output = formatter.format(&data).expect("Pretty formatting failed");
+
+        // Pretty output should contain the field values (delegates to TOON for now)
+        assert!(output.contains("test-item") || output.contains("name"));
+        assert!(output.contains("42") || output.contains("count"));
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn test_output_format_pretty_variant_exists() {
+        // Verify Pretty variant exists in the enum
+        let format = OutputFormat::Pretty;
+        let formatter = Formatter::new(format);
+        assert_eq!(formatter.format, OutputFormat::Pretty);
     }
 }

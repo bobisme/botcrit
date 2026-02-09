@@ -1,6 +1,7 @@
 //! CLI command definitions and handlers.
 
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 
 pub mod commands;
 
@@ -11,7 +12,7 @@ use crate::output::OutputFormat;
 #[command(name = "crit")]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-    /// Output format (default: toon)
+    /// Output format (default: auto-detected based on TTY - 'pretty' for interactive, 'text' for pipes)
     #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
@@ -36,13 +37,42 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Get the effective output format, handling backward compatibility with --json
+    /// Get the effective output format with priority chain:
+    /// 1. --format flag (highest priority)
+    /// 2. --json deprecated flag
+    /// 3. FORMAT environment variable
+    /// 4. TTY auto-detection: Pretty for TTY, Text otherwise
+    #[must_use]
     pub fn output_format(&self) -> OutputFormat {
+        // Priority 1: --format flag
+        if let Some(format) = self.format {
+            return format;
+        }
+
+        // Priority 2: --json deprecated flag
         if self.json {
             eprintln!("Warning: --json is deprecated, use --format=json instead");
-            OutputFormat::Json
+            return OutputFormat::Json;
+        }
+
+        // Priority 3: FORMAT environment variable
+        if let Ok(format_str) = std::env::var("FORMAT") {
+            match format_str.to_lowercase().as_str() {
+                "pretty" => return OutputFormat::Pretty,
+                "text" => return OutputFormat::Text,
+                "json" => return OutputFormat::Json,
+                "toon" => return OutputFormat::Toon,
+                _ => {
+                    eprintln!("Warning: unknown FORMAT value '{format_str}', using auto-detection");
+                }
+            }
+        }
+
+        // Priority 4: TTY auto-detection
+        if std::io::stdout().is_terminal() {
+            OutputFormat::Pretty
         } else {
-            self.format.unwrap_or_default()
+            OutputFormat::Text
         }
     }
 }
