@@ -606,12 +606,12 @@ mod tests {
         assert!(review_ids.contains(&"cr-002".to_string()));
 
         // Check events in cr-001 (ReviewCreated, ThreadCreated, CommentAdded, ReviewerVoted)
-        let log1 = crate::log::ReviewLog::new(crit_root, "cr-001");
+        let log1 = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap();
         let events1 = log1.read_all().unwrap();
         assert_eq!(events1.len(), 4);
 
         // Check events in cr-002 (ReviewCreated, ThreadCreated, CommentAdded)
-        let log2 = crate::log::ReviewLog::new(crit_root, "cr-002");
+        let log2 = crate::log::ReviewLog::new(crit_root, "cr-002").unwrap();
         let events2 = log2.read_all().unwrap();
         assert_eq!(events2.len(), 3);
     }
@@ -643,7 +643,7 @@ mod tests {
         run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // All 7 events must be present in the per-review log
-        let review_log = crate::log::ReviewLog::new(crit_root, "cr-001");
+        let review_log = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap();
         let events = review_log.read_all().unwrap();
         assert_eq!(
             events.len(),
@@ -752,7 +752,7 @@ mod tests {
         review_log.append(&ev_thread).unwrap();
 
         // Verify only 2 events before recovery
-        let pre_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+        let pre_events = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap()
             .read_all()
             .unwrap();
         assert_eq!(pre_events.len(), 2);
@@ -761,7 +761,7 @@ mod tests {
         run_migrate(crit_root, false, true, true, OutputFormat::Text).unwrap();
 
         // Should now have all 5 events (2 existing + 3 recovered)
-        let post_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+        let post_events = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap()
             .read_all()
             .unwrap();
         assert_eq!(

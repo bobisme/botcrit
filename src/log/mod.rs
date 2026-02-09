@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 
 use crate::events::EventEnvelope;
@@ -279,6 +279,29 @@ pub fn review_events_path(crit_root: &Path, review_id: &str) -> PathBuf {
     reviews_dir(crit_root).join(review_id).join("events.jsonl")
 }
 
+/// Validate a review ID for safe use in filesystem paths.
+///
+/// Rejects IDs containing path separators, traversal sequences, or
+/// characters outside the expected alphanumeric-plus-dash set.
+fn validate_review_id(review_id: &str) -> Result<()> {
+    if review_id.is_empty() {
+        bail!("review ID must not be empty");
+    }
+    if review_id.contains('/') || review_id.contains('\\') {
+        bail!("review ID must not contain path separators: {review_id}");
+    }
+    if review_id.contains("..") {
+        bail!("review ID must not contain '..': {review_id}");
+    }
+    if !review_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        bail!("review ID contains invalid characters (allowed: alphanumeric, dash): {review_id}");
+    }
+    Ok(())
+}
+
 /// Per-review event log (v2 format).
 ///
 /// Each review has its own event log at `.crit/reviews/{review_id}/events.jsonl`.
@@ -291,11 +314,16 @@ pub struct ReviewLog {
 
 impl ReviewLog {
     /// Create a new ReviewLog for the given review.
-    pub fn new(crit_root: impl Into<PathBuf>, review_id: impl Into<String>) -> Self {
-        Self {
+    ///
+    /// Returns an error if `review_id` contains path separators or other
+    /// unsafe characters that could escape the reviews directory.
+    pub fn new(crit_root: impl Into<PathBuf>, review_id: impl Into<String>) -> Result<Self> {
+        let review_id = review_id.into();
+        validate_review_id(&review_id)?;
+        Ok(Self {
             crit_root: crit_root.into(),
-            review_id: review_id.into(),
-        }
+            review_id,
+        })
     }
 
     /// Get the path to this review's event log.
@@ -521,7 +549,7 @@ pub fn read_all_reviews(crit_root: &Path) -> Result<Vec<EventEnvelope>> {
     let mut all_events = Vec::new();
 
     for review_id in review_ids {
-        let log = ReviewLog::new(crit_root, &review_id);
+        let log = ReviewLog::new(crit_root, &review_id)?;
         let events = log.read_all()?;
         all_events.extend(events);
     }
@@ -534,7 +562,7 @@ pub fn read_all_reviews(crit_root: &Path) -> Result<Vec<EventEnvelope>> {
 
 /// Open or create a review log (v2 format).
 pub fn open_or_create_review(crit_root: &Path, review_id: &str) -> Result<ReviewLog> {
-    let log = ReviewLog::new(crit_root, review_id);
+    let log = ReviewLog::new(crit_root, review_id)?;
     log.ensure_dir()?;
 
     // Create empty file if it doesn't exist
@@ -746,7 +774,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let crit_root = dir.path();
 
-        let log = ReviewLog::new(crit_root, "cr-001");
+        let log = ReviewLog::new(crit_root, "cr-001").unwrap();
         log.append(&make_test_event("cr-001")).unwrap();
 
         // Check directory structure
@@ -759,7 +787,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let crit_root = dir.path();
 
-        let log = ReviewLog::new(crit_root, "cr-001");
+        let log = ReviewLog::new(crit_root, "cr-001").unwrap();
 
         let event1 = make_test_event("cr-001");
         let event2 = make_test_event("cr-001"); // Same review
@@ -777,8 +805,8 @@ mod tests {
         let crit_root = dir.path();
 
         // Create two separate review logs
-        let log1 = ReviewLog::new(crit_root, "cr-001");
-        let log2 = ReviewLog::new(crit_root, "cr-002");
+        let log1 = ReviewLog::new(crit_root, "cr-001").unwrap();
+        let log2 = ReviewLog::new(crit_root, "cr-002").unwrap();
 
         log1.append(&make_test_event("cr-001")).unwrap();
         log1.append(&make_test_event("cr-001")).unwrap();
@@ -795,9 +823,9 @@ mod tests {
         let crit_root = dir.path();
 
         // Create review logs
-        let log1 = ReviewLog::new(crit_root, "cr-001");
-        let log2 = ReviewLog::new(crit_root, "cr-002");
-        let log3 = ReviewLog::new(crit_root, "cr-003");
+        let log1 = ReviewLog::new(crit_root, "cr-001").unwrap();
+        let log2 = ReviewLog::new(crit_root, "cr-002").unwrap();
+        let log3 = ReviewLog::new(crit_root, "cr-003").unwrap();
 
         log1.append(&make_test_event("cr-001")).unwrap();
         log2.append(&make_test_event("cr-002")).unwrap();
@@ -820,8 +848,8 @@ mod tests {
         let crit_root = dir.path();
 
         // Create events with different timestamps
-        let log1 = ReviewLog::new(crit_root, "cr-001");
-        let log2 = ReviewLog::new(crit_root, "cr-002");
+        let log1 = ReviewLog::new(crit_root, "cr-001").unwrap();
+        let log2 = ReviewLog::new(crit_root, "cr-002").unwrap();
 
         // Log1 gets 2 events, log2 gets 1
         log1.append(&make_test_event("cr-001")).unwrap();
@@ -855,7 +883,7 @@ mod tests {
         let expected = crit_root.join(".crit").join("reviews").join("cr-abc").join("events.jsonl");
         assert_eq!(review_events_path(crit_root, "cr-abc"), expected);
 
-        let log = ReviewLog::new(crit_root, "cr-abc");
+        let log = ReviewLog::new(crit_root, "cr-abc").unwrap();
         assert_eq!(log.path(), expected);
     }
 
@@ -864,11 +892,51 @@ mod tests {
         let dir = tempdir().unwrap();
         let crit_root = dir.path();
 
-        let log = ReviewLog::new(crit_root, "cr-nonexistent");
+        let log = ReviewLog::new(crit_root, "cr-nonexistent").unwrap();
 
         // Should return empty, not error
         let events = log.read_all().unwrap();
         assert!(events.is_empty());
         assert_eq!(log.len().unwrap(), 0);
+    }
+
+    // ========================================================================
+    // Review ID validation tests
+    // ========================================================================
+
+    #[test]
+    fn test_validate_review_id_accepts_valid_ids() {
+        assert!(validate_review_id("cr-001").is_ok());
+        assert!(validate_review_id("cr-abc").is_ok());
+        assert!(validate_review_id("cr-a1cdefgh").is_ok());
+        assert!(validate_review_id("123").is_ok());
+        assert!(validate_review_id("simple-id").is_ok());
+    }
+
+    #[test]
+    fn test_validate_review_id_rejects_path_traversal() {
+        assert!(validate_review_id("../escape").is_err());
+        assert!(validate_review_id("../../etc").is_err());
+        assert!(validate_review_id("foo/bar").is_err());
+        assert!(validate_review_id("foo\\bar").is_err());
+        assert!(validate_review_id("..").is_err());
+    }
+
+    #[test]
+    fn test_validate_review_id_rejects_special_chars() {
+        assert!(validate_review_id("").is_err());
+        assert!(validate_review_id("id with spaces").is_err());
+        assert!(validate_review_id("id;rm -rf").is_err());
+        assert!(validate_review_id("id\0null").is_err());
+    }
+
+    #[test]
+    fn test_review_log_new_rejects_traversal() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        assert!(ReviewLog::new(crit_root, "../escape").is_err());
+        assert!(ReviewLog::new(crit_root, "foo/bar").is_err());
+        assert!(ReviewLog::new(crit_root, "").is_err());
     }
 }

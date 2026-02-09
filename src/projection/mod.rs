@@ -2819,7 +2819,7 @@ mod tests {
         let crit_root = dir.path();
 
         // Write events WITHOUT ReviewCreated (simulating destroyed workspace)
-        let log = crate::log::ReviewLog::new(crit_root, "cr-orphan");
+        let log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
         log.append(&make_thread_created("th-001", "cr-orphan")).unwrap();
         log.append(&make_comment_added("th-001.1", "th-001")).unwrap();
 
@@ -2838,12 +2838,12 @@ mod tests {
         let crit_root = dir.path();
 
         // Write a valid review
-        let good_log = crate::log::ReviewLog::new(crit_root, "cr-good");
+        let good_log = crate::log::ReviewLog::new(crit_root, "cr-good").unwrap();
         good_log.append(&make_review_created("cr-good")).unwrap();
         good_log.append(&make_thread_created("th-good", "cr-good")).unwrap();
 
         // Write orphaned events (no ReviewCreated)
-        let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan");
+        let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
         orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
         orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
 
