@@ -238,7 +238,12 @@ pub fn sync_from_log_with_backup(
     }
 
     let count = events.len();
-    let new_line = last_line + count;
+
+    // Advance cursor to the actual file line count (not just event count).
+    // read_from skips by line index (counting all lines including empty),
+    // but events.len() only counts non-empty parsed lines. Using total_lines()
+    // ensures the cursor stays consistent when empty lines are present.
+    let new_line = log.total_lines()?;
 
     // Compute new prefix hash covering all processed lines
     let new_hash = log.prefix_hash(new_line)?;
@@ -1741,20 +1746,18 @@ mod tests {
         assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
         assert!(!db.has_blocking_votes("cr-001").unwrap());
 
-        // Check for sync offset drift: last_sync should be 3 (not 4)
-        // because empty line was skipped in count but occupies a file line
+        // Cursor correctly advances to total_lines (4), including the empty line
         let sync_line = db.get_last_sync_line().unwrap();
         let actual_lines: usize = std::fs::read_to_string(&log_path)
             .unwrap()
             .lines()
             .count();
-        // Drift detected: sync_line < actual_lines
-        assert_eq!(sync_line, 3, "Sync offset should be 3 (drift: missed the empty line)");
+        assert_eq!(sync_line, 4, "Sync offset should match total_lines (no drift)");
         assert_eq!(actual_lines, 4, "File should have 4 lines (including empty)");
 
-        // Subsequent sync: re-reads lgtm due to drift (harmless)
+        // No re-processing needed — cursor is correct
         let count = sync_from_log(&db, &log).unwrap();
-        assert_eq!(count, 1, "Re-processes lgtm due to offset drift");
+        assert_eq!(count, 0, "No drift means no re-processing");
         assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
         assert!(!db.has_blocking_votes("cr-001").unwrap());
     }
@@ -1785,12 +1788,11 @@ mod tests {
         assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
         assert!(!db.has_blocking_votes("cr-001").unwrap());
 
-        // Sync line is 3 — this is correct because events 0,1,2 were processed
+        // Sync line is 4 — total_lines() includes the trailing empty line
         let sync_line = db.get_last_sync_line().unwrap();
-        assert_eq!(sync_line, 3);
+        assert_eq!(sync_line, 4);
 
-        // Trailing empty line does NOT cause re-processing:
-        // read_from(3) hits idx 3 (empty) → skip → no events → count=0
+        // No re-processing needed — cursor is at the correct position
         let count = sync_from_log(&db, &log).unwrap();
         assert_eq!(count, 0, "Trailing empty line should NOT cause re-processing");
         assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
@@ -2007,16 +2009,16 @@ mod tests {
         );
         assert!(!db.has_blocking_votes("cr-fjf9").unwrap());
 
-        // Sync line is 4 (correct: 4 events processed)
+        // Sync line is 5 (4 events + 1 trailing empty = 5 total_lines)
         assert_eq!(
             db.get_last_sync_line().unwrap(),
-            4,
-            "Sync line should be 4"
+            5,
+            "Sync line should be total_lines (5)"
         );
 
-        // Trailing empty line does NOT cause re-processing
+        // No re-processing needed — cursor is at the correct position
         let count = sync_from_log(&db, &log).unwrap();
-        assert_eq!(count, 0, "Trailing empty line should NOT cause re-processing");
+        assert_eq!(count, 0, "No drift means no re-processing");
         assert_eq!(
             query_vote(&db, "cr-fjf9", "jasper-lattice"),
             Some("lgtm".to_string()),
@@ -2064,44 +2066,18 @@ mod tests {
             "Full sync should show lgtm"
         );
 
-        // Drift: last_sync = 3 but file has 8 lines
+        // Cursor correctly advances to total_lines (8), no drift
         let sync_line = db.get_last_sync_line().unwrap();
-        assert_eq!(sync_line, 3, "Major drift: sync at 3, file has 8 lines");
+        assert_eq!(sync_line, 8, "Cursor should match total_lines (no drift)");
 
-        // Re-sync: reads from idx 3 (block), processes block + lgtm
+        // Re-sync should find nothing — cursor is at the correct position
         let count = sync_from_log(&db, &log).unwrap();
-        assert!(count > 0, "Drift causes re-processing");
+        assert_eq!(count, 0, "No drift means no re-processing");
 
-        // CRITICAL: does the re-processing cause vote regression?
-        // The block at idx 3 is re-read, but lgtm at idx 7 is also re-read.
-        // Since they're in the same batch, lgtm overwrites block.
         assert_eq!(
             query_vote(&db, "cr-001", "reviewer-a"),
             Some("lgtm".to_string()),
-            "Vote should remain lgtm despite block re-processing (same batch)"
-        );
-
-        // Keep re-syncing until stable
-        let mut iterations = 0;
-        loop {
-            let count = sync_from_log(&db, &log).unwrap();
-            if count == 0 {
-                break;
-            }
-            iterations += 1;
-            assert!(iterations < 10, "Should converge, not loop forever");
-            assert_eq!(
-                query_vote(&db, "cr-001", "reviewer-a"),
-                Some("lgtm".to_string()),
-                "Vote must remain lgtm on iteration {iterations}"
-            );
-        }
-
-        // Final sync line should eventually reach 8
-        assert_eq!(
-            db.get_last_sync_line().unwrap(),
-            8,
-            "Should eventually converge to correct offset"
+            "Vote should remain lgtm"
         );
     }
 
@@ -2143,8 +2119,8 @@ mod tests {
             db.init_schema().unwrap();
             let log = crate::log::FileLog::new(&log_path);
             sync_from_log(&db, &log).unwrap();
-            // last_sync = 2 + 1 = 3 (drift: should be 4)
-            assert_eq!(db.get_last_sync_line().unwrap(), 3);
+            // Cursor advances to total_lines (4), no drift
+            assert_eq!(db.get_last_sync_line().unwrap(), 4);
             assert_eq!(
                 query_vote(&db, "cr-001", "reviewer-a"),
                 Some("lgtm".to_string()),
@@ -2152,32 +2128,20 @@ mod tests {
             );
         }
 
-        // Step 3: No new events, but sync again (simulates crit review)
-        // Due to drift (last_sync=3, lgtm is at idx 3), it re-reads lgtm
+        // Step 3: No new events — sync should be clean immediately
         {
             let db = ProjectionDb::open(&db_path).unwrap();
             db.init_schema().unwrap();
             let log = crate::log::FileLog::new(&log_path);
             let count = sync_from_log(&db, &log).unwrap();
 
-            // Should re-process lgtm (harmless)
-            assert_eq!(count, 1, "Re-processes lgtm due to drift");
+            assert_eq!(count, 0, "No drift means no re-processing");
             assert_eq!(
                 query_vote(&db, "cr-001", "reviewer-a"),
                 Some("lgtm".to_string()),
                 "Vote must remain lgtm after re-sync"
             );
-            // Now last_sync = 4, drift resolved
             assert_eq!(db.get_last_sync_line().unwrap(), 4);
-        }
-
-        // Step 4: Final sync should be clean (no drift)
-        {
-            let db = ProjectionDb::open(&db_path).unwrap();
-            db.init_schema().unwrap();
-            let log = crate::log::FileLog::new(&log_path);
-            let count = sync_from_log(&db, &log).unwrap();
-            assert_eq!(count, 0, "No more drift, clean sync");
         }
     }
 
