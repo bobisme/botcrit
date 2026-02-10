@@ -629,9 +629,9 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
     }
 
     // Filter out orphaned events (bd-2ys)
-    let (new_events, orphaned_count) = filter_orphaned_events(new_events);
+    let (new_events, _orphaned_count) = filter_orphaned_events(new_events);
     if new_events.is_empty() {
-        return Ok(orphaned_count);
+        return Ok(0);
     }
 
     let count = new_events.len();
@@ -667,7 +667,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
 
     tx.commit().context("Failed to commit transaction")?;
 
-    Ok(count + orphaned_count)
+    Ok(count)
 }
 
 /// Rebuild the projection from per-review event logs (v2 format).
@@ -3001,6 +3001,78 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
             .unwrap();
         assert_eq!(comment_count, 1, "no duplicate comments");
+    }
+
+    #[test]
+    fn test_bd_2cn_orphaned_events_not_counted_in_sync() {
+        // Test: sync_from_review_logs should return only the count of events
+        // actually applied to the projection, excluding orphaned events (bd-2cn).
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write a valid review with 2 events
+        let good_log = crate::log::ReviewLog::new(crit_root, "cr-good").unwrap();
+        good_log.append(&make_review_created("cr-good")).unwrap();
+        good_log.append(&make_thread_created("th-good", "cr-good")).unwrap();
+
+        // Write orphaned events (no ReviewCreated) with 2 events
+        let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
+        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
+        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
+
+        // Sync should return 2 (only the good events), not 4
+        let count = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(
+            count, 2,
+            "sync should return 2 (events applied), not 4 (including orphaned), got {count}"
+        );
+
+        // Verify the right data is in the projection
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "should have 1 review (cr-good only)");
+
+        let thread_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread_count, 1, "should have 1 thread (th-good only)");
+    }
+
+    #[test]
+    fn test_bd_2cn_all_orphaned_returns_zero() {
+        // Test: when all new events are orphaned, sync_from_review_logs returns 0,
+        // not the orphan count (bd-2cn).
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write ONLY orphaned events (no ReviewCreated)
+        let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
+        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
+        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
+        orphan_log.append(&make_thread_created("th-orphan2", "cr-orphan")).unwrap();
+
+        // Sync should return 0 (all events filtered out), not 3
+        let count = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(
+            count, 0,
+            "sync with all orphaned events should return 0, not 3, got {count}"
+        );
+
+        // Verify projection is empty
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 0, "projection should be empty");
     }
 
 }
