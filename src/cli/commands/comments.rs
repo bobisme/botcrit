@@ -109,6 +109,9 @@ pub fn run_comment(
     let selection = parse_line_selection(line)?;
     let start_line = selection.start_line() as i64;
 
+    // Resolve author identity once for both thread creation and comment
+    let author_str = get_agent_identity(author)?;
+
     // Check for existing thread at this location
     let (thread_id, comment_number) = match db.find_thread_at_location(review_id, file, start_line)?
     {
@@ -132,7 +135,6 @@ pub fn run_comment(
             }
 
             let new_thread_id = new_thread_id();
-            let author_str = get_agent_identity(author)?;
 
             let thread_event = EventEnvelope::new(
                 &author_str,
@@ -156,7 +158,6 @@ pub fn run_comment(
 
     // Now add the comment to the thread
     let comment_id = make_comment_id(&thread_id, comment_number);
-    let author_str = get_agent_identity(author)?;
 
     let comment_event = EventEnvelope::new(
         &author_str,
