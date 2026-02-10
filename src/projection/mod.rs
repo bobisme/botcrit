@@ -2907,7 +2907,7 @@ mod tests {
         let mut comment_evt = make_comment_added("th-ts1.1", "th-ts1");
         comment_evt.ts = fixed_ts;
 
-        let log = crate::log::ReviewLog::new(crit_root, "cr-ts1");
+        let log = crate::log::ReviewLog::new(crit_root, "cr-ts1").unwrap();
         log.append(&review_evt).unwrap();
         log.append(&thread_evt).unwrap();
         log.append(&comment_evt).unwrap();
@@ -2974,7 +2974,7 @@ mod tests {
         let mut comment_evt = make_comment_added("th-idem.1", "th-idem");
         comment_evt.ts = fixed_ts;
 
-        let log = crate::log::ReviewLog::new(crit_root, "cr-idem");
+        let log = crate::log::ReviewLog::new(crit_root, "cr-idem").unwrap();
         log.append(&review_evt).unwrap();
         log.append(&thread_evt).unwrap();
         log.append(&comment_evt).unwrap();

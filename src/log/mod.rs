@@ -10,9 +10,7 @@
 //! v2 eliminates merge conflicts between concurrent reviews in different
 //! workspaces, as each review has its own isolated event log.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -20,6 +18,19 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 
 use crate::events::EventEnvelope;
+
+/// FNV-1a hash over byte slices. Output is stable across Rust versions
+/// (unlike `DefaultHasher` which uses randomized SipHash keys).
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    let mut hash = FNV_OFFSET;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
 
 /// Trait for append-only event log operations.
 pub trait AppendLog {
@@ -227,7 +238,7 @@ impl AppendLog for FileLog {
             .context("Failed to acquire shared lock")?;
 
         let reader = BufReader::new(file);
-        let mut hasher = DefaultHasher::new();
+        let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
 
         for (idx, line_result) in reader.lines().enumerate() {
             if idx >= n {
@@ -235,10 +246,10 @@ impl AppendLog for FileLog {
             }
             let line = line_result
                 .with_context(|| format!("Failed to read line {} for hashing", idx))?;
-            line.hash(&mut hasher);
+            hash = fnv1a_hash(line.as_bytes()).wrapping_add(hash.wrapping_mul(31));
         }
 
-        Ok(Some(format!("{:016x}", hasher.finish())))
+        Ok(Some(format!("{:016x}", hash)))
     }
 }
 
@@ -498,7 +509,7 @@ impl AppendLog for ReviewLog {
             .context("Failed to acquire shared lock")?;
 
         let reader = BufReader::new(file);
-        let mut hasher = DefaultHasher::new();
+        let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
 
         for (idx, line_result) in reader.lines().enumerate() {
             if idx >= n {
@@ -506,10 +517,10 @@ impl AppendLog for ReviewLog {
             }
             let line = line_result
                 .with_context(|| format!("Failed to read line {} for hashing", idx))?;
-            line.hash(&mut hasher);
+            hash = fnv1a_hash(line.as_bytes()).wrapping_add(hash.wrapping_mul(31));
         }
 
-        Ok(Some(format!("{:016x}", hasher.finish())))
+        Ok(Some(format!("{:016x}", hash)))
     }
 }
 
@@ -938,5 +949,45 @@ mod tests {
         assert!(ReviewLog::new(crit_root, "../escape").is_err());
         assert!(ReviewLog::new(crit_root, "foo/bar").is_err());
         assert!(ReviewLog::new(crit_root, "").is_err());
+    }
+
+    /// Verify prefix_hash produces identical output for identical input (bd-2ji).
+    #[test]
+    fn test_prefix_hash_is_deterministic() {
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+        let log = open_or_create_review(crit_root, "cr-hash-test").unwrap();
+
+        let e1 = make_test_event("cr-hash-test");
+        let e2 = EventEnvelope::new(
+            "test_agent",
+            Event::ReviewCreated(ReviewCreated {
+                review_id: "cr-hash-test".to_string(),
+                jj_change_id: "other_change".to_string(),
+                initial_commit: "other_commit".to_string(),
+                title: "Another review".to_string(),
+                description: Some("with description".to_string()),
+            }),
+        );
+        log.append(&e1).unwrap();
+        log.append(&e2).unwrap();
+
+        let h1 = log.prefix_hash(2).unwrap();
+        let h2 = log.prefix_hash(2).unwrap();
+        assert_eq!(h1, h2, "prefix_hash must be deterministic across calls");
+        assert!(h1.is_some(), "prefix_hash should return Some for non-empty file");
+
+        // Partial prefix should differ from full
+        let h_partial = log.prefix_hash(1).unwrap();
+        assert_ne!(h1, h_partial, "different prefix lengths should produce different hashes");
+    }
+
+    /// Verify fnv1a_hash produces known stable values (bd-2ji).
+    #[test]
+    fn test_fnv1a_known_values() {
+        // FNV-1a of empty input is the offset basis
+        assert_eq!(fnv1a_hash(b""), 0xcbf29ce484222325);
+        // FNV-1a of "a" — well-known test vector
+        assert_eq!(fnv1a_hash(b"a"), 0xaf63dc4c8601ec8c);
     }
 }
