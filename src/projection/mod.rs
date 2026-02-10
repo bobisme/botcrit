@@ -613,9 +613,13 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usiz
     // Read all events from all review logs
     let all_events = read_all_reviews(crit_root)?;
 
-    // Filter to events newer than last sync
+    // Filter to events newer than or equal to last sync timestamp.
+    // Using >= ensures events sharing the exact same timestamp as the sync cursor
+    // are not skipped (e.g., ThreadCreated + CommentAdded from a single `crit comment`).
+    // All apply_* handlers are idempotent (INSERT OR IGNORE / ON CONFLICT / status guards),
+    // so re-processing events at the boundary is safe.
     let new_events: Vec<_> = if let Some(ts) = last_ts {
-        all_events.into_iter().filter(|e| e.ts > ts).collect()
+        all_events.into_iter().filter(|e| e.ts >= ts).collect()
     } else {
         all_events
     };
@@ -2875,6 +2879,128 @@ mod tests {
             )
             .unwrap();
         assert!(!orphan_exists, "orphaned review should not be in the projection");
+    }
+
+    #[test]
+    fn test_bd_1mn_identical_timestamps_not_skipped() {
+        // Regression test: events sharing the exact same timestamp as the sync cursor
+        // must not be skipped on incremental sync. This simulates `crit comment` which
+        // writes ThreadCreated + CommentAdded with the same timestamp.
+        use chrono::TimeZone;
+
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Fixed timestamp to simulate simultaneous events
+        let fixed_ts = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+
+        // Batch 1: ReviewCreated + ThreadCreated + CommentAdded, all at the same timestamp
+        let mut review_evt = make_review_created("cr-ts1");
+        review_evt.ts = fixed_ts;
+
+        let mut thread_evt = make_thread_created("th-ts1", "cr-ts1");
+        thread_evt.ts = fixed_ts;
+
+        let mut comment_evt = make_comment_added("th-ts1.1", "th-ts1");
+        comment_evt.ts = fixed_ts;
+
+        let log = crate::log::ReviewLog::new(crit_root, "cr-ts1");
+        log.append(&review_evt).unwrap();
+        log.append(&thread_evt).unwrap();
+        log.append(&comment_evt).unwrap();
+
+        // First sync: all 3 events should be processed
+        let count = sync_from_review_logs(&db, crit_root).unwrap();
+        assert!(count >= 3, "first sync should process all 3 events, got {count}");
+
+        // Verify all data landed
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "should have 1 review");
+
+        let thread_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread_count, 1, "should have 1 thread");
+
+        let comment_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(comment_count, 1, "should have 1 comment");
+
+        // Batch 2: Add another comment at the SAME timestamp as the sync cursor
+        let mut comment2_evt = make_comment_added("th-ts1.2", "th-ts1");
+        comment2_evt.ts = fixed_ts;
+        log.append(&comment2_evt).unwrap();
+
+        // Second sync: the new comment must be picked up (>= not >)
+        let count2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert!(count2 > 0, "second sync should pick up events at boundary timestamp, got {count2}");
+
+        let comment_count2: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(comment_count2, 2, "should have 2 comments after second sync");
+    }
+
+    #[test]
+    fn test_bd_1mn_resync_idempotent_no_duplicates() {
+        // Verify that re-syncing with >= doesn't create duplicate data.
+        // All apply_* handlers use INSERT OR IGNORE / ON CONFLICT / status guards.
+        use chrono::TimeZone;
+
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        let fixed_ts = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+
+        let mut review_evt = make_review_created("cr-idem");
+        review_evt.ts = fixed_ts;
+
+        let mut thread_evt = make_thread_created("th-idem", "cr-idem");
+        thread_evt.ts = fixed_ts;
+
+        let mut comment_evt = make_comment_added("th-idem.1", "th-idem");
+        comment_evt.ts = fixed_ts;
+
+        let log = crate::log::ReviewLog::new(crit_root, "cr-idem");
+        log.append(&review_evt).unwrap();
+        log.append(&thread_evt).unwrap();
+        log.append(&comment_evt).unwrap();
+
+        // Sync twice — second sync re-processes boundary events
+        sync_from_review_logs(&db, crit_root).unwrap();
+        sync_from_review_logs(&db, crit_root).unwrap();
+
+        // No duplicates
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "no duplicate reviews");
+
+        let thread_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread_count, 1, "no duplicate threads");
+
+        let comment_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(comment_count, 1, "no duplicate comments");
     }
 
 }
