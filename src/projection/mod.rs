@@ -28,7 +28,48 @@ use crate::events::{
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, ThreadCreated, ThreadReopened,
     ThreadResolved,
 };
-use crate::log::{read_all_reviews, AppendLog};
+use crate::log::{list_review_ids, read_all_reviews, AppendLog, ReviewLog};
+
+// ============================================================================
+// Sync report types
+// ============================================================================
+
+/// Result of a per-file monotonic sync operation.
+#[derive(Debug)]
+pub struct SyncReport {
+    /// Number of events applied to the projection.
+    pub applied: usize,
+    /// Number of review files that were synced (new or grew).
+    pub files_synced: usize,
+    /// Number of review files skipped (unchanged).
+    pub files_skipped: usize,
+    /// Anomalies detected during sync.
+    pub anomalies: Vec<SyncAnomaly>,
+}
+
+/// An anomaly detected during per-file sync.
+#[derive(Debug)]
+pub struct SyncAnomaly {
+    /// The review ID of the affected file.
+    pub review_id: String,
+    /// What kind of anomaly was detected.
+    pub kind: AnomalyKind,
+    /// Human-readable detail about the anomaly.
+    pub detail: String,
+}
+
+/// The kind of anomaly detected during sync.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AnomalyKind {
+    /// File has fewer lines than previously synced.
+    Shrunk,
+    /// Prefix hash of previously synced lines no longer matches.
+    HashMismatch,
+    /// File disappeared from disk but projection data exists.
+    Missing,
+    /// File could not be parsed or applying events failed.
+    ParseError,
+}
 
 /// Database for projected state from events.
 pub struct ProjectionDb {
@@ -106,6 +147,18 @@ impl ProjectionDb {
                 )
                 .context("Failed to add next_comment_number column to threads")?;
         }
+
+        // Add per-review file tracking table for monotonic sync (bd-jw3)
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS review_file_state (
+                    review_id TEXT PRIMARY KEY,
+                    line_count INTEGER NOT NULL,
+                    byte_count INTEGER NOT NULL,
+                    prefix_hash TEXT NOT NULL
+                );",
+            )
+            .context("Failed to create review_file_state table")?;
 
         Ok(())
     }
@@ -587,92 +640,522 @@ fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, us
 // v2: Per-review event log sync
 // ============================================================================
 
+/// Stored state for a review file from the `review_file_state` table.
+struct StoredFileState {
+    line_count: usize,
+    byte_count: u64,
+    prefix_hash: String,
+}
+
 /// Sync the projection from per-review event logs (v2 format).
 ///
-/// In v2, each review has its own event log at `.crit/reviews/{review_id}/events.jsonl`.
-/// This function reads all events from all review logs and applies them.
-///
-/// The sync strategy is timestamp-based:
-/// 1. Read `last_sync_ts` from sync_state
-/// 2. Read all events from all review logs
-/// 3. Filter to events with `ts > last_sync_ts`
-/// 4. Apply events in timestamp order
-///
-/// If no events have been synced yet (new database), applies all events.
-pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<usize> {
-    // Get last sync timestamp
-    let last_sync_ts: Option<String> = db
+/// Uses per-file monotonic sync: each review file is independently tracked
+/// and only new events (appended lines) are processed. Files that appear to
+/// have regressed (shrunk, hash mismatch) are skipped to preserve existing
+/// projection data. Returns a `SyncReport` with counts and anomalies.
+pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<SyncReport> {
+    let mut report = SyncReport {
+        applied: 0,
+        files_synced: 0,
+        files_skipped: 0,
+        anomalies: Vec::new(),
+    };
+
+    // Step 1: Load all review_file_state rows into a HashMap
+    let mut stored_states: HashMap<String, StoredFileState> = HashMap::new();
+    {
+        let mut stmt = db
+            .conn
+            .prepare("SELECT review_id, line_count, byte_count, prefix_hash FROM review_file_state")
+            .context("Failed to prepare review_file_state query")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredFileState {
+                        line_count: row.get::<_, i64>(1)? as usize,
+                        byte_count: row.get::<_, i64>(2)? as u64,
+                        prefix_hash: row.get::<_, String>(3)?,
+                    },
+                ))
+            })
+            .context("Failed to query review_file_state")?;
+        for row in rows {
+            let (review_id, state) = row.context("Failed to read review_file_state row")?;
+            stored_states.insert(review_id, state);
+        }
+    }
+
+    // Step 1b: Bootstrap — if projection has data but review_file_state is empty,
+    // seed review_file_state from current on-disk files without replaying events.
+    let projection_has_data: bool = db
         .conn
-        .query_row("SELECT last_sync_ts FROM sync_state WHERE id = 1", [], |row| {
-            row.get(0)
-        })
-        .optional()
-        .context("Failed to query last_sync_ts")?
-        .flatten();
+        .query_row("SELECT COUNT(*) > 0 FROM reviews", [], |row| row.get(0))
+        .unwrap_or(false);
 
-    let last_ts: Option<DateTime<Utc>> = last_sync_ts
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
+    if projection_has_data && stored_states.is_empty() {
+        let on_disk_ids = list_review_ids(crit_root)?;
+        for review_id in &on_disk_ids {
+            if let Ok(log) = ReviewLog::new(crit_root, review_id) {
+                let byte_count = log.byte_len().unwrap_or(0);
+                let line_count = log.total_lines().unwrap_or(0);
+                let prefix_hash = log
+                    .prefix_hash(line_count)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
 
-    // Read all events from all review logs
-    let all_events = read_all_reviews(crit_root)?;
+                if byte_count > 0 && line_count > 0 && !prefix_hash.is_empty() {
+                    db.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO review_file_state (review_id, line_count, byte_count, prefix_hash) VALUES (?, ?, ?, ?)",
+                            params![review_id, line_count as i64, byte_count as i64, prefix_hash],
+                        )
+                        .ok();
+                    stored_states.insert(
+                        review_id.clone(),
+                        StoredFileState {
+                            line_count,
+                            byte_count,
+                            prefix_hash,
+                        },
+                    );
+                }
+            }
+        }
+    }
 
-    // Filter to events newer than or equal to last sync timestamp.
-    // Using >= ensures events sharing the exact same timestamp as the sync cursor
-    // are not skipped (e.g., ThreadCreated + CommentAdded from a single `crit comment`).
-    // All apply_* handlers are idempotent (INSERT OR IGNORE / ON CONFLICT / status guards),
-    // so re-processing events at the boundary is safe.
-    let new_events: Vec<_> = if let Some(ts) = last_ts {
-        all_events.into_iter().filter(|e| e.ts >= ts).collect()
-    } else {
-        all_events
+    // Step 2: Discover files on disk
+    let on_disk_ids = list_review_ids(crit_root)?;
+    let on_disk_set: HashSet<&str> = on_disk_ids.iter().map(|s| s.as_str()).collect();
+
+    // Step 3: Process each file
+    for review_id in &on_disk_ids {
+        let log = match ReviewLog::new(crit_root, review_id) {
+            Ok(l) => l,
+            Err(e) => {
+                report.anomalies.push(SyncAnomaly {
+                    review_id: review_id.clone(),
+                    kind: AnomalyKind::ParseError,
+                    detail: format!("Failed to open review log: {e}"),
+                });
+                continue;
+            }
+        };
+
+        // Get current file stats
+        let current_byte_count = match log.byte_len() {
+            Ok(b) => b,
+            Err(e) => {
+                report.anomalies.push(SyncAnomaly {
+                    review_id: review_id.clone(),
+                    kind: AnomalyKind::ParseError,
+                    detail: format!("Failed to stat file: {e}"),
+                });
+                continue;
+            }
+        };
+
+        match stored_states.get(review_id.as_str()) {
+            None => {
+                // NEW file: read all events, apply
+                sync_new_file(db, &log, review_id, &mut report)?;
+            }
+            Some(stored) => {
+                if current_byte_count == stored.byte_count {
+                    // UNCHANGED: skip — cheap fast-path (no hashing needed)
+                    report.files_skipped += 1;
+                    continue;
+                }
+
+                // Byte count changed — need to inspect further
+                let current_line_count = match log.total_lines() {
+                    Ok(n) => n,
+                    Err(e) => {
+                        report.anomalies.push(SyncAnomaly {
+                            review_id: review_id.clone(),
+                            kind: AnomalyKind::ParseError,
+                            detail: format!("Failed to count lines: {e}"),
+                        });
+                        continue;
+                    }
+                };
+
+                if current_line_count < stored.line_count {
+                    // SHRUNK: skip file, record anomaly
+                    report.files_skipped += 1;
+                    report.anomalies.push(SyncAnomaly {
+                        review_id: review_id.clone(),
+                        kind: AnomalyKind::Shrunk,
+                        detail: format!(
+                            "file shrunk (was {} lines, now {})",
+                            stored.line_count, current_line_count
+                        ),
+                    });
+                    continue;
+                }
+
+                // Same or more lines — check prefix hash
+                let current_prefix_hash = match log.prefix_hash(stored.line_count) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => {
+                        // Empty prefix — treat as new file
+                        sync_new_file(db, &log, review_id, &mut report)?;
+                        continue;
+                    }
+                    Err(e) => {
+                        report.anomalies.push(SyncAnomaly {
+                            review_id: review_id.clone(),
+                            kind: AnomalyKind::ParseError,
+                            detail: format!("Failed to compute prefix hash: {e}"),
+                        });
+                        continue;
+                    }
+                };
+
+                if current_prefix_hash != stored.prefix_hash {
+                    // HASH MISMATCH: skip file, record anomaly
+                    report.files_skipped += 1;
+                    report.anomalies.push(SyncAnomaly {
+                        review_id: review_id.clone(),
+                        kind: AnomalyKind::HashMismatch,
+                        detail: format!(
+                            "content changed (hash mismatch on first {} lines)",
+                            stored.line_count
+                        ),
+                    });
+                    continue;
+                }
+
+                // GREW: prefix matches, read new lines only
+                sync_grew_file(db, &log, review_id, stored.line_count, &mut report)?;
+            }
+        }
+    }
+
+    // Step 4: Check for disappeared files
+    for (review_id, _) in &stored_states {
+        if !on_disk_set.contains(review_id.as_str()) {
+            report.anomalies.push(SyncAnomaly {
+                review_id: review_id.clone(),
+                kind: AnomalyKind::Missing,
+                detail: "file disappeared from disk, projection data preserved".to_string(),
+            });
+        }
+    }
+
+    // Print warnings if there are anomalies
+    if !report.anomalies.is_empty() {
+        eprintln!(
+            "WARNING: review event file(s) appear stale (likely jj workspace sync)"
+        );
+        for anomaly in &report.anomalies {
+            eprintln!("  {}: {}", anomaly.review_id, anomaly.detail);
+        }
+        eprintln!("Projection data preserved. To investigate:");
+        eprintln!("  jj file annotate .crit/reviews/<review_id>/events.jsonl");
+        eprintln!("To force rebuild from current files:");
+        eprintln!("  crit sync --rebuild");
+    }
+
+    Ok(report)
+}
+
+/// Sync a new review file (no prior state).
+///
+/// Reads all events, applies them in a savepoint, and records file state on success.
+fn sync_new_file(
+    db: &ProjectionDb,
+    log: &ReviewLog,
+    review_id: &str,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let events = match log.read_all() {
+        Ok(e) => e,
+        Err(e) => {
+            report.anomalies.push(SyncAnomaly {
+                review_id: review_id.to_string(),
+                kind: AnomalyKind::ParseError,
+                detail: format!("Failed to read events: {e}"),
+            });
+            return Ok(());
+        }
+    };
+
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Filter orphaned events for this file
+    let (events, _orphaned) = filter_orphaned_events(events);
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let event_count = events.len();
+
+    // Use a savepoint for isolation
+    db.conn
+        .execute_batch("SAVEPOINT sync_file")
+        .context("Failed to create savepoint")?;
+
+    let mut failed = false;
+    for event in &events {
+        if let Err(e) = apply_event_inner(&db.conn, event) {
+            eprintln!(
+                "WARNING: failed to apply event in {}: {}",
+                review_id, e
+            );
+            report.anomalies.push(SyncAnomaly {
+                review_id: review_id.to_string(),
+                kind: AnomalyKind::ParseError,
+                detail: format!("Failed to apply event: {e}"),
+            });
+            failed = true;
+            break;
+        }
+    }
+
+    if failed {
+        db.conn
+            .execute_batch("ROLLBACK TO SAVEPOINT sync_file")
+            .context("Failed to rollback savepoint")?;
+        db.conn
+            .execute_batch("RELEASE SAVEPOINT sync_file")
+            .context("Failed to release savepoint after rollback")?;
+        return Ok(());
+    }
+
+    // Record file state
+    let line_count = log.total_lines().unwrap_or(0);
+    let byte_count = log.byte_len().unwrap_or(0);
+    let prefix_hash = log
+        .prefix_hash(line_count)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    db.conn
+        .execute(
+            "INSERT OR REPLACE INTO review_file_state (review_id, line_count, byte_count, prefix_hash) VALUES (?, ?, ?, ?)",
+            params![review_id, line_count as i64, byte_count as i64, prefix_hash],
+        )
+        .context("Failed to update review_file_state")?;
+
+    db.conn
+        .execute_batch("RELEASE SAVEPOINT sync_file")
+        .context("Failed to release savepoint")?;
+
+    report.applied += event_count;
+    report.files_synced += 1;
+
+    Ok(())
+}
+
+/// Sync a review file that grew (append-only new lines).
+///
+/// Reads events from the old line count onward, applies them in a savepoint,
+/// and updates file state on success.
+fn sync_grew_file(
+    db: &ProjectionDb,
+    log: &ReviewLog,
+    review_id: &str,
+    old_line_count: usize,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let new_events = match log.read_from(old_line_count) {
+        Ok(e) => e,
+        Err(e) => {
+            report.anomalies.push(SyncAnomaly {
+                review_id: review_id.to_string(),
+                kind: AnomalyKind::ParseError,
+                detail: format!("Failed to read new events: {e}"),
+            });
+            return Ok(());
+        }
     };
 
     if new_events.is_empty() {
-        return Ok(0);
-    }
+        // File grew in bytes but no new parseable events — update file state
+        let line_count = log.total_lines().unwrap_or(0);
+        let byte_count = log.byte_len().unwrap_or(0);
+        let prefix_hash = log
+            .prefix_hash(line_count)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
 
-    // Filter out orphaned events (bd-2ys)
-    let (new_events, _orphaned_count) = filter_orphaned_events(new_events);
-    if new_events.is_empty() {
-        return Ok(0);
-    }
-
-    let count = new_events.len();
-
-    // Find the latest timestamp for sync state
-    let max_ts = new_events
-        .iter()
-        .map(|e| &e.ts)
-        .max()
-        .expect("new_events is not empty");
-
-    // Process events in a transaction
-    let tx = db
-        .conn
-        .unchecked_transaction()
-        .context("Failed to begin transaction")?;
-
-    for event in &new_events {
-        apply_event_inner(&tx, event).with_context(|| {
-            format!(
-                "Failed to apply event (type: {:?})",
-                event_type_name(&event.event)
+        db.conn
+            .execute(
+                "INSERT OR REPLACE INTO review_file_state (review_id, line_count, byte_count, prefix_hash) VALUES (?, ?, ?, ?)",
+                params![review_id, line_count as i64, byte_count as i64, prefix_hash],
             )
-        })?;
+            .context("Failed to update review_file_state")?;
+
+        report.files_skipped += 1;
+        return Ok(());
     }
 
-    // Update sync state
-    tx.execute(
-        "UPDATE sync_state SET last_sync_ts = ? WHERE id = 1",
-        params![max_ts.to_rfc3339()],
-    )
-    .context("Failed to update sync_state")?;
+    // Filter orphaned events for new events (need context from existing projection)
+    // For grew files, we trust events that reference reviews already in the projection
+    let (new_events, _orphaned) = filter_orphaned_events_with_projection(db, new_events);
+    if new_events.is_empty() {
+        return Ok(());
+    }
 
-    tx.commit().context("Failed to commit transaction")?;
+    let event_count = new_events.len();
 
-    Ok(count)
+    // Use a savepoint for isolation
+    db.conn
+        .execute_batch("SAVEPOINT sync_file")
+        .context("Failed to create savepoint")?;
+
+    let mut failed = false;
+    for event in &new_events {
+        if let Err(e) = apply_event_inner(&db.conn, event) {
+            eprintln!(
+                "WARNING: failed to apply event in {}: {}",
+                review_id, e
+            );
+            report.anomalies.push(SyncAnomaly {
+                review_id: review_id.to_string(),
+                kind: AnomalyKind::ParseError,
+                detail: format!("Failed to apply event: {e}"),
+            });
+            failed = true;
+            break;
+        }
+    }
+
+    if failed {
+        db.conn
+            .execute_batch("ROLLBACK TO SAVEPOINT sync_file")
+            .context("Failed to rollback savepoint")?;
+        db.conn
+            .execute_batch("RELEASE SAVEPOINT sync_file")
+            .context("Failed to release savepoint after rollback")?;
+        return Ok(());
+    }
+
+    // Update file state
+    let line_count = log.total_lines().unwrap_or(0);
+    let byte_count = log.byte_len().unwrap_or(0);
+    let prefix_hash = log
+        .prefix_hash(line_count)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    db.conn
+        .execute(
+            "INSERT OR REPLACE INTO review_file_state (review_id, line_count, byte_count, prefix_hash) VALUES (?, ?, ?, ?)",
+            params![review_id, line_count as i64, byte_count as i64, prefix_hash],
+        )
+        .context("Failed to update review_file_state")?;
+
+    db.conn
+        .execute_batch("RELEASE SAVEPOINT sync_file")
+        .context("Failed to release savepoint")?;
+
+    report.applied += event_count;
+    report.files_synced += 1;
+
+    Ok(())
+}
+
+/// Filter orphaned events, considering reviews already in the projection.
+///
+/// For incremental sync (grew files), events may reference reviews that are
+/// already in the projection but not in the current event batch. We check
+/// both the event batch and the projection for known reviews.
+fn filter_orphaned_events_with_projection(
+    db: &ProjectionDb,
+    events: Vec<EventEnvelope>,
+) -> (Vec<EventEnvelope>, usize) {
+    // Build the set of known reviews from events
+    let mut known_reviews: HashSet<String> = HashSet::new();
+    let mut thread_to_review: HashMap<String, String> = HashMap::new();
+
+    for env in &events {
+        if let Event::ReviewCreated(e) = &env.event {
+            known_reviews.insert(e.review_id.clone());
+        }
+        if let Event::ThreadCreated(e) = &env.event {
+            thread_to_review.insert(e.thread_id.clone(), e.review_id.clone());
+        }
+    }
+
+    // Also check the projection for known reviews and threads
+    if let Ok(mut stmt) = db.conn.prepare("SELECT review_id FROM reviews") {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            for row in rows.flatten() {
+                known_reviews.insert(row);
+            }
+        }
+    }
+    if let Ok(mut stmt) = db.conn.prepare("SELECT thread_id, review_id FROM threads") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for row in rows.flatten() {
+                thread_to_review.insert(row.0, row.1);
+            }
+        }
+    }
+
+    // Now filter using the combined knowledge
+    let mut orphaned_reviews: HashSet<String> = HashSet::new();
+    for env in &events {
+        if let Some(rid) = event_review_id(&env.event) {
+            if !known_reviews.contains(rid) {
+                orphaned_reviews.insert(rid.to_string());
+            }
+        }
+        if event_review_id(&env.event).is_none() {
+            if let Some(tid) = event_thread_id(&env.event) {
+                if let Some(rid) = thread_to_review.get(tid) {
+                    if !known_reviews.contains(rid.as_str()) {
+                        orphaned_reviews.insert(rid.clone());
+                    }
+                }
+                if !thread_to_review.contains_key(tid) {
+                    orphaned_reviews.insert(format!("unknown-thread:{tid}"));
+                }
+            }
+        }
+    }
+
+    if orphaned_reviews.is_empty() {
+        return (events, 0);
+    }
+
+    let mut skipped = 0;
+    let filtered: Vec<EventEnvelope> = events
+        .into_iter()
+        .filter(|env| {
+            if let Some(rid) = event_review_id(&env.event) {
+                if orphaned_reviews.contains(rid) {
+                    skipped += 1;
+                    return false;
+                }
+            }
+            if event_review_id(&env.event).is_none() {
+                if let Some(tid) = event_thread_id(&env.event) {
+                    let is_orphan = match thread_to_review.get(tid) {
+                        Some(rid) => orphaned_reviews.contains(rid.as_str()),
+                        None => orphaned_reviews.contains(&format!("unknown-thread:{tid}")),
+                    };
+                    if is_orphan {
+                        skipped += 1;
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
+
+    (filtered, skipped)
 }
 
 /// Rebuild the projection from per-review event logs (v2 format).
@@ -2877,8 +3360,8 @@ mod tests {
         log.append(&comment_evt).unwrap();
 
         // First sync: all 3 events should be processed
-        let count = sync_from_review_logs(&db, crit_root).unwrap();
-        assert!(count >= 3, "first sync should process all 3 events, got {count}");
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
+        assert!(report.applied >= 3, "first sync should process all 3 events, got {}", report.applied);
 
         // Verify all data landed
         let review_count: i64 = db
@@ -2904,9 +3387,9 @@ mod tests {
         comment2_evt.ts = fixed_ts;
         log.append(&comment2_evt).unwrap();
 
-        // Second sync: the new comment must be picked up (>= not >)
-        let count2 = sync_from_review_logs(&db, crit_root).unwrap();
-        assert!(count2 > 0, "second sync should pick up events at boundary timestamp, got {count2}");
+        // Second sync: the new comment must be picked up
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert!(report2.applied > 0, "second sync should pick up new events, got {}", report2.applied);
 
         let comment_count2: i64 = db
             .conn()
@@ -2988,10 +3471,10 @@ mod tests {
         orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
 
         // Sync should return 2 (only the good events), not 4
-        let count = sync_from_review_logs(&db, crit_root).unwrap();
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(
-            count, 2,
-            "sync should return 2 (events applied), not 4 (including orphaned), got {count}"
+            report.applied, 2,
+            "sync should return 2 (events applied), not 4 (including orphaned), got {}", report.applied
         );
 
         // Verify the right data is in the projection
@@ -3025,10 +3508,10 @@ mod tests {
         orphan_log.append(&make_thread_created("th-orphan2", "cr-orphan")).unwrap();
 
         // Sync should return 0 (all events filtered out), not 3
-        let count = sync_from_review_logs(&db, crit_root).unwrap();
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(
-            count, 0,
-            "sync with all orphaned events should return 0, not 3, got {count}"
+            report.applied, 0,
+            "sync with all orphaned events should return 0, not 3, got {}", report.applied
         );
 
         // Verify projection is empty
@@ -3037,6 +3520,367 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
             .unwrap();
         assert_eq!(review_count, 0, "projection should be empty");
+    }
+
+    // ========================================================================
+    // bd-jw3: Per-file monotonic sync tests
+    // ========================================================================
+
+    #[test]
+    fn test_per_file_sync_new_file() {
+        // New review file gets fully synced
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write a review with events
+        let log = crate::log::ReviewLog::new(crit_root, "cr-new").unwrap();
+        log.append(&make_review_created("cr-new")).unwrap();
+        log.append(&make_thread_created("th-new", "cr-new")).unwrap();
+
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report.applied, 2, "should apply 2 events");
+        assert_eq!(report.files_synced, 1, "should sync 1 file");
+        assert_eq!(report.files_skipped, 0, "should skip 0 files");
+        assert!(report.anomalies.is_empty(), "no anomalies expected");
+
+        // Verify data landed
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1);
+
+        // Verify review_file_state was recorded
+        let stored_lines: i64 = db
+            .conn()
+            .query_row(
+                "SELECT line_count FROM review_file_state WHERE review_id = ?",
+                params!["cr-new"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_lines, 2, "should record 2 lines");
+    }
+
+    #[test]
+    fn test_per_file_sync_unchanged() {
+        // Same byte_count skips the file (fast path)
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write and sync
+        let log = crate::log::ReviewLog::new(crit_root, "cr-unch").unwrap();
+        log.append(&make_review_created("cr-unch")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 1);
+        assert_eq!(report1.files_synced, 1);
+
+        // Re-sync with no changes
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 0, "no new events");
+        assert_eq!(report2.files_skipped, 1, "should skip unchanged file");
+        assert_eq!(report2.files_synced, 0, "no files synced");
+        assert!(report2.anomalies.is_empty(), "no anomalies");
+    }
+
+    #[test]
+    fn test_per_file_sync_grew() {
+        // Append events, re-sync, only new events applied
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write initial events and sync
+        let log = crate::log::ReviewLog::new(crit_root, "cr-grow").unwrap();
+        log.append(&make_review_created("cr-grow")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 1);
+
+        // Append more events
+        log.append(&make_thread_created("th-grow", "cr-grow")).unwrap();
+        log.append(&make_comment_added("th-grow.1", "th-grow")).unwrap();
+
+        // Re-sync: should only process the 2 new events
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 2, "should apply only 2 new events");
+        assert_eq!(report2.files_synced, 1, "should sync 1 grown file");
+        assert!(report2.anomalies.is_empty(), "no anomalies");
+
+        // Verify all data exists
+        let thread_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread_count, 1, "should have 1 thread");
+
+        let comment_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(comment_count, 1, "should have 1 comment");
+    }
+
+    #[test]
+    fn test_per_file_sync_shrunk() {
+        // Truncate file, re-sync, projection data preserved, anomaly recorded
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write 3 events and sync
+        let log = crate::log::ReviewLog::new(crit_root, "cr-shrink").unwrap();
+        log.append(&make_review_created("cr-shrink")).unwrap();
+        log.append(&make_thread_created("th-shrink", "cr-shrink")).unwrap();
+        log.append(&make_comment_added("th-shrink.1", "th-shrink")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 3);
+
+        // Truncate the file to 1 event (simulating jj workspace restore)
+        let path = log.path();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let first_line = content.lines().next().unwrap();
+        std::fs::write(&path, format!("{}\n", first_line)).unwrap();
+
+        // Re-sync: should detect shrinkage, skip file, preserve data
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 0, "no new events applied");
+        assert_eq!(report2.files_skipped, 1, "should skip shrunk file");
+        assert_eq!(report2.anomalies.len(), 1, "should have 1 anomaly");
+        assert_eq!(report2.anomalies[0].kind, AnomalyKind::Shrunk);
+        assert_eq!(report2.anomalies[0].review_id, "cr-shrink");
+
+        // Projection data PRESERVED (monotonic)
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "review preserved");
+
+        let thread_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread_count, 1, "thread preserved");
+
+        let comment_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(comment_count, 1, "comment preserved");
+    }
+
+    #[test]
+    fn test_per_file_sync_hash_mismatch() {
+        // Replace content, re-sync, projection preserved, anomaly recorded
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write events and sync
+        let log = crate::log::ReviewLog::new(crit_root, "cr-hash").unwrap();
+        log.append(&make_review_created("cr-hash")).unwrap();
+        log.append(&make_thread_created("th-hash", "cr-hash")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 2);
+
+        // Replace file content with DIFFERENT events but MORE lines
+        let replacement_event1 = make_review_created("cr-other");
+        let replacement_event2 = make_thread_created("th-other", "cr-other");
+        let replacement_event3 = make_comment_added("th-other.1", "th-other");
+        let path = log.path();
+        let mut content = String::new();
+        content.push_str(&replacement_event1.to_json_line().unwrap());
+        content.push('\n');
+        content.push_str(&replacement_event2.to_json_line().unwrap());
+        content.push('\n');
+        content.push_str(&replacement_event3.to_json_line().unwrap());
+        content.push('\n');
+        std::fs::write(&path, &content).unwrap();
+
+        // Re-sync: should detect hash mismatch, skip file, preserve data
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 0, "no new events applied");
+        assert_eq!(report2.anomalies.len(), 1, "should have 1 anomaly");
+        assert_eq!(report2.anomalies[0].kind, AnomalyKind::HashMismatch);
+        assert_eq!(report2.anomalies[0].review_id, "cr-hash");
+
+        // Projection data PRESERVED (monotonic)
+        let review_title: String = db
+            .conn()
+            .query_row(
+                "SELECT title FROM reviews WHERE review_id = ?",
+                params!["cr-hash"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(review_title, "Review cr-hash", "original data preserved");
+
+        // cr-other should NOT exist (was not applied)
+        let other_exists: bool = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM reviews WHERE review_id = ?",
+                params!["cr-other"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!other_exists, "replaced data should NOT be applied");
+    }
+
+    #[test]
+    fn test_per_file_sync_file_disappeared() {
+        // Delete file, re-sync, review still in projection
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write and sync
+        let log = crate::log::ReviewLog::new(crit_root, "cr-gone").unwrap();
+        log.append(&make_review_created("cr-gone")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 1);
+
+        // Delete the review directory entirely
+        let review_dir = crit_root.join(".crit").join("reviews").join("cr-gone");
+        std::fs::remove_dir_all(&review_dir).unwrap();
+
+        // Re-sync: should detect missing file, preserve projection, report anomaly
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 0);
+        assert_eq!(report2.anomalies.len(), 1, "should have 1 anomaly");
+        assert_eq!(report2.anomalies[0].kind, AnomalyKind::Missing);
+        assert_eq!(report2.anomalies[0].review_id, "cr-gone");
+
+        // Projection data PRESERVED
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "review preserved despite file deletion");
+    }
+
+    #[test]
+    fn test_per_file_sync_isolation() {
+        // One file with parse error doesn't block others
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write a valid review
+        let good_log = crate::log::ReviewLog::new(crit_root, "cr-good2").unwrap();
+        good_log.append(&make_review_created("cr-good2")).unwrap();
+
+        // Write a review with valid then invalid content
+        let bad_path = crit_root.join(".crit").join("reviews").join("cr-bad");
+        std::fs::create_dir_all(&bad_path).unwrap();
+        std::fs::write(bad_path.join("events.jsonl"), "this is not valid json\n").unwrap();
+
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
+
+        // Good file should be synced
+        let review_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(review_count, 1, "good review should be in projection");
+
+        // Bad file should have an anomaly but not block the good one
+        assert!(report.files_synced >= 1, "should sync at least the good file");
+        assert!(
+            report.anomalies.iter().any(|a| a.review_id == "cr-bad" && a.kind == AnomalyKind::ParseError),
+            "should have parse error anomaly for cr-bad"
+        );
+    }
+
+    #[test]
+    fn test_per_file_sync_bootstrap_existing_projection() {
+        // Existing projection with no review_file_state should bootstrap
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Directly insert a review into the projection (simulating pre-upgrade state)
+        let event = make_review_created("cr-legacy");
+        apply_event(&db, &event).unwrap();
+
+        // Write the same review's log file on disk
+        let log = crate::log::ReviewLog::new(crit_root, "cr-legacy").unwrap();
+        log.append(&event).unwrap();
+
+        // Verify review_file_state is empty before sync
+        let state_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(state_count, 0, "should start with empty review_file_state");
+
+        // Sync should bootstrap (seed review_file_state) without replaying events
+        let report = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report.applied, 0, "should NOT replay events on bootstrap");
+        assert_eq!(report.files_skipped, 1, "file should be skipped (already synced via bootstrap)");
+
+        // review_file_state should now have a row
+        let state_count2: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(state_count2, 1, "should have seeded review_file_state");
+    }
+
+    #[test]
+    fn test_per_file_sync_multiple_files() {
+        // Multiple files: one grows, one unchanged, one new
+        let dir = tempdir().unwrap();
+        let crit_root = dir.path();
+
+        let db = ProjectionDb::open_in_memory().unwrap();
+        db.init_schema().unwrap();
+
+        // Write 2 reviews and sync
+        let log1 = crate::log::ReviewLog::new(crit_root, "cr-multi1").unwrap();
+        log1.append(&make_review_created("cr-multi1")).unwrap();
+
+        let log2 = crate::log::ReviewLog::new(crit_root, "cr-multi2").unwrap();
+        log2.append(&make_review_created("cr-multi2")).unwrap();
+
+        let report1 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report1.applied, 2);
+        assert_eq!(report1.files_synced, 2);
+
+        // Append to one, add a new file
+        log1.append(&make_thread_created("th-multi1", "cr-multi1")).unwrap();
+
+        let log3 = crate::log::ReviewLog::new(crit_root, "cr-multi3").unwrap();
+        log3.append(&make_review_created("cr-multi3")).unwrap();
+
+        let report2 = sync_from_review_logs(&db, crit_root).unwrap();
+        assert_eq!(report2.applied, 2, "1 new event from grew + 1 from new");
+        assert_eq!(report2.files_synced, 2, "1 grew + 1 new");
+        assert_eq!(report2.files_skipped, 1, "cr-multi2 unchanged");
+        assert!(report2.anomalies.is_empty());
     }
 
 }

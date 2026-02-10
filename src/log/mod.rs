@@ -347,6 +347,20 @@ impl ReviewLog {
         &self.review_id
     }
 
+    /// Get the file size in bytes via `fs::metadata`.
+    ///
+    /// Returns 0 if the file does not exist. This is a cheap fast-path check
+    /// to skip unchanged files without hashing.
+    pub fn byte_len(&self) -> Result<u64> {
+        let path = self.path();
+        match fs::metadata(&path) {
+            Ok(meta) => Ok(meta.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e)
+                .with_context(|| format!("Failed to stat review log: {}", path.display())),
+        }
+    }
+
     /// Ensure the review directory exists.
     fn ensure_dir(&self) -> Result<()> {
         let dir = reviews_dir(&self.crit_root).join(&self.review_id);
