@@ -350,7 +350,9 @@ impl ProjectionDb {
 
     /// Find an existing open thread at a specific file and line.
     ///
-    /// Returns the thread_id if a thread exists at the exact location, or None.
+    /// Returns the thread_id if a thread exists at the location, or None.
+    /// For single-line threads, matches exact `selection_start`.
+    /// For range threads, matches if line falls within `[selection_start, selection_end]`.
     /// Only returns open threads (not resolved ones).
     pub fn find_thread_at_location(
         &self,
@@ -362,9 +364,11 @@ impl ProjectionDb {
             .conn
             .query_row(
                 "SELECT thread_id FROM threads
-                 WHERE review_id = ? AND file_path = ? AND selection_start = ? AND status = 'open'
+                 WHERE review_id = ? AND file_path = ? AND status = 'open'
+                   AND selection_start <= ?
+                   AND COALESCE(selection_end, selection_start) >= ?
                  LIMIT 1",
-                rusqlite::params![review_id, file_path, line],
+                rusqlite::params![review_id, file_path, line, line],
                 |row| row.get(0),
             )
             .optional()
@@ -833,6 +837,25 @@ mod tests {
                 review_id: review_id.to_string(),
                 file_path: file.to_string(),
                 selection: CodeSelection::line(line),
+                commit_hash: "abc123".to_string(),
+            }),
+        )
+    }
+
+    fn make_thread_range(
+        thread_id: &str,
+        review_id: &str,
+        file: &str,
+        start: u32,
+        end: u32,
+    ) -> EventEnvelope {
+        EventEnvelope::new(
+            "thread_author",
+            Event::ThreadCreated(ThreadCreated {
+                thread_id: thread_id.to_string(),
+                review_id: review_id.to_string(),
+                file_path: file.to_string(),
+                selection: CodeSelection::range(start, end),
                 commit_hash: "abc123".to_string(),
             }),
         )
@@ -1621,6 +1644,85 @@ mod tests {
         // After abandon: 0 open threads
         let review = db.get_review("cr-001").unwrap().unwrap();
         assert_eq!(review.open_thread_count, 0, "Threads on abandoned reviews should not count as open");
+    }
+
+    // ========================================================================
+    // find_thread_at_location range matching tests (bd-3aw)
+    // ========================================================================
+
+    #[test]
+    fn test_find_thread_at_location_exact_single_line() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
+
+        // Exact match
+        let found = db.find_thread_at_location("cr-001", "src/main.rs", 10).unwrap();
+        assert_eq!(found, Some("th-001".to_string()));
+
+        // Adjacent lines should NOT match
+        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 9).unwrap();
+        assert_eq!(not_found, None);
+        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 11).unwrap();
+        assert_eq!(not_found, None);
+    }
+
+    #[test]
+    fn test_find_thread_at_location_within_range() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+
+        // Line within the range
+        let found = db.find_thread_at_location("cr-001", "src/main.rs", 15).unwrap();
+        assert_eq!(found, Some("th-001".to_string()));
+
+        // Boundary: start of range
+        let found = db.find_thread_at_location("cr-001", "src/main.rs", 10).unwrap();
+        assert_eq!(found, Some("th-001".to_string()));
+
+        // Boundary: end of range
+        let found = db.find_thread_at_location("cr-001", "src/main.rs", 20).unwrap();
+        assert_eq!(found, Some("th-001".to_string()));
+    }
+
+    #[test]
+    fn test_find_thread_at_location_outside_range() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+
+        // Just before range
+        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 9).unwrap();
+        assert_eq!(not_found, None);
+
+        // Just after range
+        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 21).unwrap();
+        assert_eq!(not_found, None);
+    }
+
+    #[test]
+    fn test_find_thread_at_location_resolved_range_not_matched() {
+        let db = setup_db();
+        apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
+        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+
+        // Resolve the thread
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "resolver",
+                Event::ThreadResolved(crate::events::ThreadResolved {
+                    thread_id: "th-001".to_string(),
+                    reason: Some("Fixed".to_string()),
+                }),
+            ),
+        )
+        .unwrap();
+
+        // Line within range should NOT match (thread is resolved)
+        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 15).unwrap();
+        assert_eq!(not_found, None);
     }
 
 }
