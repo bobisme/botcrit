@@ -8,8 +8,9 @@ use crit::cli::commands::{
     run_agents_init, run_agents_show, run_block, run_comment, run_comments_add, run_comments_list,
     run_diff, run_doctor, run_inbox, run_init, run_lgtm, run_migrate, run_review,
     run_reviews_abandon, run_reviews_approve, run_reviews_create, run_reviews_list,
-    run_reviews_merge, run_reviews_request, run_reviews_show, run_status, run_threads_create,
-    run_threads_list, run_threads_reopen, run_threads_resolve, run_threads_show,
+    run_reviews_merge, run_reviews_request, run_reviews_show, run_status, run_sync,
+    run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
+    run_threads_show,
 };
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
@@ -338,6 +339,13 @@ fn main() -> Result<()> {
         Commands::Inbox => {
             let agent = get_agent_identity(identity.as_deref())?;
             run_inbox(&crit_root, &agent, format)?;
+        }
+
+        Commands::Sync {
+            rebuild,
+            accept_regression,
+        } => {
+            run_sync(&crit_root, rebuild, accept_regression, format)?;
         }
     }
 

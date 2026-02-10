@@ -22,6 +22,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 
 use crate::events::{
     CodeSelection, CommentAdded, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
@@ -35,7 +36,7 @@ use crate::log::{list_review_ids, read_all_reviews, AppendLog, ReviewLog};
 // ============================================================================
 
 /// Result of a per-file monotonic sync operation.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SyncReport {
     /// Number of events applied to the projection.
     pub applied: usize,
@@ -48,7 +49,7 @@ pub struct SyncReport {
 }
 
 /// An anomaly detected during per-file sync.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SyncAnomaly {
     /// The review ID of the affected file.
     pub review_id: String,
@@ -59,7 +60,7 @@ pub struct SyncAnomaly {
 }
 
 /// The kind of anomaly detected during sync.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub enum AnomalyKind {
     /// File has fewer lines than previously synced.
     Shrunk,
@@ -214,6 +215,15 @@ impl ProjectionDb {
     #[must_use]
     pub const fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Delete the file state for a specific review (for --accept-regression).
+    pub fn delete_review_file_state(&self, review_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM review_file_state WHERE review_id = ?",
+            params![review_id],
+        )?;
+        Ok(())
     }
 }
 
@@ -1194,7 +1204,8 @@ pub fn rebuild_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<u
          DELETE FROM threads;
          DELETE FROM reviewer_votes;
          DELETE FROM review_reviewers;
-         DELETE FROM reviews;",
+         DELETE FROM reviews;
+         DELETE FROM review_file_state;",
     )
     .context("Failed to wipe projection tables")?;
 

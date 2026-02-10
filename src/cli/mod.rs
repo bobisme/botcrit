@@ -207,6 +207,17 @@ pub enum Commands {
 
     /// Show reviews and threads needing your attention
     Inbox,
+
+    /// Sync projection database from event logs
+    Sync {
+        /// Full rebuild from scratch (destructive)
+        #[arg(long)]
+        rebuild: bool,
+
+        /// Re-baseline a specific review file after regression
+        #[arg(long, value_name = "REVIEW_ID")]
+        accept_regression: Option<String>,
+    },
 }
 
 // ============================================================================
