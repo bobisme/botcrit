@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         (crit_root, workspace_root)
     };
 
-    // Determine output format (handles backward compat with --json)
+    // Determine output format (--format flag, --json alias, FORMAT env, or TTY detection)
     let format = cli.output_format();
 
     // Resolve identity (--author or --user override, otherwise deferred to env vars)

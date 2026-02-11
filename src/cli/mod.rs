@@ -16,7 +16,7 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub format: Option<OutputFormat>,
 
-    /// DEPRECATED: Use --format=json instead
+    /// Hidden alias for --format=json
     #[arg(long, global = true, hide = true)]
     pub json: bool,
 
@@ -39,7 +39,7 @@ pub struct Cli {
 impl Cli {
     /// Get the effective output format with priority chain:
     /// 1. --format flag (highest priority)
-    /// 2. --json deprecated flag
+    /// 2. --json alias
     /// 3. FORMAT environment variable
     /// 4. TTY auto-detection: Pretty for TTY, Text otherwise
     #[must_use]
@@ -49,9 +49,8 @@ impl Cli {
             return format;
         }
 
-        // Priority 2: --json deprecated flag
+        // Priority 2: --json alias
         if self.json {
-            eprintln!("Warning: --json is deprecated, use --format=json instead");
             return OutputFormat::Json;
         }
 
