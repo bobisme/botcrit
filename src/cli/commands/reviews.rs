@@ -59,6 +59,7 @@ pub fn run_reviews_create(
     workspace_root: &Path,
     title: String,
     description: Option<String>,
+    reviewers: Option<String>,
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
@@ -113,14 +114,38 @@ pub fn run_reviews_create(
     let log = open_or_create_review(crit_root, &review_id)?;
     log.append(&event)?;
 
+    // If reviewers specified, request them immediately
+    let reviewer_list: Option<Vec<String>> = reviewers.map(|r| {
+        r.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    if let Some(ref reviewers) = reviewer_list {
+        if !reviewers.is_empty() {
+            let reviewer_event = EventEnvelope::new(
+                &author,
+                Event::ReviewersRequested(ReviewersRequested {
+                    review_id: review_id.clone(),
+                    reviewers: reviewers.clone(),
+                }),
+            );
+            log.append(&reviewer_event)?;
+        }
+    }
+
     // Output the result
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "review_id": review_id,
         "jj_change_id": change_id,
         "initial_commit": commit_id,
         "title": title,
         "author": author,
     });
+    if let Some(ref reviewers) = reviewer_list {
+        result["reviewers"] = serde_json::json!(reviewers);
+    }
 
     let formatter = Formatter::new(format);
     formatter.print(&result)?;
@@ -128,17 +153,12 @@ pub fn run_reviews_create(
     // Add next steps for non-JSON formats (agents need guidance on what to do next)
     if format != OutputFormat::Json {
         println!();
-        println!("Next steps:");
-        println!("  • Add reviewers:");
-        println!("    crit --agent <your-name> reviews request {review_id} --reviewers other-agent");
-        println!("  • Add comments:");
-        println!("    crit --agent <your-name> comment {review_id} --file path/to/file.rs --line 10 \"feedback\"");
-        println!("  • View the review:");
-        println!("    crit --agent <your-name> review {review_id}");
-        println!();
-        println!("After reviewer feedback, re-request review:");
-        println!("    crit --agent <your-name> reviews request {review_id} --reviewers <reviewer>");
-        println!("  (Reviewer sees [re-review] in their inbox)");
+        println!("Next:");
+        if reviewer_list.is_none() {
+            println!("  crit reviews request {review_id} --reviewers <name>");
+        }
+        println!("  crit comment {review_id} --file <path> --line <n> \"feedback\"");
+        println!("  crit review {review_id}");
     }
 
     Ok(())

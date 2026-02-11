@@ -86,12 +86,13 @@ fn main() -> Result<()> {
         },
 
         Commands::Reviews(cmd) => match cmd {
-            ReviewsCommands::Create { title, description } => {
+            ReviewsCommands::Create { title, description, reviewers } => {
                 run_reviews_create(
                     &crit_root,
                     &workspace_root,
                     title,
                     description,
+                    reviewers,
                     identity.as_deref(),
                     format,
                 )?;

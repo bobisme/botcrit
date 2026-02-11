@@ -246,6 +246,10 @@ pub enum ReviewsCommands {
         /// Optional description
         #[arg(long = "description", visible_alias = "desc")]
         description: Option<String>,
+
+        /// Comma-separated list of reviewers to request
+        #[arg(long = "reviewers", visible_alias = "reviewer")]
+        reviewers: Option<String>,
     },
 
     /// List reviews
