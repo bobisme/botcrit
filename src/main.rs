@@ -318,6 +318,7 @@ fn main() -> Result<()> {
             context,
             no_context,
             since,
+            include_diffs,
         } => {
             let context_lines = if no_context { 0 } else { context };
             let since_dt = since
@@ -329,6 +330,7 @@ fn main() -> Result<()> {
                 &review_id,
                 context_lines,
                 since_dt,
+                include_diffs,
                 format,
             )?;
         }

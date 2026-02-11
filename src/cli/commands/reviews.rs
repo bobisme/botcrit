@@ -13,6 +13,7 @@ use crate::events::{
 use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
+use crate::projection::{ReviewDetail, ThreadSummary};
 use crate::version::require_v2;
 
 /// Parse a --since value into a DateTime.
@@ -578,6 +579,7 @@ pub fn run_review(
     review_id: &str,
     context_lines: u32,
     since: Option<DateTime<Utc>>,
+    include_diffs: bool,
     format: OutputFormat,
 ) -> Result<()> {
     use crate::cli::commands::helpers::get_review;
@@ -601,7 +603,7 @@ pub fn run_review(
             .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
             .unwrap_or_else(|| "@".to_string());
 
-        for thread in threads {
+        for thread in &threads {
             let comments = db.list_comments(&thread.thread_id)?;
             // Filter comments by since if provided
             let filtered_comments: Vec<_> = if let Some(since_dt) = since {
@@ -653,10 +655,16 @@ pub fn run_review(
             }));
         }
 
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "review": review,
             "threads": threads_with_comments,
         });
+
+        // Include per-file diffs when requested
+        if include_diffs {
+            let files_value = build_file_diffs(&jj, &review, &threads, &commit_ref);
+            result["files"] = files_value;
+        }
 
         let formatter = Formatter::new(format);
         formatter.print(&result)?;
@@ -917,5 +925,209 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
     }
 
     Ok(())
+}
+
+// ============================================================================
+// File diff helpers for --include-diffs
+// ============================================================================
+
+/// Content window around an orphaned thread's anchor.
+#[derive(serde::Serialize)]
+struct ContentWindow {
+    start_line: u32,
+    lines: Vec<String>,
+}
+
+/// Build per-file diff data for files that have threads.
+///
+/// Returns a JSON array of `{ path, diff, content }` objects.
+/// - `diff`: unified diff text for files with changes, null otherwise
+/// - `content`: windowed file content for orphaned threads, null otherwise
+fn build_file_diffs(
+    jj: &JjRepo,
+    review: &ReviewDetail,
+    threads: &[ThreadSummary],
+    target_commit: &str,
+) -> serde_json::Value {
+    // Collect unique files that have threads
+    let files_with_threads: Vec<String> = threads
+        .iter()
+        .map(|t| t.file_path.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    if files_with_threads.is_empty() {
+        return serde_json::json!([]);
+    }
+
+    // Resolve base commit
+    let base_commit = jj
+        .get_parent_commit(target_commit)
+        .unwrap_or_else(|_| review.initial_commit.clone());
+
+    let mut file_entries = Vec::new();
+
+    for file_path in &files_with_threads {
+        // Get per-file diff
+        let diff = match jj.diff_git_file(&base_commit, target_commit, file_path) {
+            Ok(d) if !d.trim().is_empty() => Some(d),
+            _ => None,
+        };
+
+        // Get threads for this file
+        let file_threads: Vec<&ThreadSummary> = threads
+            .iter()
+            .filter(|t| &t.file_path == file_path)
+            .collect();
+
+        // Check for orphaned threads (selection_start not in any diff hunk)
+        let content = if let Some(ref diff_text) = diff {
+            let hunks = parse_hunk_ranges(diff_text);
+            let has_orphan = file_threads.iter().any(|t| {
+                let line = t.selection_start as u32;
+                !hunks.iter().any(|h| line >= h.0 && line <= h.1)
+            });
+
+            if has_orphan {
+                build_content_window(jj, target_commit, file_path, &file_threads)
+            } else {
+                None
+            }
+        } else {
+            // No diff at all — all threads are orphaned
+            build_content_window(jj, target_commit, file_path, &file_threads)
+        };
+
+        file_entries.push(serde_json::json!({
+            "path": file_path,
+            "diff": diff,
+            "content": content,
+        }));
+    }
+
+    serde_json::json!(file_entries)
+}
+
+/// Parse unified diff hunk headers to extract new-side line ranges.
+///
+/// Looks for `@@ ... +start,count @@` or `@@ ... +start @@` patterns
+/// and returns `(start_line, end_line)` tuples (1-based, inclusive).
+fn parse_hunk_ranges(diff: &str) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    for line in diff.lines() {
+        if !line.starts_with("@@") {
+            continue;
+        }
+        // Format: @@ -old_start,old_count +new_start,new_count @@
+        // or:     @@ -old_start,old_count +new_start @@
+        if let Some(plus_pos) = line.find('+') {
+            let after_plus = &line[plus_pos + 1..];
+            let end = after_plus
+                .find(|c: char| c == ' ' || c == '@')
+                .unwrap_or(after_plus.len());
+            let range_str = &after_plus[..end];
+
+            if let Some((start_str, count_str)) = range_str.split_once(',') {
+                if let (Ok(start), Ok(count)) =
+                    (start_str.parse::<u32>(), count_str.parse::<u32>())
+                {
+                    if count > 0 {
+                        ranges.push((start, start + count - 1));
+                    }
+                }
+            } else if let Ok(start) = range_str.parse::<u32>() {
+                // Single line hunk: +start (count=1 implied)
+                ranges.push((start, start));
+            }
+        }
+    }
+    ranges
+}
+
+/// Build a windowed content region covering all thread anchors in a file.
+///
+/// Uses 20-line padding around the min/max thread selections.
+fn build_content_window(
+    jj: &JjRepo,
+    commit: &str,
+    file_path: &str,
+    threads: &[&ThreadSummary],
+) -> Option<ContentWindow> {
+    let contents = jj.show_file(commit, file_path).ok()?;
+    let file_lines: Vec<&str> = contents.lines().collect();
+    let total = file_lines.len() as u32;
+
+    if total == 0 || threads.is_empty() {
+        return None;
+    }
+
+    // Find the min/max lines across all threads
+    let min_line = threads
+        .iter()
+        .map(|t| t.selection_start as u32)
+        .min()
+        .unwrap_or(1);
+    let max_line = threads
+        .iter()
+        .map(|t| t.selection_end.unwrap_or(t.selection_start) as u32)
+        .max()
+        .unwrap_or(min_line);
+
+    let padding = 20u32;
+    let start = min_line.saturating_sub(padding).max(1);
+    let end = (max_line + padding).min(total);
+
+    let lines: Vec<String> = ((start - 1) as usize..end as usize)
+        .map(|i| file_lines.get(i).unwrap_or(&"").to_string())
+        .collect();
+
+    Some(ContentWindow {
+        start_line: start,
+        lines,
+    })
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_hunk_ranges_standard() {
+        let diff = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -10,5 +10,8 @@ fn main() {
+ some context
++added line
+@@ -30,3 +33,6 @@ fn other() {
+ more context";
+
+        let ranges = parse_hunk_ranges(diff);
+        assert_eq!(ranges, vec![(10, 17), (33, 38)]);
+    }
+
+    #[test]
+    fn test_parse_hunk_ranges_single_line() {
+        let diff = "@@ -5,1 +5 @@ fn foo() {\n+new line\n";
+        let ranges = parse_hunk_ranges(diff);
+        assert_eq!(ranges, vec![(5, 5)]);
+    }
+
+    #[test]
+    fn test_parse_hunk_ranges_zero_count() {
+        // Deletion-only hunk: +start,0 means no new lines
+        let diff = "@@ -10,3 +10,0 @@ fn bar() {\n-removed\n";
+        let ranges = parse_hunk_ranges(diff);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hunk_ranges_no_hunks() {
+        let diff = "diff --git a/file b/file\n--- a/file\n+++ b/file\n";
+        let ranges = parse_hunk_ranges(diff);
+        assert!(ranges.is_empty());
+    }
 }
 

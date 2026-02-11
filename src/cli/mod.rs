@@ -192,6 +192,10 @@ pub enum Commands {
         /// Only show activity since this timestamp (ISO 8601 or relative like "1h", "2d")
         #[arg(long)]
         since: Option<String>,
+
+        /// Include per-file diffs and orphaned thread content in JSON output
+        #[arg(long)]
+        include_diffs: bool,
     },
 
     /// Reply to an existing thread (shortcut for `comments add`)

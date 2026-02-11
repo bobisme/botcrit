@@ -387,7 +387,7 @@ crit_as "swift-falcon" comment "$R2" --file src/config.rs --line 32 \
 	"Consider using a builder pattern instead of mutating fields. It's more idiomatic." >/dev/null 2>&1
 
 # Bold-tiger replies
-T_BUILDER=$(crit_as "bold-tiger" --json threads list "$R2" 2>/dev/null | jq -r '.[0].thread_id')
+T_BUILDER=$(crit_as "bold-tiger" --json threads list "$R2" 2>/dev/null | jq -r '.threads[0].thread_id')
 crit_as "bold-tiger" reply "$T_BUILDER" \
 	"Fair point, but for a simple config this is more readable. I'll refactor if we add more fields." >/dev/null 2>&1
 crit_as "swift-falcon" reply "$T_BUILDER" \
