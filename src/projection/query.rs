@@ -24,6 +24,7 @@ pub struct ReviewSummary {
     pub status: String,
     pub thread_count: i64,
     pub open_thread_count: i64,
+    pub reviewers: Vec<String>,
 }
 
 /// Full details of a review.
@@ -219,6 +220,7 @@ impl ProjectionDb {
                     status: row.get(4)?,
                     thread_count: row.get(5)?,
                     open_thread_count: row.get(6)?,
+                    reviewers: Vec::new(), // populated below
                 })
             })
             .context("Failed to execute list_reviews query")?;
@@ -227,6 +229,26 @@ impl ProjectionDb {
         for row in rows {
             results.push(row.context("Failed to read review row")?);
         }
+
+        // Batch-fetch reviewers for all returned reviews
+        if !results.is_empty() {
+            let mut reviewer_stmt = self
+                .conn
+                .prepare(
+                    "SELECT reviewer FROM review_reviewers WHERE review_id = ? ORDER BY requested_at",
+                )
+                .context("Failed to prepare reviewers query")?;
+
+            for review in &mut results {
+                let reviewers: Vec<String> = reviewer_stmt
+                    .query_map(params![review.review_id], |row| row.get(0))
+                    .context("Failed to query reviewers")?
+                    .collect::<Result<Vec<_>, _>>()
+                    .context("Failed to read reviewers")?;
+                review.reviewers = reviewers;
+            }
+        }
+
         Ok(results)
     }
 
@@ -990,6 +1012,40 @@ mod tests {
         assert_eq!(reviews.len(), 1);
         assert_eq!(reviews[0].thread_count, 2);
         assert_eq!(reviews[0].open_thread_count, 1);
+    }
+
+    #[test]
+    fn test_list_reviews_includes_reviewers() {
+        let db = setup_db();
+
+        apply_event(&db, &make_review("cr-001", "alice", "Review with reviewers")).unwrap();
+        apply_event(&db, &make_review("cr-002", "alice", "Review without reviewers")).unwrap();
+
+        // Add reviewers to cr-001
+        apply_event(
+            &db,
+            &EventEnvelope::new(
+                "alice",
+                Event::ReviewersRequested(ReviewersRequested {
+                    review_id: "cr-001".to_string(),
+                    reviewers: vec!["bob".to_string(), "charlie".to_string()],
+                }),
+            ),
+        )
+        .unwrap();
+
+        let reviews = db.list_reviews(None, None).unwrap();
+        assert_eq!(reviews.len(), 2);
+
+        // Find cr-001 (may not be first due to ordering)
+        let r1 = reviews.iter().find(|r| r.review_id == "cr-001").unwrap();
+        assert_eq!(r1.reviewers.len(), 2);
+        assert!(r1.reviewers.contains(&"bob".to_string()));
+        assert!(r1.reviewers.contains(&"charlie".to_string()));
+
+        // cr-002 should have empty reviewers
+        let r2 = reviews.iter().find(|r| r.review_id == "cr-002").unwrap();
+        assert!(r2.reviewers.is_empty());
     }
 
     // ========================================================================
