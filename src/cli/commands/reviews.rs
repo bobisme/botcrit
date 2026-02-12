@@ -603,6 +603,19 @@ pub fn run_review(
             .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
             .unwrap_or_else(|| "@".to_string());
 
+        // Pre-fetch file contents for all thread files (one show_file per unique file)
+        let mut file_cache: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if context_lines > 0 || include_diffs {
+            for thread in &threads {
+                if !file_cache.contains_key(&thread.file_path) {
+                    if let Ok(contents) = jj.show_file(&commit_ref, &thread.file_path) {
+                        file_cache.insert(thread.file_path.clone(), contents);
+                    }
+                }
+            }
+        }
+
         for thread in &threads {
             let comments = db.list_comments(&thread.thread_id)?;
             // Filter comments by since if provided
@@ -624,22 +637,22 @@ pub fn run_review(
                 continue;
             }
 
-            // Extract code context for this thread
+            // Extract code context from cached file contents
             let anchor_start = thread.selection_start as u32;
             let anchor_end = thread.selection_end.unwrap_or(thread.selection_start) as u32;
 
             let context_value = if context_lines > 0 {
-                match extract_context(
-                    &jj,
-                    &thread.file_path,
-                    &commit_ref,
-                    anchor_start,
-                    anchor_end,
-                    context_lines,
-                ) {
-                    Ok(ctx) => serde_json::to_value(&ctx).ok(),
-                    Err(_) => None,
-                }
+                file_cache
+                    .get(&thread.file_path)
+                    .and_then(|contents| {
+                        extract_context_from_str(
+                            contents,
+                            anchor_start,
+                            anchor_end,
+                            context_lines,
+                        )
+                    })
+                    .and_then(|ctx| serde_json::to_value(&ctx).ok())
             } else {
                 None
             };
@@ -662,7 +675,8 @@ pub fn run_review(
 
         // Include per-file diffs when requested
         if include_diffs {
-            let files_value = build_file_diffs(&jj, &review, &threads, &commit_ref);
+            let files_value =
+                build_file_diffs(&jj, &review, &threads, &commit_ref, &file_cache);
             result["files"] = files_value;
         }
 
@@ -931,6 +945,51 @@ pub fn run_inbox(repo_root: &Path, agent: &str, format: OutputFormat) -> Result<
 // File diff helpers for --include-diffs
 // ============================================================================
 
+/// Extract code context from pre-fetched file content (avoids subprocess call).
+fn extract_context_from_str(
+    contents: &str,
+    anchor_start: u32,
+    anchor_end: u32,
+    context_lines: u32,
+) -> Option<crate::jj::context::CodeContext> {
+    use crate::jj::context::{CodeContext, ContextLine};
+
+    if anchor_start == 0 || anchor_end == 0 || anchor_start > anchor_end {
+        return None;
+    }
+
+    let file_lines: Vec<&str> = contents.lines().collect();
+    let total_lines = file_lines.len() as u32;
+    if total_lines == 0 {
+        return None;
+    }
+
+    let anchor_start = anchor_start.min(total_lines);
+    let anchor_end = anchor_end.min(total_lines);
+    let start_line = anchor_start.saturating_sub(context_lines).max(1);
+    let end_line = (anchor_end + context_lines).min(total_lines);
+
+    let mut lines = Vec::new();
+    for line_num in start_line..=end_line {
+        let idx = (line_num - 1) as usize;
+        let content = file_lines.get(idx).unwrap_or(&"").to_string();
+        let is_anchor = line_num >= anchor_start && line_num <= anchor_end;
+        lines.push(ContextLine {
+            line_number: line_num,
+            content,
+            is_anchor,
+        });
+    }
+
+    Some(CodeContext {
+        lines,
+        start_line,
+        end_line,
+        anchor_start,
+        anchor_end,
+    })
+}
+
 /// Content window around an orphaned thread's anchor.
 #[derive(serde::Serialize)]
 struct ContentWindow {
@@ -940,6 +999,10 @@ struct ContentWindow {
 
 /// Build per-file diff data for files that have threads.
 ///
+/// Uses a single `jj diff --git` call and splits the output by file in Rust,
+/// avoiding N subprocess spawns. Orphaned thread content is fetched only for
+/// files that need it.
+///
 /// Returns a JSON array of `{ path, diff, content }` objects.
 /// - `diff`: unified diff text for files with changes, null otherwise
 /// - `content`: windowed file content for orphaned threads, null otherwise
@@ -948,6 +1011,7 @@ fn build_file_diffs(
     review: &ReviewDetail,
     threads: &[ThreadSummary],
     target_commit: &str,
+    file_cache: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
     // Collect unique files that have threads
     let files_with_threads: Vec<String> = threads
@@ -966,14 +1030,14 @@ fn build_file_diffs(
         .get_parent_commit(target_commit)
         .unwrap_or_else(|_| review.initial_commit.clone());
 
+    // Single diff call — split into per-file diffs in Rust
+    let full_diff = jj.diff_git(&base_commit, target_commit).unwrap_or_default();
+    let diffs_by_file = split_diff_by_file(&full_diff);
+
     let mut file_entries = Vec::new();
 
     for file_path in &files_with_threads {
-        // Get per-file diff
-        let diff = match jj.diff_git_file(&base_commit, target_commit, file_path) {
-            Ok(d) if !d.trim().is_empty() => Some(d),
-            _ => None,
-        };
+        let diff = diffs_by_file.get(file_path.as_str()).map(|s| s.to_string());
 
         // Get threads for this file
         let file_threads: Vec<&ThreadSummary> = threads
@@ -990,13 +1054,13 @@ fn build_file_diffs(
             });
 
             if has_orphan {
-                build_content_window(jj, target_commit, file_path, &file_threads)
+                build_content_window_from_cache(file_cache, file_path, &file_threads)
             } else {
                 None
             }
         } else {
             // No diff at all — all threads are orphaned
-            build_content_window(jj, target_commit, file_path, &file_threads)
+            build_content_window_from_cache(file_cache, file_path, &file_threads)
         };
 
         file_entries.push(serde_json::json!({
@@ -1007,6 +1071,55 @@ fn build_file_diffs(
     }
 
     serde_json::json!(file_entries)
+}
+
+/// Split a full git-format diff into per-file sections.
+///
+/// Each `diff --git a/path b/path` header starts a new file section.
+/// Returns a map from file path to the complete diff section for that file.
+fn split_diff_by_file(full_diff: &str) -> std::collections::HashMap<&str, &str> {
+    let mut result = std::collections::HashMap::new();
+    let mut current_file: Option<&str> = None;
+    let mut current_start: usize = 0;
+
+    for (byte_offset, line) in line_byte_offsets(full_diff) {
+        if line.starts_with("diff --git") {
+            // Flush previous file
+            if let Some(file) = current_file {
+                let section = &full_diff[current_start..byte_offset];
+                if !section.trim().is_empty() {
+                    result.insert(file, section);
+                }
+            }
+            // Parse new file path: "diff --git a/path b/path"
+            current_file = line
+                .split_whitespace()
+                .nth(3)
+                .map(|s| s.trim_start_matches("b/"));
+            current_start = byte_offset;
+        }
+    }
+
+    // Flush last file
+    if let Some(file) = current_file {
+        let section = &full_diff[current_start..];
+        if !section.trim().is_empty() {
+            result.insert(file, section);
+        }
+    }
+
+    result
+}
+
+/// Iterate over lines with their byte offsets in the original string.
+fn line_byte_offsets(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut offset = 0;
+    s.lines().map(move |line| {
+        let start = offset;
+        // +1 for the newline (or 0 if at end without trailing newline)
+        offset += line.len() + 1;
+        (start, line)
+    })
 }
 
 /// Parse unified diff hunk headers to extract new-side line ranges.
@@ -1048,13 +1161,13 @@ fn parse_hunk_ranges(diff: &str) -> Vec<(u32, u32)> {
 /// Build a windowed content region covering all thread anchors in a file.
 ///
 /// Uses 20-line padding around the min/max thread selections.
-fn build_content_window(
-    jj: &JjRepo,
-    commit: &str,
+/// Reads from the pre-fetched file cache to avoid subprocess calls.
+fn build_content_window_from_cache(
+    file_cache: &std::collections::HashMap<String, String>,
     file_path: &str,
     threads: &[&ThreadSummary],
 ) -> Option<ContentWindow> {
-    let contents = jj.show_file(commit, file_path).ok()?;
+    let contents = file_cache.get(file_path)?;
     let file_lines: Vec<&str> = contents.lines().collect();
     let total = file_lines.len() as u32;
 
@@ -1128,6 +1241,50 @@ diff --git a/src/main.rs b/src/main.rs
         let diff = "diff --git a/file b/file\n--- a/file\n+++ b/file\n";
         let ranges = parse_hunk_ranges(diff);
         assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_split_diff_by_file_multiple_files() {
+        let diff = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!(\"hello\");
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,2 +5,3 @@
+ pub fn foo() {
++    42
+ }
+";
+
+        let result = split_diff_by_file(diff);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("src/main.rs"));
+        assert!(result.contains_key("src/lib.rs"));
+        assert!(result["src/main.rs"].contains("println"));
+        assert!(result["src/lib.rs"].contains("42"));
+        // Each section should NOT contain the other file's content
+        assert!(!result["src/main.rs"].contains("pub fn foo"));
+        assert!(!result["src/lib.rs"].contains("fn main"));
+    }
+
+    #[test]
+    fn test_split_diff_by_file_single() {
+        let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let result = split_diff_by_file(diff);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("foo.rs"));
+    }
+
+    #[test]
+    fn test_split_diff_by_file_empty() {
+        let result = split_diff_by_file("");
+        assert!(result.is_empty());
     }
 }
 
