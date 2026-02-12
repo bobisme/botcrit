@@ -1,8 +1,10 @@
 {
-  "version": "1.0.13",
+  "version": "1.0.15",
   "project": {
     "name": "botcrit",
-    "type": ["cli"],
+    "type": [
+      "cli"
+    ],
     "channel": "botcrit",
     "defaultAgent": "botcrit-dev",
     "installCommand": "just install"
@@ -16,7 +18,9 @@
   },
   "review": {
     "enabled": true,
-    "reviewers": ["security"]
+    "reviewers": [
+      "security"
+    ]
   },
   "pushMain": true,
   "agents": {

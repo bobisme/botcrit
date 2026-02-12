@@ -64,6 +64,17 @@ Reviews anchored to jj Change IDs (survive rebases). `.crit/` is version-control
 
 **All tools have `--help`** with usage examples. When unsure, run `<tool> --help` or `<tool> <command> --help`.
 
+### IMPORTANT: Always Track Work in Beads
+
+**Every non-trivial change MUST have a bead**, no matter how it originates:
+- **User asks you to do something** → create a bead before starting
+- **You propose a change** → create a bead before starting
+- **Mid-conversation pivot to implementation** → create a bead before coding
+
+The only exceptions are truly microscopic changes (typo fixes, single-line tweaks) or when you are already iterating on an existing bead's implementation.
+
+Without a bead, work cannot be recovered from crashes, handed off to other agents, or tracked for review. When in doubt, create the bead — it takes seconds and prevents lost work.
+
 ### Directory Structure (maw v2)
 
 This project uses a **bare repo** layout. Source files live in workspaces under `ws/`, not at the project root.
@@ -84,10 +95,10 @@ project-root/          ← bare repo (no source files here)
 - `ws/default/` is the main workspace — beads, config, and project files live here
 - **Never merge or destroy the default workspace.** It is where other branches merge INTO, not something you merge.
 - Agent workspaces (`ws/<name>/`) are isolated jj commits for concurrent work
-- Use `maw exec <ws> -- <command>` to run commands in a workspace context
-- Use `maw exec default -- br|bv ...` for beads commands (always in default workspace)
-- Use `maw exec <ws> -- crit ...` for review commands (always in the review's workspace)
-- Never run `br`, `bv`, `crit`, or `jj` directly — always go through `maw exec`
+- **ALL commands must go through `maw exec`** — this includes `br`, `bv`, `crit`, `jj`, `cargo`, `bun`, and any project tool. Never run them directly from the bare repo root.
+- Use `maw exec default -- <command>` for beads (`br`, `bv`) and general project commands
+- Use `maw exec <agent-ws> -- <command>` for workspace-scoped commands (`crit`, `jj describe`, `cargo check`)
+- **crit commands must run in the review's workspace**, not default: `maw exec <ws> -- crit ...`
 
 ### Beads Quick Reference
 
@@ -138,6 +149,7 @@ jj abandon <change-id>/0   # keep one, abandon the divergent copy
 - Create a bead before starting work. Update status: `open` → `in_progress` → `closed`.
 - Post progress comments during work for crash recovery.
 - **Push to main** after completing beads (see [finish.md](.agents/botbox/finish.md)).
+- **Update CHANGELOG.md** when releasing: add a summary of user-facing changes under the new version heading before tagging.
 - **Install locally** after releasing: `just install`
 
 ### Identity
@@ -157,11 +169,16 @@ bus claims release --agent $AGENT --all  # when done
 
 ### Reviews
 
-Use `@<project>-<role>` mentions to request reviews:
+Create a review with reviewer assignment in one command, then @mention to spawn:
 
 ```bash
-maw exec $WS -- crit reviews request <review-id> --reviewers $PROJECT-security --agent $AGENT
+maw exec $WS -- crit reviews create --agent $AGENT --title "..." --description "..." --reviewers $PROJECT-security
 bus send --agent $AGENT $PROJECT "Review requested: <review-id> @$PROJECT-security" -L review-request
+```
+
+For re-requests after fixing feedback, use `crit reviews request`:
+```bash
+maw exec $WS -- crit reviews request <review-id> --reviewers $PROJECT-security --agent $AGENT
 ```
 
 The @mention triggers the auto-spawn hook for the reviewer.
@@ -191,10 +208,12 @@ Use `cass search "error or problem"` to find how similar issues were solved in p
 
 ### Workflow Docs
 
+- [Mission coordination labels and sibling awareness](.agents/botbox/coordination.md)
 - [Ask questions, report bugs, and track responses across projects](.agents/botbox/cross-channel.md)
 - [Close bead, merge workspace, release claims, sync](.agents/botbox/finish.md)
 - [groom](.agents/botbox/groom.md)
 - [Verify approval before merge](.agents/botbox/merge-check.md)
+- [End-to-end mission lifecycle guide](.agents/botbox/mission.md)
 - [Turn specs/PRDs into actionable beads](.agents/botbox/planning.md)
 - [Validate toolchain health](.agents/botbox/preflight.md)
 - [Create and validate proposals before implementation](.agents/botbox/proposal.md)
