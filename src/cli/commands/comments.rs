@@ -34,6 +34,18 @@ pub fn run_comments_add(
         Some(t) => t,
     };
 
+    // Verify review is open
+    let review = db.get_review(&thread.review_id)?;
+    if let Some(r) = &review {
+        if r.status != "open" {
+            bail!(
+                "Cannot comment on review with status '{}': {}",
+                r.status,
+                thread.review_id
+            );
+        }
+    }
+
     // Get next comment number
     let comment_number = db
         .get_next_comment_number(thread_id)?
