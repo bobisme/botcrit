@@ -19,10 +19,13 @@ Or specify a custom path:
 
 ## What It Creates
 
-- **3 reviews** across 3 agents (swift-falcon, bold-tiger, quiet-owl)
+- **6 reviews** across 4 agents (swift-falcon, bold-tiger, quiet-owl, mystic-pine)
 - **Review 1** (open): Auth refactor — 5 threads, 2 replies, 1 resolved, 1 LGTM + 1 block
 - **Review 2** (merged): Config improvements — 1 thread (resolved), approved and merged
 - **Review 3** (abandoned): Server TCP listener — 1 thread, abandoned in favor of async
+- **Review 4** (approved): API handler — 2 threads, 1 LGTM (api-feature workspace)
+- **Review 5** (open): Logging module — 1 thread (logging-feature workspace)
+- **Review 6** (open, bare): Server connection handler — no threads, no votes (for manual testing)
 
 ## Example Output
 

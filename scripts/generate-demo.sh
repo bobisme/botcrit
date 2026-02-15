@@ -634,6 +634,47 @@ popd >/dev/null
 echo "  1 thread, awaiting review (in logging-feature workspace)" >&2
 
 # ============================================================================
+# Review 6: Bare open review (no threads, no votes — for manual testing)
+# ============================================================================
+
+cat > src/server.rs << 'RUST'
+use crate::config::Config;
+use std::io;
+use std::net::TcpListener;
+
+pub fn run(addr: &str, config: &Config) -> io::Result<()> {
+    println!("Connecting to {}", config.database_url);
+    let listener = TcpListener::bind(addr)?;
+    println!("Listening on {}", addr);
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => handle_connection(stream),
+            Err(e) => eprintln!("Connection failed: {}", e),
+        }
+    }
+    Ok(())
+}
+
+fn handle_connection(_stream: std::net::TcpStream) {
+    // TODO: parse HTTP request and route to API
+}
+RUST
+
+jj describe -m "refactor(server): extract handle_connection function
+
+Separates connection handling into its own function for clarity." 2>/dev/null
+
+R6=$(crit_as "swift-falcon" --json reviews create \
+	--title "Server: extract connection handler" \
+	--desc "Pulls connection handling into handle_connection() for readability." \
+	2>/dev/null | extract_id review_id)
+
+jj new 2>/dev/null
+
+echo "Review 6: $R6 (bare open review, no threads or votes)" >&2
+
+# ============================================================================
 # Summary
 # ============================================================================
 
@@ -648,6 +689,7 @@ echo "" >&2
 echo "Reviews in workspaces:" >&2
 echo "  $R4  (api-feature workspace, approved)" >&2
 echo "  $R5  (logging-feature workspace, open)" >&2
+echo "  $R6  (logging-feature workspace, bare open — for testing)" >&2
 echo "" >&2
 echo "Try:" >&2
 echo "  cd $DEMO_DIR" >&2
