@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "crit"
-version = "0.21.1"
+version = "0.21.2"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
