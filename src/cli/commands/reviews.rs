@@ -724,7 +724,7 @@ pub fn run_review(
     let threads = db.list_threads(review_id, None, None)?;
 
     if threads.is_empty() {
-        println!("\n  No threads.");
+        println!("\n  No threads yet. Use crit diff {} to view changes.", review_id);
         return Ok(());
     }
 
@@ -1014,16 +1014,10 @@ fn build_file_diffs(
     file_cache: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
     // Collect unique files that have threads
-    let files_with_threads: Vec<String> = threads
+    let files_with_threads: std::collections::BTreeSet<String> = threads
         .iter()
         .map(|t| t.file_path.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
         .collect();
-
-    if files_with_threads.is_empty() {
-        return serde_json::json!([]);
-    }
 
     // Resolve base commit
     let base_commit = jj
@@ -1034,9 +1028,18 @@ fn build_file_diffs(
     let full_diff = jj.diff_git(&base_commit, target_commit).unwrap_or_default();
     let diffs_by_file = split_diff_by_file(&full_diff);
 
+    // All files: union of files with threads and files with diffs
+    let all_files: Vec<String> = {
+        let mut files = files_with_threads.clone();
+        for key in diffs_by_file.keys() {
+            files.insert((*key).to_string());
+        }
+        files.into_iter().collect()
+    };
+
     let mut file_entries = Vec::new();
 
-    for file_path in &files_with_threads {
+    for file_path in &all_files {
         let diff = diffs_by_file.get(file_path.as_str()).map(|s| s.to_string());
 
         // Get threads for this file
@@ -1046,21 +1049,25 @@ fn build_file_diffs(
             .collect();
 
         // Check for orphaned threads (selection_start not in any diff hunk)
-        let content = if let Some(ref diff_text) = diff {
-            let hunks = parse_hunk_ranges(diff_text);
-            let has_orphan = file_threads.iter().any(|t| {
-                let line = t.selection_start as u32;
-                !hunks.iter().any(|h| line >= h.0 && line <= h.1)
-            });
+        let content = if !file_threads.is_empty() {
+            if let Some(ref diff_text) = diff {
+                let hunks = parse_hunk_ranges(diff_text);
+                let has_orphan = file_threads.iter().any(|t| {
+                    let line = t.selection_start as u32;
+                    !hunks.iter().any(|h| line >= h.0 && line <= h.1)
+                });
 
-            if has_orphan {
-                build_content_window_from_cache(file_cache, file_path, &file_threads)
+                if has_orphan {
+                    build_content_window_from_cache(file_cache, file_path, &file_threads)
+                } else {
+                    None
+                }
             } else {
-                None
+                // No diff at all — all threads are orphaned
+                build_content_window_from_cache(file_cache, file_path, &file_threads)
             }
         } else {
-            // No diff at all — all threads are orphaned
-            build_content_window_from_cache(file_cache, file_path, &file_threads)
+            None
         };
 
         file_entries.push(serde_json::json!({
