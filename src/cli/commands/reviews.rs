@@ -676,7 +676,7 @@ pub fn run_review(
         // Include per-file diffs when requested
         if include_diffs {
             let files_value =
-                build_file_diffs(&jj, &review, &threads, &commit_ref, &file_cache);
+                build_file_diffs(&jj, &review, &threads, &commit_ref, &file_cache, crit_root);
             result["files"] = files_value;
         }
 
@@ -1012,6 +1012,7 @@ fn build_file_diffs(
     threads: &[ThreadSummary],
     target_commit: &str,
     file_cache: &std::collections::HashMap<String, String>,
+    crit_root: &Path,
 ) -> serde_json::Value {
     // Collect unique files that have threads
     let files_with_threads: std::collections::BTreeSet<String> = threads
@@ -1028,13 +1029,14 @@ fn build_file_diffs(
     let full_diff = jj.diff_git(&base_commit, target_commit).unwrap_or_default();
     let diffs_by_file = split_diff_by_file(&full_diff);
 
-    // All files: union of files with threads and files with diffs
+    // All files: union of files with threads and files with diffs, filtered by critignore
+    let critignore = CritIgnore::load(crit_root);
     let all_files: Vec<String> = {
         let mut files = files_with_threads.clone();
         for key in diffs_by_file.keys() {
             files.insert((*key).to_string());
         }
-        files.into_iter().collect()
+        files.into_iter().filter(|f| !critignore.is_ignored(f)).collect()
     };
 
     let mut file_entries = Vec::new();
