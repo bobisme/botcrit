@@ -6,11 +6,13 @@
 use anyhow::{bail, Result};
 use std::env;
 
-/// Environment variable for crit-specific agent identity
-const CRIT_AGENT_VAR: &str = "CRIT_AGENT";
-
-/// Environment variable for BotBus agent identity (interop)
-const BOTBUS_AGENT_VAR: &str = "BOTBUS_AGENT";
+/// Environment variables checked for agent identity, in priority order.
+const IDENTITY_VARS: &[&str] = &[
+    "BOTCRIT_AGENT",
+    "CRIT_AGENT",
+    "AGENT",
+    "BOTBUS_AGENT",
+];
 
 /// Fallback to system user
 const USER_VAR: &str = "USER";
@@ -18,9 +20,11 @@ const USER_VAR: &str = "USER";
 /// Get the current agent identity.
 ///
 /// Resolution order:
-/// 1. Explicit override (if provided)
-/// 2. CRIT_AGENT environment variable
-/// 3. BOTBUS_AGENT environment variable
+/// 1. Explicit override (`--agent`)
+/// 2. BOTCRIT_AGENT environment variable
+/// 3. CRIT_AGENT environment variable
+/// 4. AGENT environment variable
+/// 5. BOTBUS_AGENT environment variable
 ///
 /// Returns error if no identity is set - agents must identify themselves.
 /// Use `--user` flag to explicitly use $USER for human usage.
@@ -29,20 +33,16 @@ pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
         return Ok(name.to_string());
     }
 
-    if let Ok(name) = env::var(CRIT_AGENT_VAR) {
-        if !name.is_empty() {
-            return Ok(name);
-        }
-    }
-
-    if let Ok(name) = env::var(BOTBUS_AGENT_VAR) {
-        if !name.is_empty() {
-            return Ok(name);
+    for var in IDENTITY_VARS {
+        if let Ok(name) = env::var(var) {
+            if !name.is_empty() {
+                return Ok(name);
+            }
         }
     }
 
     bail!(
-        "Agent identity required. Use --agent <name>, set CRIT_AGENT or BOTBUS_AGENT, or use --user for human identity."
+        "Agent identity required. Use --agent <name>, set BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT, or use --user for human identity."
     )
 }
 

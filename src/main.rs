@@ -19,7 +19,7 @@ use crit::events::{get_agent_identity, get_user_identity};
 use crit::jj::{resolve_crit_root_from_path, resolve_workspace_root};
 
 /// Resolve identity based on CLI flags.
-/// Priority: --agent > --user > CRIT_AGENT/BOTBUS_AGENT (required)
+/// Priority: --agent > --user > BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT (required)
 fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
     if let Some(ref agent) = cli.agent {
         return Ok(Some(agent.clone()));
