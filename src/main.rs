@@ -15,17 +15,14 @@ use crit::cli::commands::{
 use crit::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
 };
-use crit::events::{get_agent_identity, get_user_identity};
+use crit::events::get_agent_identity;
 use crit::jj::{resolve_crit_root_from_path, resolve_workspace_root};
 
 /// Resolve identity based on CLI flags.
-/// Priority: --agent > --user > BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT (required)
+/// Priority: --agent > BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT > $USER (TTY only)
 fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
     if let Some(ref agent) = cli.agent {
         return Ok(Some(agent.clone()));
-    }
-    if cli.user {
-        return Ok(Some(get_user_identity()?));
     }
     // Will be resolved lazily by get_agent_identity when needed
     Ok(None)
@@ -56,7 +53,7 @@ fn main() -> Result<()> {
     // Determine output format (--format flag, --json alias, FORMAT env, or TTY detection)
     let format = cli.output_format();
 
-    // Resolve identity (--author or --user override, otherwise deferred to env vars)
+    // Resolve identity (--agent override, otherwise deferred to env vars / TTY fallback)
     let identity = resolve_identity(&cli)?;
 
     match cli.command {

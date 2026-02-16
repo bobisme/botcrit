@@ -118,14 +118,16 @@ crit --agent my-agent inbox
 
 ### Identity
 
-Every command needs an agent identity. Three ways to provide it:
+Every command needs an agent identity. Resolution order:
 
 | Method | Example |
 |--------|---------|
 | `--agent` flag (preferred) | `crit --agent swift-falcon reviews list` |
+| `BOTCRIT_AGENT` env var | `export BOTCRIT_AGENT=swift-falcon` |
 | `CRIT_AGENT` env var | `export CRIT_AGENT=swift-falcon` |
+| `AGENT` env var | `export AGENT=swift-falcon` |
 | `BOTBUS_AGENT` env var | `export BOTBUS_AGENT=swift-falcon` |
-| `--user` flag (humans) | `crit --user reviews list` (uses `$USER`) |
+| `$USER` (TTY only) | Automatic fallback in interactive sessions |
 
 ### Review Lifecycle
 

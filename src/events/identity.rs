@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Result};
 use std::env;
+use std::io::IsTerminal;
 
 /// Environment variables checked for agent identity, in priority order.
 const IDENTITY_VARS: &[&str] = &[
@@ -14,9 +15,6 @@ const IDENTITY_VARS: &[&str] = &[
     "BOTBUS_AGENT",
 ];
 
-/// Fallback to system user
-const USER_VAR: &str = "USER";
-
 /// Get the current agent identity.
 ///
 /// Resolution order:
@@ -25,9 +23,9 @@ const USER_VAR: &str = "USER";
 /// 3. CRIT_AGENT environment variable
 /// 4. AGENT environment variable
 /// 5. BOTBUS_AGENT environment variable
+/// 6. $USER (only when stdin is a TTY)
 ///
-/// Returns error if no identity is set - agents must identify themselves.
-/// Use `--user` flag to explicitly use $USER for human usage.
+/// Returns error if no identity can be determined.
 pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
     if let Some(name) = explicit {
         return Ok(name.to_string());
@@ -41,17 +39,18 @@ pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
         }
     }
 
-    bail!(
-        "Agent identity required. Use --agent <name>, set BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT, or use --user for human identity."
-    )
-}
+    // Fall back to $USER only in interactive (TTY) sessions
+    if std::io::stdin().is_terminal() {
+        if let Ok(name) = env::var("USER") {
+            if !name.is_empty() {
+                return Ok(name);
+            }
+        }
+    }
 
-/// Get the system user identity (for --user flag).
-pub fn get_user_identity() -> Result<String> {
-    env::var(USER_VAR)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("$USER not set"))
+    bail!(
+        "Agent identity required. Use --agent <name> or set BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT."
+    )
 }
 
 #[cfg(test)]
@@ -62,15 +61,5 @@ mod tests {
     fn test_explicit_override() {
         let identity = get_agent_identity(Some("explicit_agent")).unwrap();
         assert_eq!(identity, "explicit_agent");
-    }
-
-    #[test]
-    fn test_user_identity() {
-        // USER should be set on most systems
-        let identity = get_user_identity();
-        // May or may not be set depending on environment
-        if let Ok(id) = identity {
-            assert!(!id.is_empty());
-        }
     }
 }

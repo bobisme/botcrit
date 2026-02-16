@@ -20,13 +20,9 @@ pub struct Cli {
     #[arg(long, global = true, hide = true)]
     pub json: bool,
 
-    /// Override agent identity (requires CRIT_AGENT or BOTBUS_AGENT by default)
+    /// Override agent identity (falls back to env vars, then $USER if TTY)
     #[arg(long, global = true)]
     pub agent: Option<String>,
-
-    /// Use $USER as identity (for human usage)
-    #[arg(long, global = true)]
-    pub user: bool,
 
     /// Path to repository (can be repo root, .crit dir, or subdirectory)
     #[arg(long, global = true)]

@@ -34,9 +34,9 @@ crit --agent {name} reviews list
 crit --agent {name} comment <id> --file F --line L "msg"
 ```
 
-Alternatively, set `CRIT_AGENT` or `BOTBUS_AGENT` env vars (but note these may not persist across tool invocations in some environments).
+Alternatively, set `BOTCRIT_AGENT`, `CRIT_AGENT`, `AGENT`, or `BOTBUS_AGENT` env vars (but note these may not persist across tool invocations in some environments).
 
-Use `--user` for human identity (uses $USER).
+In interactive (TTY) sessions, `$USER` is used as a fallback if no agent identity is set.
 
 ### Essential Commands
 
@@ -69,8 +69,8 @@ crit --agent {name} reviews mark-merged <id> --self-approve   # Approve + mark m
 - `crit comment` creates new feedback on a file+line (auto-creates threads)
 - `crit reply` responds to an existing thread
 - Use `--json` for machine-parseable output
-- **Identity**: Use `--agent <name>` flag (preferred) or set CRIT_AGENT/BOTBUS_AGENT env var
-- Use `--user` flag for human identity (uses $USER)"#,
+- **Identity**: Use `--agent <name>` flag (preferred) or set BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT env var
+- In TTY sessions, `$USER` is used as fallback if no agent identity is set"#,
         name = suggested_name,
     )
 }
