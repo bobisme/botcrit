@@ -60,3 +60,4 @@
 {"ts":"2026-02-12T14:37:08.378363590Z","author":"botcrit-dev","event":"ThreadCreated","data":{"thread_id":"th-3292","review_id":"cr-2u3u","file_path":"src/tui/ui.rs","selection":{"type":"Line","line":50},"commit_hash":"53e882506ef21318fcc496b08f4a43afd6f25290"}}
 {"ts":"2026-02-12T14:37:08.378424464Z","author":"botcrit-dev","event":"CommentAdded","data":{"comment_id":"th-3292.1","thread_id":"th-3292","body":"Second benchmark thread on src/tui/ui.rs"}}
 {"ts":"2026-02-12T14:41:44.017028110Z","author":"botcrit-dev","event":"ReviewAbandoned","data":{"review_id":"cr-2u3u","reason":"Benchmark review - no longer needed"}}
+{"ts":"2026-02-20T03:16:12.235565230Z","author":"botcrit-dev","event":"ReviewersRequested","data":{"review_id":"cr-2u3u","reviewers":["botcrit-security"]}}
