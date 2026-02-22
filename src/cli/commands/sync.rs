@@ -131,10 +131,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// Set up a v2 crit repository with one review containing events.
-    fn setup_v2_repo_with_review(
-        crit_root: &Path,
-        review_id: &str,
-    ) -> ProjectionDb {
+    fn setup_v2_repo_with_review(crit_root: &Path, review_id: &str) -> ProjectionDb {
         let crit_dir = crit_root.join(".crit");
         std::fs::create_dir_all(crit_dir.join("reviews")).unwrap();
         std::fs::write(crit_dir.join("version"), "2\n").unwrap();
@@ -146,6 +143,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: review_id.to_string(),
                 jj_change_id: "change123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("change123".to_string()),
                 initial_commit: "commit456".to_string(),
                 title: format!("Review {review_id}"),
                 description: Some("Test description".to_string()),
@@ -294,7 +293,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(line_count, 2, "should have 2 lines (not 999) after re-baseline");
+        assert_eq!(
+            line_count, 2,
+            "should have 2 lines (not 999) after re-baseline"
+        );
     }
 
     #[test]
@@ -310,11 +312,9 @@ mod tests {
             OutputFormat::Text,
         );
         assert!(result.is_err(), "should error when both flags provided");
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Cannot use --rebuild and --accept-regression together"),
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot use --rebuild and --accept-regression together"),);
     }
 }

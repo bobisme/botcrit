@@ -7,7 +7,7 @@
 
 use anyhow::{bail, Result};
 
-use super::JjRepo;
+use crate::scm::ScmRepo;
 
 /// Result of drift detection for a line anchor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +217,7 @@ pub fn parse_hunks(diff: &str) -> Result<Vec<Hunk>> {
 ///
 /// A `DriftResult` indicating whether the line is unchanged, shifted, modified, or deleted.
 pub fn calculate_drift(
-    repo: &JjRepo,
+    repo: &dyn ScmRepo,
     file: &str,
     original_line: u32,
     original_commit: &str,
@@ -332,12 +332,18 @@ pub fn calculate_drift(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scm::jj::JjScmRepo;
+    use crate::scm::ScmRepo;
     use std::env;
     use std::path::Path;
 
-    fn test_repo() -> JjRepo {
+    fn test_repo() -> Option<JjScmRepo> {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        JjRepo::new(Path::new(&manifest_dir))
+        let root = Path::new(&manifest_dir);
+        if !root.join(".jj").exists() {
+            return None;
+        }
+        Some(JjScmRepo::new(root))
     }
 
     #[test]
@@ -461,11 +467,13 @@ index 1234567..abcdefg 100644
     /// which should always work on any jj repo.
     #[test]
     fn test_calculate_drift_real_repo() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Get the current commit to use as both original and current
         // This should result in Unchanged since there's no diff
-        let current = repo.get_current_commit().unwrap();
+        let current = repo.current_commit().unwrap();
 
         // A file that definitely exists
         let result = calculate_drift(&repo, "Cargo.toml", 1, &current, &current);

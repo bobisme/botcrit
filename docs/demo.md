@@ -1,20 +1,27 @@
 # Demo Project
 
-Generate a realistic crit demo with `scripts/generate-demo.sh`. It creates a
-jj repository in `/tmp` with sample Rust source files, initializes crit, and
-exercises reviews, threads, comments, replies, votes, and lifecycle transitions.
+Generate a realistic crit demo with either script:
+- `scripts/generate-demo-jj.sh` for a jj-based demo (multi-workspace)
+- `scripts/generate-demo-git.sh` for a pure Git demo
+
+Both initialize crit and exercise reviews, threads, comments, replies, votes,
+and lifecycle transitions.
 
 ## Generate
 
 ```bash
-./scripts/generate-demo.sh
+./scripts/generate-demo-jj.sh
+# or
+./scripts/generate-demo-git.sh
 # Prints the demo directory path to stdout
 ```
 
 Or specify a custom path:
 
 ```bash
-./scripts/generate-demo.sh /path/to/demo
+./scripts/generate-demo-jj.sh /path/to/demo
+# or
+./scripts/generate-demo-git.sh /path/to/demo
 ```
 
 ## What It Creates

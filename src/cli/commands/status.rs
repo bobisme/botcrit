@@ -7,9 +7,9 @@ use std::path::Path;
 use crate::cli::commands::helpers::{ensure_initialized, open_and_sync, review_not_found_error};
 use crate::critignore::{AllFilesIgnoredError, CritIgnore};
 use crate::jj::drift::{calculate_drift, DriftResult};
-use crate::jj::JjRepo;
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::ThreadSummary;
+use crate::scm::ScmRepo;
 
 /// Thread status with drift information.
 #[derive(Debug, Clone, Serialize)]
@@ -42,7 +42,7 @@ pub struct ReviewStatus {
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_status(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: Option<&str>,
     unresolved_only: bool,
     format: OutputFormat,
@@ -50,8 +50,7 @@ pub fn run_status(
     ensure_initialized(crit_root)?;
 
     let db = open_and_sync(crit_root)?;
-    let jj = JjRepo::new(workspace_root);
-    let current_commit = jj.get_current_commit()?;
+    let current_commit = scm.current_commit()?;
 
     // Get reviews to process
     let reviews = if let Some(rid) = review_id {
@@ -83,7 +82,7 @@ pub fn run_status(
             let thread_detail = db.get_thread(&thread.thread_id)?;
             let drift_result = if let Some(td) = &thread_detail {
                 calculate_drift(
-                    &jj,
+                    scm,
                     &td.file_path,
                     td.selection_start as u32,
                     &td.commit_hash,
@@ -175,14 +174,13 @@ pub fn run_status(
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_diff(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: &str,
     format: OutputFormat,
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
     let db = open_and_sync(crit_root)?;
-    let jj = JjRepo::new(workspace_root);
 
     // Get the review
     let review = db.get_review(review_id)?;
@@ -198,17 +196,18 @@ pub fn run_diff(
     let target_commit = review
         .final_commit
         .clone()
-        .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
+        .or_else(|| scm.commit_for_anchor(&review.scm_anchor).ok())
+        .or_else(|| scm.commit_for_anchor(&review.jj_change_id).ok())
         .unwrap_or_else(|| review.initial_commit.clone());
 
     // Get the base commit: parent of target_commit (not initial_commit)
     // This shows ALL files changed in the review, even after rewrites
-    let base_commit = jj
-        .get_parent_commit(&target_commit)
+    let base_commit = scm
+        .parent_commit(&target_commit)
         .unwrap_or_else(|_| review.initial_commit.clone());
 
     // Get the diff between base and target
-    let diff = jj.diff_git(&base_commit, &target_commit)?;
+    let diff = scm.diff_git(&base_commit, &target_commit)?;
 
     // Get changed files from the diff and filter with critignore
     let all_files = extract_changed_files_from_diff(&diff);
@@ -283,4 +282,3 @@ fn group_threads_by_file(threads: &[ThreadSummary]) -> serde_json::Value {
         })
         .collect::<Vec<_>>())
 }
-

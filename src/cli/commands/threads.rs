@@ -4,16 +4,17 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{
-    ensure_initialized, open_and_sync, review_not_found_error, thread_not_found_error,
+    ensure_initialized, open_and_sync, resolve_review_thread_commit, review_not_found_error,
+    thread_not_found_error,
 };
 use crate::events::{
     get_agent_identity, new_thread_id, CodeSelection, Event, EventEnvelope, ThreadCreated,
     ThreadReopened, ThreadResolved,
 };
 use crate::jj::context::{extract_context, format_context};
-use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
+use crate::scm::ScmRepo;
 
 /// Create a new comment thread on a file.
 ///
@@ -22,7 +23,7 @@ use crate::output::{Formatter, OutputFormat};
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_create(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: &str,
     file: &str,
     lines: &str,
@@ -33,31 +34,33 @@ pub fn run_threads_create(
 
     // Verify review exists
     let db = open_and_sync(crit_root)?;
-    let review = db.get_review(review_id)?;
-    match &review {
+    let review = match db.get_review(review_id)? {
         None => return Err(review_not_found_error(crit_root, review_id)),
-        Some(r) if r.status != "open" => {
-            bail!(
-                "Cannot create thread on review with status '{}': {}",
-                r.status,
-                review_id
-            );
-        }
-        _ => {}
+        Some(r) => r,
+    };
+
+    if review.status != "open" {
+        bail!(
+            "Cannot create thread on review with status '{}': {}",
+            review.status,
+            review_id
+        );
     }
 
     // Parse line selection
     let selection = parse_line_selection(lines)?;
 
-    // Get current commit for this review (use workspace for jj context)
-    let jj = JjRepo::new(workspace_root);
-    let commit_hash = jj
-        .get_current_commit()
-        .context("Failed to get current commit")?;
+    // Resolve review commit anchor (not current workspace commit).
+    let commit_hash = resolve_review_thread_commit(scm, &review);
 
-    // Verify file exists
-    if !jj.file_exists(&commit_hash, file)? {
-        bail!("File does not exist: {}", file);
+    // Verify file exists at the review's commit anchor.
+    if !scm.file_exists(&commit_hash, file)? {
+        bail!(
+            "File does not exist in review {} at {}: {}",
+            review_id,
+            commit_hash,
+            file
+        );
     }
 
     let thread_id = new_thread_id();
@@ -207,7 +210,7 @@ pub fn run_threads_list(
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_show(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     thread_id: &str,
     context_lines: u32,
     use_current: bool,
@@ -224,19 +227,19 @@ pub fn run_threads_show(
         Some(t) => {
             // If context requested, extract it (use workspace for jj context)
             let code_context = if context_lines > 0 {
-                let jj = JjRepo::new(workspace_root);
                 let anchor_start = t.selection_start as u32;
                 let anchor_end = t.selection_end.unwrap_or(t.selection_start) as u32;
 
                 // Use current commit or original commit based on flag
                 let commit_ref = if use_current {
-                    "@".to_string()
+                    scm.current_commit()
+                        .unwrap_or_else(|_| t.commit_hash.clone())
                 } else {
                     t.commit_hash.clone()
                 };
 
                 match extract_context(
-                    &jj,
+                    scm,
                     &t.file_path,
                     &commit_ref,
                     anchor_start,

@@ -149,6 +149,64 @@ impl ProjectionDb {
                 .context("Failed to add next_comment_number column to threads")?;
         }
 
+        let has_scm_kind: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('reviews') WHERE name = 'scm_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to check for scm_kind column")?;
+
+        if !has_scm_kind {
+            self.conn
+                .execute(
+                    "ALTER TABLE reviews ADD COLUMN scm_kind TEXT NOT NULL DEFAULT 'jj'",
+                    [],
+                )
+                .context("Failed to add scm_kind column to reviews")?;
+        }
+
+        let has_scm_anchor: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('reviews') WHERE name = 'scm_anchor'",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to check for scm_anchor column")?;
+
+        if !has_scm_anchor {
+            self.conn
+                .execute("ALTER TABLE reviews ADD COLUMN scm_anchor TEXT", [])
+                .context("Failed to add scm_anchor column to reviews")?;
+        }
+
+        self.conn
+            .execute(
+                "UPDATE reviews SET scm_anchor = jj_change_id WHERE scm_anchor IS NULL OR scm_anchor = ''",
+                [],
+            )
+            .context("Failed to backfill scm_anchor values")?;
+
+        self.conn
+            .execute(
+                "UPDATE reviews SET scm_kind = 'jj' WHERE scm_kind IS NULL OR scm_kind = ''",
+                [],
+            )
+            .context("Failed to backfill scm_kind values")?;
+
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_reviews_scm_anchor ON reviews(scm_kind, scm_anchor)",
+                [],
+            )
+            .context("Failed to create idx_reviews_scm_anchor index")?;
+
+        self.conn
+            .execute_batch(REFRESH_VIEWS_SQL)
+            .context("Failed to refresh projection views")?;
+
         // Add per-review file tracking table for monotonic sync (bd-jw3)
         self.conn
             .execute_batch(
@@ -371,8 +429,12 @@ fn rebuild_projection(db: &ProjectionDb, log: &impl AppendLog) -> Result<usize> 
 
     // Re-apply all events
     for event in &events {
-        apply_event_inner(&tx, event)
-            .with_context(|| format!("Failed to apply event during rebuild: {:?}", event_type_name(&event.event)))?;
+        apply_event_inner(&tx, event).with_context(|| {
+            format!(
+                "Failed to apply event during rebuild: {:?}",
+                event_type_name(&event.event)
+            )
+        })?;
     }
 
     // Update sync state with line count and content hash
@@ -476,11 +538,12 @@ fn rebuild_projection_with_orphan_detection(
             });
 
             std::fs::write(&backup_path, serde_json::to_string_pretty(&backup)?)?;
-            eprintln!("Orphaned review details saved to: {}", backup_path.display());
-        } else {
             eprintln!(
-                "HINT: Run 'jj file annotate .crit/events.jsonl' to find older versions"
+                "Orphaned review details saved to: {}",
+                backup_path.display()
             );
+        } else {
+            eprintln!("HINT: Run 'jj file annotate .crit/events.jsonl' to find older versions");
         }
     }
 
@@ -500,8 +563,12 @@ fn rebuild_projection_with_orphan_detection(
     .context("Failed to wipe projection tables")?;
 
     for event in &events {
-        apply_event_inner(&tx, event)
-            .with_context(|| format!("Failed to apply event during rebuild: {:?}", event_type_name(&event.event)))?;
+        apply_event_inner(&tx, event).with_context(|| {
+            format!(
+                "Failed to apply event during rebuild: {:?}",
+                event_type_name(&event.event)
+            )
+        })?;
     }
 
     let now = Utc::now().to_rfc3339();
@@ -856,9 +923,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, crit_root: &Path) -> Result<Sync
 
     // Print warnings if there are anomalies
     if !report.anomalies.is_empty() {
-        eprintln!(
-            "WARNING: review event file(s) appear stale (likely jj workspace sync)"
-        );
+        eprintln!("WARNING: review event file(s) appear stale (likely jj workspace sync)");
         for anomaly in &report.anomalies {
             eprintln!("  {}: {}", anomaly.review_id, anomaly.detail);
         }
@@ -912,10 +977,7 @@ fn sync_new_file(
     let mut failed = false;
     for event in &events {
         if let Err(e) = apply_event_inner(&db.conn, event) {
-            eprintln!(
-                "WARNING: failed to apply event in {}: {}",
-                review_id, e
-            );
+            eprintln!("WARNING: failed to apply event in {}: {}", review_id, e);
             report.anomalies.push(SyncAnomaly {
                 review_id: review_id.to_string(),
                 kind: AnomalyKind::ParseError,
@@ -1023,10 +1085,7 @@ fn sync_grew_file(
     let mut failed = false;
     for event in &new_events {
         if let Err(e) = apply_event_inner(&db.conn, event) {
-            eprintln!(
-                "WARNING: failed to apply event in {}: {}",
-                review_id, e
-            );
+            eprintln!("WARNING: failed to apply event in {}: {}", review_id, e);
             report.anomalies.push(SyncAnomaly {
                 review_id: review_id.to_string(),
                 kind: AnomalyKind::ParseError,
@@ -1267,12 +1326,14 @@ fn apply_review_created(
 ) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO reviews (
-            review_id, jj_change_id, initial_commit, title, description,
+            review_id, jj_change_id, scm_kind, scm_anchor, initial_commit, title, description,
             author, created_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')",
         params![
             event.review_id,
             event.jj_change_id,
+            event.scm_kind.as_deref().unwrap_or("jj"),
+            event.scm_anchor.as_deref().unwrap_or(&event.jj_change_id),
             event.initial_commit,
             event.title,
             event.description,
@@ -1523,6 +1584,8 @@ INSERT OR IGNORE INTO sync_state (id, last_line_number) VALUES (1, 0);
 CREATE TABLE IF NOT EXISTS reviews (
     review_id TEXT PRIMARY KEY,
     jj_change_id TEXT NOT NULL,
+    scm_kind TEXT NOT NULL DEFAULT 'jj' CHECK (scm_kind IN ('jj', 'git')),
+    scm_anchor TEXT,
     initial_commit TEXT NOT NULL,
     final_commit TEXT,
     title TEXT NOT NULL,
@@ -1642,6 +1705,46 @@ LEFT JOIN comments c ON c.thread_id = t.thread_id
 GROUP BY t.thread_id;
 ";
 
+const REFRESH_VIEWS_SQL: &str = r"
+DROP VIEW IF EXISTS v_reviews_summary;
+DROP VIEW IF EXISTS v_threads_detail;
+
+CREATE VIEW v_reviews_summary AS
+SELECT
+    r.review_id,
+    r.title,
+    r.author,
+    r.status,
+    r.jj_change_id,
+    r.scm_kind,
+    r.scm_anchor,
+    r.created_at,
+    COUNT(DISTINCT t.thread_id) AS thread_count,
+    COUNT(DISTINCT CASE
+        WHEN t.status = 'open' AND r.status NOT IN ('merged', 'abandoned')
+        THEN t.thread_id
+    END) AS open_thread_count
+FROM reviews r
+LEFT JOIN threads t ON t.review_id = r.review_id
+GROUP BY r.review_id;
+
+CREATE VIEW v_threads_detail AS
+SELECT
+    t.*,
+    r.title AS review_title,
+    r.status AS review_status,
+    COUNT(c.comment_id) AS comment_count,
+    CASE
+        WHEN t.status = 'resolved' THEN 'resolved'
+        WHEN r.status IN ('merged', 'abandoned') THEN 'resolved'
+        ELSE 'open'
+    END AS effective_status
+FROM threads t
+JOIN reviews r ON r.review_id = t.review_id
+LEFT JOIN comments c ON c.thread_id = t.thread_id
+GROUP BY t.thread_id;
+";
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1659,6 +1762,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: review_id.to_string(),
                 jj_change_id: "change123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("change123".to_string()),
                 initial_commit: "commit456".to_string(),
                 title: format!("Review {review_id}"),
                 description: Some("Test description".to_string()),
@@ -2147,10 +2252,7 @@ mod tests {
 
     /// Helper: append raw string content to a file.
     fn append_raw(path: &std::path::Path, content: &str) {
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
         file.write_all(content.as_bytes()).unwrap();
         file.flush().unwrap();
     }
@@ -2195,9 +2297,13 @@ mod tests {
         sync_from_log(&db, &log).unwrap();
 
         // Command 2: crit block
-        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes"))
+            .unwrap();
         sync_from_log(&db, &log).unwrap();
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("block".to_string())
+        );
         assert!(db.has_blocking_votes("cr-001").unwrap());
 
         // Command 3: crit lgtm
@@ -2206,7 +2312,10 @@ mod tests {
 
         // Command 4: crit review (syncs the lgtm event)
         sync_from_log(&db, &log).unwrap();
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string())
+        );
         assert!(!db.has_blocking_votes("cr-001").unwrap());
     }
 
@@ -2223,10 +2332,14 @@ mod tests {
 
         // Write review + block vote normally
         log.append(&make_review_created("cr-001")).unwrap();
-        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes"))
+            .unwrap();
         sync_from_log(&db, &log).unwrap();
         assert_eq!(db.get_last_sync_line().unwrap(), 2);
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("block".to_string())
+        );
 
         // Inject empty line, then lgtm vote (bypassing FileLog::append)
         append_raw(&log_path, "\n"); // empty line at idx 2
@@ -2237,22 +2350,31 @@ mod tests {
         // Sync: should pick up lgtm despite empty line
         let count = sync_from_log(&db, &log).unwrap();
         assert_eq!(count, 1, "Should process exactly 1 new event (lgtm)");
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string())
+        );
         assert!(!db.has_blocking_votes("cr-001").unwrap());
 
         // Cursor correctly advances to total_lines (4), including the empty line
         let sync_line = db.get_last_sync_line().unwrap();
-        let actual_lines: usize = std::fs::read_to_string(&log_path)
-            .unwrap()
-            .lines()
-            .count();
-        assert_eq!(sync_line, 4, "Sync offset should match total_lines (no drift)");
-        assert_eq!(actual_lines, 4, "File should have 4 lines (including empty)");
+        let actual_lines: usize = std::fs::read_to_string(&log_path).unwrap().lines().count();
+        assert_eq!(
+            sync_line, 4,
+            "Sync offset should match total_lines (no drift)"
+        );
+        assert_eq!(
+            actual_lines, 4,
+            "File should have 4 lines (including empty)"
+        );
 
         // No re-processing needed — cursor is correct
         let count = sync_from_log(&db, &log).unwrap();
         assert_eq!(count, 0, "No drift means no re-processing");
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string())
+        );
         assert!(!db.has_blocking_votes("cr-001").unwrap());
     }
 
@@ -2270,7 +2392,8 @@ mod tests {
 
         // Write review + block + lgtm normally
         log.append(&make_review_created("cr-001")).unwrap();
-        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes"))
+            .unwrap();
         log.append(&make_lgtm_vote("cr-001", "reviewer-a")).unwrap();
 
         // Add trailing empty line (as seen in eval data)
@@ -2279,7 +2402,10 @@ mod tests {
         // Full sync from scratch
         let count = sync_from_log(&db, &log).unwrap();
         assert_eq!(count, 3);
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string())
+        );
         assert!(!db.has_blocking_votes("cr-001").unwrap());
 
         // Sync line is 4 — total_lines() includes the trailing empty line
@@ -2288,8 +2414,14 @@ mod tests {
 
         // No re-processing needed — cursor is at the correct position
         let count = sync_from_log(&db, &log).unwrap();
-        assert_eq!(count, 0, "Trailing empty line should NOT cause re-processing");
-        assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+        assert_eq!(
+            count, 0,
+            "Trailing empty line should NOT cause re-processing"
+        );
+        assert_eq!(
+            query_vote(&db, "cr-001", "reviewer-a"),
+            Some("lgtm".to_string())
+        );
     }
 
     /// Test with on-disk DB persistence (closer to real CLI behavior).
@@ -2316,15 +2448,19 @@ mod tests {
             db.init_schema().unwrap();
             sync_from_log(&db, &log).unwrap(); // syncs ReviewCreated
         }
-        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes")).unwrap();
+        log.append(&make_block_vote("cr-001", "reviewer-a", "Needs fixes"))
+            .unwrap();
 
         // Command 3: lgtm vote (syncs block, then writes lgtm)
         {
             let db = ProjectionDb::open(&db_path).unwrap();
             db.init_schema().unwrap();
             sync_from_log(&db, &log).unwrap(); // syncs block vote
-            // At this point, DB shows block
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+                                               // At this point, DB shows block
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("block".to_string())
+            );
         }
         log.append(&make_lgtm_vote("cr-001", "reviewer-a")).unwrap();
 
@@ -2333,8 +2469,11 @@ mod tests {
             let db = ProjectionDb::open(&db_path).unwrap();
             db.init_schema().unwrap();
             sync_from_log(&db, &log).unwrap(); // syncs lgtm vote
-            // Should show lgtm
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+                                               // Should show lgtm
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string())
+            );
             assert!(!db.has_blocking_votes("cr-001").unwrap());
         }
     }
@@ -2370,21 +2509,21 @@ mod tests {
         // Simulate CLI command batches (which events are written per command):
         // Each tuple: (events_written_this_batch, description)
         let batches: Vec<(usize, &str)> = vec![
-            (1, "crit reviews create"),             // event 0
-            (1, "crit reviews request-reviewers"),   // event 1
-            (2, "crit comment (thread+comment)"),    // events 2-3
-            (2, "crit comment (thread+comment)"),    // events 4-5
-            (1, "crit reply"),                       // event 6
-            (2, "crit comment (thread+comment)"),    // events 7-8
-            (2, "crit comment (thread+comment)"),    // events 9-10
-            (2, "crit comment (thread+comment)"),    // events 11-12
-            (1, "crit block"),                       // event 13
-            (1, "crit lgtm (attempt 1)"),            // event 14
-            (1, "crit lgtm (attempt 2)"),            // event 15
-            (1, "crit lgtm (attempt 3)"),            // event 16
-            (1, "crit lgtm (attempt 4)"),            // event 17
-            (1, "crit reviews approve"),             // event 18
-            (1, "crit reviews mark-merged"),         // event 19
+            (1, "crit reviews create"),            // event 0
+            (1, "crit reviews request-reviewers"), // event 1
+            (2, "crit comment (thread+comment)"),  // events 2-3
+            (2, "crit comment (thread+comment)"),  // events 4-5
+            (1, "crit reply"),                     // event 6
+            (2, "crit comment (thread+comment)"),  // events 7-8
+            (2, "crit comment (thread+comment)"),  // events 9-10
+            (2, "crit comment (thread+comment)"),  // events 11-12
+            (1, "crit block"),                     // event 13
+            (1, "crit lgtm (attempt 1)"),          // event 14
+            (1, "crit lgtm (attempt 2)"),          // event 15
+            (1, "crit lgtm (attempt 3)"),          // event 16
+            (1, "crit lgtm (attempt 4)"),          // event 17
+            (1, "crit reviews approve"),           // event 18
+            (1, "crit reviews mark-merged"),       // event 19
         ];
 
         let dir = tempdir().unwrap();
@@ -2601,7 +2740,10 @@ mod tests {
             let log = crate::log::FileLog::new(&log_path);
             sync_from_log(&db, &log).unwrap();
             assert_eq!(db.get_last_sync_line().unwrap(), 2);
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("block".to_string())
+            );
         }
 
         // Step 2: Inject empty line + lgtm, sync
@@ -2675,7 +2817,10 @@ mod tests {
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 3);
             assert_eq!(db.get_last_sync_line().unwrap(), 3);
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("block".to_string())
+            );
         }
 
         // === Phase 2: jj restores events.jsonl to an older version ===
@@ -2756,7 +2901,10 @@ mod tests {
             let log = crate::log::FileLog::new(&log_path);
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 2, "Should pick up block + lgtm");
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("lgtm".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("lgtm".to_string())
+            );
         }
     }
 
@@ -2784,10 +2932,16 @@ mod tests {
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 2);
             assert_eq!(db.get_last_sync_line().unwrap(), 2);
-            assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), Some("block".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-001", "reviewer-a"),
+                Some("block".to_string())
+            );
 
             // Hash should be stored
-            assert!(db.get_events_file_hash().unwrap().is_some(), "Hash should be stored after sync");
+            assert!(
+                db.get_events_file_hash().unwrap().is_some(),
+                "Hash should be stored after sync"
+            );
         }
 
         // === Phase 2: jj replaces file with SAME line count, DIFFERENT content ===
@@ -2802,10 +2956,7 @@ mod tests {
         write_raw(&log_path, &replaced);
 
         // File still has 2 lines — truncation check won't catch this.
-        let line_count = std::fs::read_to_string(&log_path)
-            .unwrap()
-            .lines()
-            .count();
+        let line_count = std::fs::read_to_string(&log_path).unwrap().lines().count();
         assert_eq!(line_count, 2, "File should still have 2 lines");
 
         // === Phase 3: sync detects hash mismatch, rebuilds ===
@@ -2823,7 +2974,10 @@ mod tests {
             assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), None);
 
             // cr-002 lgtm vote is present (from replaced file)
-            assert_eq!(query_vote(&db, "cr-002", "reviewer-b"), Some("lgtm".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-002", "reviewer-b"),
+                Some("lgtm".to_string())
+            );
         }
     }
 
@@ -2851,10 +3005,12 @@ mod tests {
             assert!(db.get_events_file_hash().unwrap().is_some());
 
             // Simulate a pre-hash database by clearing the hash
-            db.conn().execute(
-                "UPDATE sync_state SET events_file_hash = NULL WHERE id = 1",
-                [],
-            ).unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE sync_state SET events_file_hash = NULL WHERE id = 1",
+                    [],
+                )
+                .unwrap();
             assert!(db.get_events_file_hash().unwrap().is_none());
         }
 
@@ -2865,7 +3021,10 @@ mod tests {
             let log = crate::log::FileLog::new(&log_path);
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 0, "No new events to process");
-            assert!(db.get_events_file_hash().unwrap().is_some(), "Hash should be backfilled");
+            assert!(
+                db.get_events_file_hash().unwrap().is_some(),
+                "Hash should be backfilled"
+            );
         }
 
         // Now same-length replacement should be detected
@@ -2885,7 +3044,10 @@ mod tests {
             let count = sync_from_log(&db, &log).unwrap();
             assert_eq!(count, 2, "Should rebuild from replaced file");
             assert_eq!(query_vote(&db, "cr-001", "reviewer-a"), None);
-            assert_eq!(query_vote(&db, "cr-002", "reviewer-b"), Some("lgtm".to_string()));
+            assert_eq!(
+                query_vote(&db, "cr-002", "reviewer-b"),
+                Some("lgtm".to_string())
+            );
         }
     }
 
@@ -2967,7 +3129,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Verify has_blocking_votes returns false
-        let has_blocks = db.conn()
+        let has_blocks = db
+            .conn()
             .query_row(
                 "SELECT COUNT(*) FROM reviewer_votes WHERE review_id = ? AND vote = 'block'",
                 params!["cr-001"],
@@ -3030,7 +3193,11 @@ mod tests {
         let backup_files: Vec<_> = std::fs::read_dir(crit_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("orphaned-reviews-"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("orphaned-reviews-")
+            })
             .collect();
 
         assert_eq!(backup_files.len(), 1, "Should have created one backup file");
@@ -3152,7 +3319,10 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(!has_column, "Old database should not have next_comment_number");
+            assert!(
+                !has_column,
+                "Old database should not have next_comment_number"
+            );
         }
 
         // Now open with ProjectionDb which should run migration
@@ -3170,7 +3340,10 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(has_column, "Migration should have added next_comment_number");
+            assert!(
+                has_column,
+                "Migration should have added next_comment_number"
+            );
 
             // Verify existing row got default value
             let next_num: i64 = db
@@ -3257,8 +3430,15 @@ mod tests {
         ];
 
         let (filtered, skipped) = filter_orphaned_events(events);
-        assert_eq!(skipped, 3, "should skip ThreadCreated + ThreadResolved + CommentAdded for orphan");
-        assert_eq!(filtered.len(), 2, "should keep ReviewCreated + ThreadCreated for cr-good");
+        assert_eq!(
+            skipped, 3,
+            "should skip ThreadCreated + ThreadResolved + CommentAdded for orphan"
+        );
+        assert_eq!(
+            filtered.len(),
+            2,
+            "should keep ReviewCreated + ThreadCreated for cr-good"
+        );
     }
 
     #[test]
@@ -3282,15 +3462,21 @@ mod tests {
 
         // Write events WITHOUT ReviewCreated (simulating destroyed workspace)
         let log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
-        log.append(&make_thread_created("th-001", "cr-orphan")).unwrap();
-        log.append(&make_comment_added("th-001.1", "th-001")).unwrap();
+        log.append(&make_thread_created("th-001", "cr-orphan"))
+            .unwrap();
+        log.append(&make_comment_added("th-001.1", "th-001"))
+            .unwrap();
 
         let db = ProjectionDb::open_in_memory().unwrap();
         db.init_schema().unwrap();
 
         // This should NOT fail with FK constraint error
         let result = sync_from_review_logs(&db, crit_root);
-        assert!(result.is_ok(), "sync should succeed even with orphaned events: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "sync should succeed even with orphaned events: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -3302,12 +3488,18 @@ mod tests {
         // Write a valid review
         let good_log = crate::log::ReviewLog::new(crit_root, "cr-good").unwrap();
         good_log.append(&make_review_created("cr-good")).unwrap();
-        good_log.append(&make_thread_created("th-good", "cr-good")).unwrap();
+        good_log
+            .append(&make_thread_created("th-good", "cr-good"))
+            .unwrap();
 
         // Write orphaned events (no ReviewCreated)
         let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
-        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
-        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
+        orphan_log
+            .append(&make_thread_created("th-orphan", "cr-orphan"))
+            .unwrap();
+        orphan_log
+            .append(&make_comment_added("th-orphan.1", "th-orphan"))
+            .unwrap();
 
         let db = ProjectionDb::open_in_memory().unwrap();
         db.init_schema().unwrap();
@@ -3336,7 +3528,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(!orphan_exists, "orphaned review should not be in the projection");
+        assert!(
+            !orphan_exists,
+            "orphaned review should not be in the projection"
+        );
     }
 
     #[test]
@@ -3372,7 +3567,11 @@ mod tests {
 
         // First sync: all 3 events should be processed
         let report = sync_from_review_logs(&db, crit_root).unwrap();
-        assert!(report.applied >= 3, "first sync should process all 3 events, got {}", report.applied);
+        assert!(
+            report.applied >= 3,
+            "first sync should process all 3 events, got {}",
+            report.applied
+        );
 
         // Verify all data landed
         let review_count: i64 = db
@@ -3400,13 +3599,20 @@ mod tests {
 
         // Second sync: the new comment must be picked up
         let report2 = sync_from_review_logs(&db, crit_root).unwrap();
-        assert!(report2.applied > 0, "second sync should pick up new events, got {}", report2.applied);
+        assert!(
+            report2.applied > 0,
+            "second sync should pick up new events, got {}",
+            report2.applied
+        );
 
         let comment_count2: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(comment_count2, 2, "should have 2 comments after second sync");
+        assert_eq!(
+            comment_count2, 2,
+            "should have 2 comments after second sync"
+        );
     }
 
     #[test]
@@ -3474,18 +3680,25 @@ mod tests {
         // Write a valid review with 2 events
         let good_log = crate::log::ReviewLog::new(crit_root, "cr-good").unwrap();
         good_log.append(&make_review_created("cr-good")).unwrap();
-        good_log.append(&make_thread_created("th-good", "cr-good")).unwrap();
+        good_log
+            .append(&make_thread_created("th-good", "cr-good"))
+            .unwrap();
 
         // Write orphaned events (no ReviewCreated) with 2 events
         let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
-        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
-        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
+        orphan_log
+            .append(&make_thread_created("th-orphan", "cr-orphan"))
+            .unwrap();
+        orphan_log
+            .append(&make_comment_added("th-orphan.1", "th-orphan"))
+            .unwrap();
 
         // Sync should return 2 (only the good events), not 4
         let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(
             report.applied, 2,
-            "sync should return 2 (events applied), not 4 (including orphaned), got {}", report.applied
+            "sync should return 2 (events applied), not 4 (including orphaned), got {}",
+            report.applied
         );
 
         // Verify the right data is in the projection
@@ -3514,15 +3727,22 @@ mod tests {
 
         // Write ONLY orphaned events (no ReviewCreated)
         let orphan_log = crate::log::ReviewLog::new(crit_root, "cr-orphan").unwrap();
-        orphan_log.append(&make_thread_created("th-orphan", "cr-orphan")).unwrap();
-        orphan_log.append(&make_comment_added("th-orphan.1", "th-orphan")).unwrap();
-        orphan_log.append(&make_thread_created("th-orphan2", "cr-orphan")).unwrap();
+        orphan_log
+            .append(&make_thread_created("th-orphan", "cr-orphan"))
+            .unwrap();
+        orphan_log
+            .append(&make_comment_added("th-orphan.1", "th-orphan"))
+            .unwrap();
+        orphan_log
+            .append(&make_thread_created("th-orphan2", "cr-orphan"))
+            .unwrap();
 
         // Sync should return 0 (all events filtered out), not 3
         let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(
             report.applied, 0,
-            "sync with all orphaned events should return 0, not 3, got {}", report.applied
+            "sync with all orphaned events should return 0, not 3, got {}",
+            report.applied
         );
 
         // Verify projection is empty
@@ -3549,7 +3769,8 @@ mod tests {
         // Write a review with events
         let log = crate::log::ReviewLog::new(crit_root, "cr-new").unwrap();
         log.append(&make_review_created("cr-new")).unwrap();
-        log.append(&make_thread_created("th-new", "cr-new")).unwrap();
+        log.append(&make_thread_created("th-new", "cr-new"))
+            .unwrap();
 
         let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(report.applied, 2, "should apply 2 events");
@@ -3618,8 +3839,10 @@ mod tests {
         assert_eq!(report1.applied, 1);
 
         // Append more events
-        log.append(&make_thread_created("th-grow", "cr-grow")).unwrap();
-        log.append(&make_comment_added("th-grow.1", "th-grow")).unwrap();
+        log.append(&make_thread_created("th-grow", "cr-grow"))
+            .unwrap();
+        log.append(&make_comment_added("th-grow.1", "th-grow"))
+            .unwrap();
 
         // Re-sync: should only process the 2 new events
         let report2 = sync_from_review_logs(&db, crit_root).unwrap();
@@ -3653,8 +3876,10 @@ mod tests {
         // Write 3 events and sync
         let log = crate::log::ReviewLog::new(crit_root, "cr-shrink").unwrap();
         log.append(&make_review_created("cr-shrink")).unwrap();
-        log.append(&make_thread_created("th-shrink", "cr-shrink")).unwrap();
-        log.append(&make_comment_added("th-shrink.1", "th-shrink")).unwrap();
+        log.append(&make_thread_created("th-shrink", "cr-shrink"))
+            .unwrap();
+        log.append(&make_comment_added("th-shrink.1", "th-shrink"))
+            .unwrap();
 
         let report1 = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(report1.applied, 3);
@@ -3705,7 +3930,8 @@ mod tests {
         // Write events and sync
         let log = crate::log::ReviewLog::new(crit_root, "cr-hash").unwrap();
         log.append(&make_review_created("cr-hash")).unwrap();
-        log.append(&make_thread_created("th-hash", "cr-hash")).unwrap();
+        log.append(&make_thread_created("th-hash", "cr-hash"))
+            .unwrap();
 
         let report1 = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(report1.applied, 2);
@@ -3817,9 +4043,15 @@ mod tests {
         assert_eq!(review_count, 1, "good review should be in projection");
 
         // Bad file should have an anomaly but not block the good one
-        assert!(report.files_synced >= 1, "should sync at least the good file");
         assert!(
-            report.anomalies.iter().any(|a| a.review_id == "cr-bad" && a.kind == AnomalyKind::ParseError),
+            report.files_synced >= 1,
+            "should sync at least the good file"
+        );
+        assert!(
+            report
+                .anomalies
+                .iter()
+                .any(|a| a.review_id == "cr-bad" && a.kind == AnomalyKind::ParseError),
             "should have parse error anomaly for cr-bad"
         );
     }
@@ -3844,19 +4076,26 @@ mod tests {
         // Verify review_file_state is empty before sync
         let state_count: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(state_count, 0, "should start with empty review_file_state");
 
         // Sync should bootstrap (seed review_file_state) without replaying events
         let report = sync_from_review_logs(&db, crit_root).unwrap();
         assert_eq!(report.applied, 0, "should NOT replay events on bootstrap");
-        assert_eq!(report.files_skipped, 1, "file should be skipped (already synced via bootstrap)");
+        assert_eq!(
+            report.files_skipped, 1,
+            "file should be skipped (already synced via bootstrap)"
+        );
 
         // review_file_state should now have a row
         let state_count2: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM review_file_state", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(state_count2, 1, "should have seeded review_file_state");
     }
@@ -3882,7 +4121,8 @@ mod tests {
         assert_eq!(report1.files_synced, 2);
 
         // Append to one, add a new file
-        log1.append(&make_thread_created("th-multi1", "cr-multi1")).unwrap();
+        log1.append(&make_thread_created("th-multi1", "cr-multi1"))
+            .unwrap();
 
         let log3 = crate::log::ReviewLog::new(crit_root, "cr-multi3").unwrap();
         log3.append(&make_review_created("cr-multi3")).unwrap();
@@ -3893,5 +4133,4 @@ mod tests {
         assert_eq!(report2.files_skipped, 1, "cr-multi2 unchanged");
         assert!(report2.anomalies.is_empty());
     }
-
 }

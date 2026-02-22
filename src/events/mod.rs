@@ -59,6 +59,12 @@ pub struct ReviewCreated {
     pub review_id: String,
     /// jj change ID (stable across rebases)
     pub jj_change_id: String,
+    /// SCM kind for backend-neutral review anchors ("jj" | "git")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scm_kind: Option<String>,
+    /// Backend-neutral anchor (jj change id or git ref-like anchor)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scm_anchor: Option<String>,
     /// Commit hash at review creation
     pub initial_commit: String,
     /// Review title
@@ -239,6 +245,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: "cr-abc".to_string(),
                 jj_change_id: "abc123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("abc123".to_string()),
                 initial_commit: "def456".to_string(),
                 title: "Test Review".to_string(),
                 description: Some("A test".to_string()),

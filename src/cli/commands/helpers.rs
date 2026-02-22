@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::cli::commands::init::{index_path, is_initialized, CRIT_DIR};
 use crate::projection::{sync_from_review_logs, ProjectionDb, ReviewDetail, ThreadDetail};
+use crate::scm::ScmRepo;
 use crate::version::{detect_version, require_v2, DataVersion};
 
 /// Ensure crit is initialized in the given directory.
@@ -103,6 +104,22 @@ pub fn get_thread(crit_root: &Path, thread_id: &str) -> Result<ThreadDetail> {
             thread_id
         )
     })
+}
+
+/// Resolve the best commit hash to anchor new review thread creation.
+///
+/// Priority order:
+/// 1. `final_commit` if present
+/// 2. Resolved commit for `scm_anchor`
+/// 3. Resolved commit for legacy `jj_change_id`
+/// 4. `initial_commit`
+pub fn resolve_review_thread_commit(scm: &dyn ScmRepo, review: &ReviewDetail) -> String {
+    review
+        .final_commit
+        .clone()
+        .or_else(|| scm.commit_for_anchor(&review.scm_anchor).ok())
+        .or_else(|| scm.commit_for_anchor(&review.jj_change_id).ok())
+        .unwrap_or_else(|| review.initial_commit.clone())
 }
 
 /// Create a "review not found" error.

@@ -1,19 +1,20 @@
 //! Implementation of `crit comments` subcommands.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{
-    ensure_initialized, open_and_sync, review_not_found_error, thread_not_found_error,
+    ensure_initialized, open_and_sync, resolve_review_thread_commit, review_not_found_error,
+    thread_not_found_error,
 };
 use crate::cli::commands::threads::parse_line_selection;
 use crate::events::{
     get_agent_identity, make_comment_id, new_thread_id, CommentAdded, Event, EventEnvelope,
     ThreadCreated,
 };
-use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
+use crate::scm::ScmRepo;
 
 /// Add a comment to a thread.
 pub fn run_comments_add(
@@ -91,7 +92,7 @@ pub fn run_comments_add(
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_comment(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: &str,
     file: &str,
     line: &str,
@@ -104,17 +105,17 @@ pub fn run_comment(
     let db = open_and_sync(crit_root)?;
 
     // Verify review exists and is open
-    let review = db.get_review(review_id)?;
-    match &review {
+    let review = match db.get_review(review_id)? {
         None => return Err(review_not_found_error(crit_root, review_id)),
-        Some(r) if r.status != "open" => {
-            bail!(
-                "Cannot comment on review with status '{}': {}",
-                r.status,
-                review_id
-            );
-        }
-        _ => {}
+        Some(r) => r,
+    };
+
+    if review.status != "open" {
+        bail!(
+            "Cannot comment on review with status '{}': {}",
+            review.status,
+            review_id
+        );
     }
 
     // Parse line selection
@@ -125,48 +126,50 @@ pub fn run_comment(
     let author_str = get_agent_identity(author)?;
 
     // Check for existing thread at this location
-    let (thread_id, comment_number) = match db.find_thread_at_location(review_id, file, start_line)?
-    {
-        Some(existing_id) => {
-            // Use existing thread - get its next comment number
-            let comment_number = db
-                .get_next_comment_number(&existing_id)?
-                .expect("thread exists but has no comment number");
-            (existing_id, comment_number)
-        }
-        None => {
-            // Create new thread
-            let jj = JjRepo::new(workspace_root);
-            let commit_hash = jj
-                .get_current_commit()
-                .context("Failed to get current commit")?;
-
-            // Verify file exists
-            if !jj.file_exists(&commit_hash, file)? {
-                bail!("File does not exist: {}", file);
+    let (thread_id, comment_number) =
+        match db.find_thread_at_location(review_id, file, start_line)? {
+            Some(existing_id) => {
+                // Use existing thread - get its next comment number
+                let comment_number = db
+                    .get_next_comment_number(&existing_id)?
+                    .expect("thread exists but has no comment number");
+                (existing_id, comment_number)
             }
+            None => {
+                // Create new thread
+                let commit_hash = resolve_review_thread_commit(scm, &review);
 
-            let new_thread_id = new_thread_id();
+                // Verify file exists at the review's commit anchor
+                if !scm.file_exists(&commit_hash, file)? {
+                    bail!(
+                        "File does not exist in review {} at {}: {}",
+                        review_id,
+                        commit_hash,
+                        file
+                    );
+                }
 
-            let thread_event = EventEnvelope::new(
-                &author_str,
-                Event::ThreadCreated(ThreadCreated {
-                    thread_id: new_thread_id.clone(),
-                    review_id: review_id.to_string(),
-                    file_path: file.to_string(),
-                    selection: selection.clone(),
-                    commit_hash,
-                }),
-            );
+                let new_thread_id = new_thread_id();
 
-            // Write to the per-review log (v2)
-            let log = open_or_create_review(crit_root, review_id)?;
-            log.append(&thread_event)?;
+                let thread_event = EventEnvelope::new(
+                    &author_str,
+                    Event::ThreadCreated(ThreadCreated {
+                        thread_id: new_thread_id.clone(),
+                        review_id: review_id.to_string(),
+                        file_path: file.to_string(),
+                        selection: selection.clone(),
+                        commit_hash,
+                    }),
+                );
 
-            // New thread starts at comment number 1
-            (new_thread_id, 1)
-        }
-    };
+                // Write to the per-review log (v2)
+                let log = open_or_create_review(crit_root, review_id)?;
+                log.append(&thread_event)?;
+
+                // New thread starts at comment number 1
+                (new_thread_id, 1)
+            }
+        };
 
     // Now add the comment to the thread
     let comment_id = make_comment_id(&thread_id, comment_number);
@@ -224,4 +227,3 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
 
     Ok(())
 }
-

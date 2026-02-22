@@ -2,8 +2,8 @@
 # Generate a demo project with realistic crit data for screenshots and docs.
 #
 # Usage:
-#   ./scripts/generate-demo.sh          # Creates demo in /tmp/crit-demo-XXXXXX
-#   ./scripts/generate-demo.sh /path    # Creates demo at custom path
+#   ./scripts/generate-demo-jj.sh          # Creates demo in /tmp/crit-demo-XXXXXX
+#   ./scripts/generate-demo-jj.sh /path    # Creates demo at custom path
 #
 # The demo project is a fake jj repo with multiple reviews, threads,
 # comments, votes, and resolved threads — exercising most crit features.
@@ -15,11 +15,9 @@ cd "$(dirname "$0")/.."
 DEMO_DIR="${1:-$(mktemp -d /tmp/crit-demo-XXXXXX)}"
 CRIT="$(pwd)/target/release/crit"
 
-# Build release binary if needed
-if [[ ! -x "$CRIT" ]]; then
-	echo "Building crit release binary..." >&2
-	cargo build --release --quiet
-fi
+# Build a fresh release binary (demo scripts rely on current CLI flags)
+echo "Building crit release binary..." >&2
+cargo build --release --quiet
 
 # Clean slate
 if [[ -d "$DEMO_DIR" ]] && [[ -d "$DEMO_DIR/.jj" ]]; then
@@ -41,7 +39,7 @@ jj config set --repo user.email "demo@example.com" 2>/dev/null
 # Create realistic source files
 mkdir -p src
 
-cat > src/main.rs << 'RUST'
+cat >src/main.rs <<'RUST'
 use std::env;
 
 mod auth;
@@ -57,7 +55,7 @@ fn main() {
 }
 RUST
 
-cat > src/auth.rs << 'RUST'
+cat >src/auth.rs <<'RUST'
 use std::collections::HashMap;
 
 pub struct Session {
@@ -92,7 +90,7 @@ fn now() -> u64 {
 }
 RUST
 
-cat > src/config.rs << 'RUST'
+cat >src/config.rs <<'RUST'
 pub struct Config {
     pub database_url: String,
     pub max_connections: u32,
@@ -109,7 +107,7 @@ pub fn load() -> Config {
 }
 RUST
 
-cat > src/server.rs << 'RUST'
+cat >src/server.rs <<'RUST'
 use crate::config::Config;
 
 pub fn run(addr: &str, config: &Config) {
@@ -120,14 +118,14 @@ pub fn run(addr: &str, config: &Config) {
 }
 RUST
 
-cat > Cargo.toml << 'TOML'
+cat >Cargo.toml <<'TOML'
 [package]
 name = "demo-app"
 version = "0.1.0"
 edition = "2021"
 TOML
 
-cat > README.md << 'MD'
+cat >README.md <<'MD'
 # demo-app
 
 A sample web server for demonstrating crit code review.
@@ -153,7 +151,7 @@ echo "Crit initialized." >&2
 crit_as() {
 	local agent="$1"
 	shift
-	"$CRIT" --agent "$agent" "$@"
+	"$CRIT" --agent "$agent" --scm jj "$@"
 }
 
 # Extract a field from JSON output (requires jq)
@@ -168,7 +166,7 @@ extract_id() {
 
 # Make auth changes on a new commit
 # Also make a tiny change to main.rs (for testing comments outside changed range)
-cat > src/main.rs << 'RUST'
+cat >src/main.rs <<'RUST'
 use std::env;
 
 mod auth;
@@ -188,7 +186,7 @@ fn main() {
 }
 RUST
 
-cat > src/auth.rs << 'RUST'
+cat >src/auth.rs <<'RUST'
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -319,7 +317,7 @@ echo "  7 threads (2 on unchanged code), 1 resolved, 1 LGTM, 1 block" >&2
 # Review 2: Config improvements (approved and merged)
 # ============================================================================
 
-cat > src/config.rs << 'RUST'
+cat >src/config.rs <<'RUST'
 use std::env;
 
 pub struct Config {
@@ -371,10 +369,12 @@ All config fields now have sensible defaults and can be overridden
 via environment variables." 2>/dev/null
 
 # Create the review while changes are in @
-R2=$(crit_as "bold-tiger" --json reviews create \
+R2_JSON=$(crit_as "bold-tiger" --json reviews create \
 	--title "Config: add Default impl and env var overrides" \
 	--desc "All config fields now have sensible defaults and can be individually overridden via environment variables." \
-	2>/dev/null | extract_id review_id)
+	2>/dev/null)
+R2=$(jq -r '.review_id' <<<"$R2_JSON")
+R2_COMMIT=$(jq -r '.initial_commit' <<<"$R2_JSON")
 
 jj new 2>/dev/null
 
@@ -398,7 +398,7 @@ crit_as "swift-falcon" threads resolve "$T_BUILDER" \
 # Approve and merge (LGTM auto-approves when no blocking votes)
 crit_as "swift-falcon" lgtm "$R2" -m "Clean implementation. Good defaults." >/dev/null 2>&1
 # Review is now auto-approved, mark it as merged
-crit_as "bold-tiger" reviews mark-merged "$R2" >/dev/null 2>&1
+crit_as "bold-tiger" reviews mark-merged "$R2" --commit "$R2_COMMIT" >/dev/null 2>&1
 
 echo "  1 thread (resolved), merged" >&2
 
@@ -406,7 +406,7 @@ echo "  1 thread (resolved), merged" >&2
 # Review 3: Server improvements (abandoned)
 # ============================================================================
 
-cat > src/server.rs << 'RUST'
+cat >src/server.rs <<'RUST'
 use crate::config::Config;
 use std::io;
 use std::net::TcpListener;
@@ -466,7 +466,7 @@ jj workspace add .workspaces/api-feature 2>/dev/null
 pushd .workspaces/api-feature >/dev/null
 
 # Make API-related changes
-cat > src/api.rs << 'RUST'
+cat >src/api.rs <<'RUST'
 use crate::auth;
 use crate::config::Config;
 
@@ -511,7 +511,7 @@ impl Response {
 RUST
 
 # Update main.rs to include api module
-cat > src/main.rs << 'RUST'
+cat >src/main.rs <<'RUST'
 use std::env;
 
 mod api;
@@ -576,7 +576,7 @@ jj workspace add .workspaces/logging-feature 2>/dev/null
 
 pushd .workspaces/logging-feature >/dev/null
 
-cat > src/logging.rs << 'RUST'
+cat >src/logging.rs <<'RUST'
 use std::time::SystemTime;
 
 pub enum LogLevel {
@@ -637,7 +637,7 @@ echo "  1 thread, awaiting review (in logging-feature workspace)" >&2
 # Review 6: Bare open review (no threads, no votes — for manual testing)
 # ============================================================================
 
-cat > src/server.rs << 'RUST'
+cat >src/server.rs <<'RUST'
 use crate::config::Config;
 use std::io;
 use std::net::TcpListener;
@@ -694,10 +694,8 @@ echo "" >&2
 echo "Try:" >&2
 echo "  cd $DEMO_DIR" >&2
 echo "  crit --agent demo-viewer reviews list" >&2
-echo "  crit --agent demo-viewer reviews list --all-workspaces" >&2
 echo "  crit --agent demo-viewer review $R1" >&2
 echo "  crit --agent bold-tiger inbox" >&2
-echo "  crit --agent bold-tiger inbox --all-workspaces" >&2
 echo "" >&2
 
 echo "$DEMO_DIR"

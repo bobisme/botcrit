@@ -10,10 +10,10 @@ use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
 };
-use crate::jj::JjRepo;
 use crate::log::{open_or_create_review, AppendLog};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::{ReviewDetail, ThreadSummary};
+use crate::scm::ScmRepo;
 use crate::version::require_v2;
 
 /// Parse a --since value into a DateTime.
@@ -57,7 +57,7 @@ pub fn parse_since(value: &str) -> Result<DateTime<Utc>> {
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_reviews_create(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     title: String,
     description: Option<String>,
     reviewers: Option<String>,
@@ -66,18 +66,16 @@ pub fn run_reviews_create(
 ) -> Result<()> {
     ensure_initialized(crit_root)?;
 
-    // Use workspace_root for jj commands so @ resolves to the workspace's working copy
-    let jj = JjRepo::new(workspace_root);
-    let change_id = jj
-        .get_current_change_id()
-        .context("Failed to get current change ID")?;
-    let commit_id = jj
-        .get_current_commit()
+    let change_id = scm
+        .current_anchor()
+        .context("Failed to get current SCM anchor")?;
+    let commit_id = scm
+        .current_commit()
         .context("Failed to get current commit")?;
 
     // Check if there are any non-ignored files to review
-    let parent_commit = jj.get_parent_commit(&commit_id)?;
-    let all_files = jj.changed_files_between(&parent_commit, &commit_id)?;
+    let parent_commit = scm.parent_commit(&commit_id)?;
+    let all_files = scm.changed_files_between(&parent_commit, &commit_id)?;
     let critignore = CritIgnore::load(crit_root);
     let (reviewable_files, ignored_count) = critignore.filter_files(all_files);
 
@@ -102,6 +100,8 @@ pub fn run_reviews_create(
         Event::ReviewCreated(ReviewCreated {
             review_id: review_id.clone(),
             jj_change_id: change_id.clone(),
+            scm_kind: Some(scm.kind().as_str().to_string()),
+            scm_anchor: Some(change_id.clone()),
             initial_commit: commit_id.clone(),
             title: title.clone(),
             description: description.clone(),
@@ -137,9 +137,12 @@ pub fn run_reviews_create(
     }
 
     // Output the result
+    let scm_anchor = change_id.clone();
     let mut result = serde_json::json!({
         "review_id": review_id,
         "jj_change_id": change_id,
+        "scm_kind": scm.kind().as_str(),
+        "scm_anchor": scm_anchor,
         "initial_commit": commit_id,
         "title": title,
         "author": author,
@@ -359,7 +362,7 @@ pub fn run_reviews_abandon(
 /// * `self_approve` - If true, auto-approve open reviews before merging
 pub fn run_reviews_merge(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: &str,
     commit: Option<String>,
     self_approve: bool,
@@ -422,13 +425,11 @@ pub fn run_reviews_merge(
         );
     }
 
-    // Get final commit hash - either provided or auto-detect from @
-    // Use workspace_root for jj commands so @ resolves correctly
-    let jj = JjRepo::new(workspace_root);
+    // Get final commit hash - either provided or auto-detected from active backend.
     let final_commit = match commit {
         Some(c) => c,
-        None => jj
-            .get_current_commit()
+        None => scm
+            .current_commit()
             .context("Failed to get current commit for merge")?,
     };
 
@@ -575,7 +576,7 @@ fn run_vote(
 /// * `since` - Optional filter to only show activity after this time
 pub fn run_review(
     crit_root: &Path,
-    workspace_root: &Path,
+    scm: &dyn ScmRepo,
     review_id: &str,
     context_lines: u32,
     since: Option<DateTime<Utc>>,
@@ -589,7 +590,6 @@ pub fn run_review(
 
     let review = get_review(crit_root, review_id)?;
     let db = open_and_sync(crit_root)?;
-    let jj = JjRepo::new(workspace_root);
 
     // For JSON output, build a complete structure
     if matches!(format, OutputFormat::Json) {
@@ -600,8 +600,9 @@ pub fn run_review(
         let commit_ref = review
             .final_commit
             .clone()
-            .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
-            .unwrap_or_else(|| "@".to_string());
+            .or_else(|| scm.commit_for_anchor(&review.scm_anchor).ok())
+            .or_else(|| scm.commit_for_anchor(&review.jj_change_id).ok())
+            .unwrap_or_else(|| review.initial_commit.clone());
 
         // Pre-fetch file contents for all thread files (one show_file per unique file)
         let mut file_cache: std::collections::HashMap<String, String> =
@@ -609,7 +610,7 @@ pub fn run_review(
         if context_lines > 0 || include_diffs {
             for thread in &threads {
                 if !file_cache.contains_key(&thread.file_path) {
-                    if let Ok(contents) = jj.show_file(&commit_ref, &thread.file_path) {
+                    if let Ok(contents) = scm.show_file(&commit_ref, &thread.file_path) {
                         file_cache.insert(thread.file_path.clone(), contents);
                     }
                 }
@@ -645,12 +646,7 @@ pub fn run_review(
                 file_cache
                     .get(&thread.file_path)
                     .and_then(|contents| {
-                        extract_context_from_str(
-                            contents,
-                            anchor_start,
-                            anchor_end,
-                            context_lines,
-                        )
+                        extract_context_from_str(contents, anchor_start, anchor_end, context_lines)
                     })
                     .and_then(|ctx| serde_json::to_value(&ctx).ok())
             } else {
@@ -676,7 +672,7 @@ pub fn run_review(
         // Include per-file diffs when requested
         if include_diffs {
             let files_value =
-                build_file_diffs(&jj, &review, &threads, &commit_ref, &file_cache, crit_root);
+                build_file_diffs(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
             result["files"] = files_value;
         }
 
@@ -723,8 +719,36 @@ pub fn run_review(
     // Get threads grouped by file
     let threads = db.list_threads(review_id, None, None)?;
 
+    // Determine commit for context/diff rendering
+    let commit_ref = review
+        .final_commit
+        .clone()
+        .or_else(|| scm.commit_for_anchor(&review.scm_anchor).ok())
+        .or_else(|| scm.commit_for_anchor(&review.jj_change_id).ok())
+        .unwrap_or_else(|| review.initial_commit.clone());
+
+    // Pre-fetch file contents for thread files when include_diffs is requested.
+    let mut file_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if include_diffs {
+        for thread in &threads {
+            if !file_cache.contains_key(&thread.file_path) {
+                if let Ok(contents) = scm.show_file(&commit_ref, &thread.file_path) {
+                    file_cache.insert(thread.file_path.clone(), contents);
+                }
+            }
+        }
+    }
+
     if threads.is_empty() {
-        println!("\n  No threads yet. Use crit diff {} to view changes.", review_id);
+        if include_diffs {
+            print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
+        } else {
+            println!(
+                "\n  No threads yet. Use crit diff {} to view changes.",
+                review_id
+            );
+        }
         return Ok(());
     }
 
@@ -741,7 +765,7 @@ pub fn run_review(
         std::collections::BTreeMap::new();
     let mut total_new_comments = 0;
 
-    for thread in threads {
+    for thread in &threads {
         // Get comments and filter by since
         let comments = db.list_comments(&thread.thread_id)?;
         let filtered_comments: Vec<_> = if let Some(since_dt) = since {
@@ -766,20 +790,13 @@ pub fn run_review(
         threads_by_file
             .entry(thread.file_path.clone())
             .or_default()
-            .push((thread, filtered_comments));
+            .push((thread.clone(), filtered_comments));
     }
 
     if since.is_some() && threads_by_file.is_empty() {
         println!("\n  No new activity since the specified time.");
         return Ok(());
     }
-
-    // Determine commit for context
-    let commit_ref = review
-        .final_commit
-        .clone()
-        .or_else(|| jj.get_commit_for_rev(&review.jj_change_id).ok())
-        .unwrap_or_else(|| "@".to_string());
 
     for (file, file_threads) in threads_by_file {
         println!("\n━━━ {} ━━━", file);
@@ -814,7 +831,7 @@ pub fn run_review(
                 let anchor_end = thread.selection_end.unwrap_or(thread.selection_start) as u32;
 
                 if let Ok(ctx) = extract_context(
-                    &jj,
+                    scm,
                     &file,
                     &commit_ref,
                     anchor_start,
@@ -846,8 +863,58 @@ pub fn run_review(
         println!("\n  [{} new comment(s)]", total_new_comments);
     }
 
+    if include_diffs {
+        print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
+    }
+
     println!();
     Ok(())
+}
+
+fn print_file_diffs_text(
+    scm: &dyn ScmRepo,
+    review: &ReviewDetail,
+    threads: &[ThreadSummary],
+    commit_ref: &str,
+    file_cache: &std::collections::HashMap<String, String>,
+    crit_root: &Path,
+) {
+    let files_value = build_file_diffs(scm, review, threads, commit_ref, file_cache, crit_root);
+    let Some(files) = files_value.as_array() else {
+        return;
+    };
+
+    if files.is_empty() {
+        println!("\n  No diff files found.");
+        return;
+    }
+
+    println!("\n  Diffs:");
+    for file in files {
+        let path = file
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unknown>");
+
+        println!("\n━━━ {} (diff) ━━━", path);
+
+        if let Some(diff_text) = file.get("diff").and_then(serde_json::Value::as_str) {
+            if diff_text.trim().is_empty() {
+                println!("  (no textual diff)");
+            } else {
+                for line in diff_text.lines() {
+                    println!("  {}", line);
+                }
+            }
+            continue;
+        }
+
+        if let Some(content) = file.get("content") {
+            println!("  no diff available; content window: {}", content);
+        } else {
+            println!("  (no diff available)");
+        }
+    }
 }
 
 /// Show inbox - reviews and threads needing the agent's attention.
@@ -1007,7 +1074,7 @@ struct ContentWindow {
 /// - `diff`: unified diff text for files with changes, null otherwise
 /// - `content`: windowed file content for orphaned threads, null otherwise
 fn build_file_diffs(
-    jj: &JjRepo,
+    scm: &dyn ScmRepo,
     review: &ReviewDetail,
     threads: &[ThreadSummary],
     target_commit: &str,
@@ -1015,18 +1082,18 @@ fn build_file_diffs(
     crit_root: &Path,
 ) -> serde_json::Value {
     // Collect unique files that have threads
-    let files_with_threads: std::collections::BTreeSet<String> = threads
-        .iter()
-        .map(|t| t.file_path.clone())
-        .collect();
+    let files_with_threads: std::collections::BTreeSet<String> =
+        threads.iter().map(|t| t.file_path.clone()).collect();
 
     // Resolve base commit
-    let base_commit = jj
-        .get_parent_commit(target_commit)
+    let base_commit = scm
+        .parent_commit(target_commit)
         .unwrap_or_else(|_| review.initial_commit.clone());
 
     // Single diff call — split into per-file diffs in Rust
-    let full_diff = jj.diff_git(&base_commit, target_commit).unwrap_or_default();
+    let full_diff = scm
+        .diff_git(&base_commit, target_commit)
+        .unwrap_or_default();
     let diffs_by_file = split_diff_by_file(&full_diff);
 
     // All files: union of files with threads and files with diffs, filtered by critignore
@@ -1036,7 +1103,10 @@ fn build_file_diffs(
         for key in diffs_by_file.keys() {
             files.insert((*key).to_string());
         }
-        files.into_iter().filter(|f| !critignore.is_ignored(f)).collect()
+        files
+            .into_iter()
+            .filter(|f| !critignore.is_ignored(f))
+            .collect()
     };
 
     let mut file_entries = Vec::new();
@@ -1151,8 +1221,7 @@ fn parse_hunk_ranges(diff: &str) -> Vec<(u32, u32)> {
             let range_str = &after_plus[..end];
 
             if let Some((start_str, count_str)) = range_str.split_once(',') {
-                if let (Ok(start), Ok(count)) =
-                    (start_str.parse::<u32>(), count_str.parse::<u32>())
+                if let (Ok(start), Ok(count)) = (start_str.parse::<u32>(), count_str.parse::<u32>())
                 {
                     if count > 0 {
                         ranges.push((start, start + count - 1));
@@ -1284,7 +1353,8 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn test_split_diff_by_file_single() {
-        let diff = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let diff =
+            "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let result = split_diff_by_file(diff);
         assert_eq!(result.len(), 1);
         assert!(result.contains_key("foo.rs"));
@@ -1296,4 +1366,3 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(result.is_empty());
     }
 }
-

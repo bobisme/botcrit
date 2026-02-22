@@ -19,6 +19,8 @@ use super::ProjectionDb;
 pub struct ReviewSummary {
     pub review_id: String,
     pub jj_change_id: String,
+    pub scm_kind: String,
+    pub scm_anchor: String,
     pub title: String,
     pub author: String,
     pub status: String,
@@ -32,6 +34,8 @@ pub struct ReviewSummary {
 pub struct ReviewDetail {
     pub review_id: String,
     pub jj_change_id: String,
+    pub scm_kind: String,
+    pub scm_anchor: String,
     pub initial_commit: String,
     pub final_commit: Option<String>,
     pub title: String,
@@ -173,7 +177,7 @@ impl ProjectionDb {
         has_unresolved: bool,
     ) -> Result<Vec<ReviewSummary>> {
         let mut sql = String::from(
-            "SELECT DISTINCT v.review_id, v.jj_change_id, v.title, v.author, v.status, v.thread_count, v.open_thread_count
+            "SELECT DISTINCT v.review_id, v.jj_change_id, v.scm_kind, v.scm_anchor, v.title, v.author, v.status, v.thread_count, v.open_thread_count
              FROM v_reviews_summary v",
         );
         let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -215,11 +219,13 @@ impl ProjectionDb {
                 Ok(ReviewSummary {
                     review_id: row.get(0)?,
                     jj_change_id: row.get(1)?,
-                    title: row.get(2)?,
-                    author: row.get(3)?,
-                    status: row.get(4)?,
-                    thread_count: row.get(5)?,
-                    open_thread_count: row.get(6)?,
+                    scm_kind: row.get(2)?,
+                    scm_anchor: row.get(3)?,
+                    title: row.get(4)?,
+                    author: row.get(5)?,
+                    status: row.get(6)?,
+                    thread_count: row.get(7)?,
+                    open_thread_count: row.get(8)?,
                     reviewers: Vec::new(), // populated below
                 })
             })
@@ -261,7 +267,7 @@ impl ProjectionDb {
             .conn
             .query_row(
                 "SELECT 
-                    r.review_id, r.jj_change_id, r.initial_commit, r.final_commit,
+                    r.review_id, r.jj_change_id, r.scm_kind, r.scm_anchor, r.initial_commit, r.final_commit,
                     r.title, r.description, r.author, r.created_at, r.status,
                     r.status_changed_at, r.status_changed_by, r.abandon_reason,
                     COALESCE(s.thread_count, 0), COALESCE(s.open_thread_count, 0)
@@ -298,6 +304,8 @@ impl ProjectionDb {
         Ok(Some(ReviewDetail {
             review_id: row.review_id,
             jj_change_id: row.jj_change_id,
+            scm_kind: row.scm_kind,
+            scm_anchor: row.scm_anchor,
             initial_commit: row.initial_commit,
             final_commit: row.final_commit,
             title: row.title,
@@ -744,6 +752,8 @@ impl ProjectionDb {
 struct ReviewDetailRow {
     review_id: String,
     jj_change_id: String,
+    scm_kind: String,
+    scm_anchor: String,
     initial_commit: String,
     final_commit: Option<String>,
     title: String,
@@ -763,18 +773,20 @@ impl ReviewDetailRow {
         Ok(Self {
             review_id: row.get(0)?,
             jj_change_id: row.get(1)?,
-            initial_commit: row.get(2)?,
-            final_commit: row.get(3)?,
-            title: row.get(4)?,
-            description: row.get(5)?,
-            author: row.get(6)?,
-            created_at: row.get(7)?,
-            status: row.get(8)?,
-            status_changed_at: row.get(9)?,
-            status_changed_by: row.get(10)?,
-            abandon_reason: row.get(11)?,
-            thread_count: row.get(12)?,
-            open_thread_count: row.get(13)?,
+            scm_kind: row.get(2)?,
+            scm_anchor: row.get(3)?,
+            initial_commit: row.get(4)?,
+            final_commit: row.get(5)?,
+            title: row.get(6)?,
+            description: row.get(7)?,
+            author: row.get(8)?,
+            created_at: row.get(9)?,
+            status: row.get(10)?,
+            status_changed_at: row.get(11)?,
+            status_changed_by: row.get(12)?,
+            abandon_reason: row.get(13)?,
+            thread_count: row.get(14)?,
+            open_thread_count: row.get(15)?,
         })
     }
 }
@@ -844,6 +856,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: review_id.to_string(),
                 jj_change_id: format!("change-{review_id}"),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some(format!("change-{review_id}")),
                 initial_commit: format!("commit-{review_id}"),
                 title: title.to_string(),
                 description: Some(format!("Description for {review_id}")),
@@ -1018,8 +1032,16 @@ mod tests {
     fn test_list_reviews_includes_reviewers() {
         let db = setup_db();
 
-        apply_event(&db, &make_review("cr-001", "alice", "Review with reviewers")).unwrap();
-        apply_event(&db, &make_review("cr-002", "alice", "Review without reviewers")).unwrap();
+        apply_event(
+            &db,
+            &make_review("cr-001", "alice", "Review with reviewers"),
+        )
+        .unwrap();
+        apply_event(
+            &db,
+            &make_review("cr-002", "alice", "Review without reviewers"),
+        )
+        .unwrap();
 
         // Add reviewers to cr-001
         apply_event(
@@ -1471,7 +1493,11 @@ mod tests {
         let db = setup_db();
 
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
-        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested("cr-001", vec!["bob"], "alice"),
+        )
+        .unwrap();
 
         // Bob hasn't voted → should show in inbox with 'fresh' status
         let awaiting = db.get_reviews_awaiting_vote("bob").unwrap();
@@ -1485,7 +1511,11 @@ mod tests {
         let db = setup_db();
 
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
-        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested("cr-001", vec!["bob"], "alice"),
+        )
+        .unwrap();
         apply_event(&db, &make_vote("bob", "cr-001", VoteType::Lgtm)).unwrap();
 
         // Bob voted → should NOT show in inbox
@@ -1563,9 +1593,21 @@ mod tests {
         apply_event(&db, &make_review("cr-003", "alice", "Abandoned review")).unwrap();
 
         // Request bob on all
-        apply_event(&db, &make_reviewers_requested("cr-001", vec!["bob"], "alice")).unwrap();
-        apply_event(&db, &make_reviewers_requested("cr-002", vec!["bob"], "alice")).unwrap();
-        apply_event(&db, &make_reviewers_requested("cr-003", vec!["bob"], "alice")).unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested("cr-001", vec!["bob"], "alice"),
+        )
+        .unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested("cr-002", vec!["bob"], "alice"),
+        )
+        .unwrap();
+        apply_event(
+            &db,
+            &make_reviewers_requested("cr-003", vec!["bob"], "alice"),
+        )
+        .unwrap();
 
         // Merge cr-002
         apply_event(
@@ -1633,7 +1675,10 @@ mod tests {
         // After merge: 2 threads, but 0 open (they're effectively resolved)
         let review = db.get_review("cr-001").unwrap().unwrap();
         assert_eq!(review.thread_count, 2);
-        assert_eq!(review.open_thread_count, 0, "Threads on merged reviews should not count as open");
+        assert_eq!(
+            review.open_thread_count, 0,
+            "Threads on merged reviews should not count as open"
+        );
     }
 
     #[test]
@@ -1664,11 +1709,18 @@ mod tests {
 
         // After merge: filtering by "open" returns nothing
         let open_threads = db.list_threads("cr-001", Some("open"), None).unwrap();
-        assert!(open_threads.is_empty(), "No threads should appear open after merge");
+        assert!(
+            open_threads.is_empty(),
+            "No threads should appear open after merge"
+        );
 
         // After merge: filtering by "resolved" returns the thread
         let resolved_threads = db.list_threads("cr-001", Some("resolved"), None).unwrap();
-        assert_eq!(resolved_threads.len(), 1, "Thread should appear resolved after merge");
+        assert_eq!(
+            resolved_threads.len(),
+            1,
+            "Thread should appear resolved after merge"
+        );
         assert_eq!(resolved_threads[0].status, "resolved");
     }
 
@@ -1699,7 +1751,10 @@ mod tests {
 
         // After abandon: 0 open threads
         let review = db.get_review("cr-001").unwrap().unwrap();
-        assert_eq!(review.open_thread_count, 0, "Threads on abandoned reviews should not count as open");
+        assert_eq!(
+            review.open_thread_count, 0,
+            "Threads on abandoned reviews should not count as open"
+        );
     }
 
     // ========================================================================
@@ -1713,13 +1768,19 @@ mod tests {
         apply_event(&db, &make_thread("th-001", "cr-001", "src/main.rs", 10)).unwrap();
 
         // Exact match
-        let found = db.find_thread_at_location("cr-001", "src/main.rs", 10).unwrap();
+        let found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 10)
+            .unwrap();
         assert_eq!(found, Some("th-001".to_string()));
 
         // Adjacent lines should NOT match
-        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 9).unwrap();
+        let not_found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 9)
+            .unwrap();
         assert_eq!(not_found, None);
-        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 11).unwrap();
+        let not_found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 11)
+            .unwrap();
         assert_eq!(not_found, None);
     }
 
@@ -1727,18 +1788,28 @@ mod tests {
     fn test_find_thread_at_location_within_range() {
         let db = setup_db();
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
-        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+        apply_event(
+            &db,
+            &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20),
+        )
+        .unwrap();
 
         // Line within the range
-        let found = db.find_thread_at_location("cr-001", "src/main.rs", 15).unwrap();
+        let found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 15)
+            .unwrap();
         assert_eq!(found, Some("th-001".to_string()));
 
         // Boundary: start of range
-        let found = db.find_thread_at_location("cr-001", "src/main.rs", 10).unwrap();
+        let found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 10)
+            .unwrap();
         assert_eq!(found, Some("th-001".to_string()));
 
         // Boundary: end of range
-        let found = db.find_thread_at_location("cr-001", "src/main.rs", 20).unwrap();
+        let found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 20)
+            .unwrap();
         assert_eq!(found, Some("th-001".to_string()));
     }
 
@@ -1746,14 +1817,22 @@ mod tests {
     fn test_find_thread_at_location_outside_range() {
         let db = setup_db();
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
-        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+        apply_event(
+            &db,
+            &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20),
+        )
+        .unwrap();
 
         // Just before range
-        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 9).unwrap();
+        let not_found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 9)
+            .unwrap();
         assert_eq!(not_found, None);
 
         // Just after range
-        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 21).unwrap();
+        let not_found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 21)
+            .unwrap();
         assert_eq!(not_found, None);
     }
 
@@ -1761,7 +1840,11 @@ mod tests {
     fn test_find_thread_at_location_resolved_range_not_matched() {
         let db = setup_db();
         apply_event(&db, &make_review("cr-001", "alice", "Review")).unwrap();
-        apply_event(&db, &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20)).unwrap();
+        apply_event(
+            &db,
+            &make_thread_range("th-001", "cr-001", "src/main.rs", 10, 20),
+        )
+        .unwrap();
 
         // Resolve the thread
         apply_event(
@@ -1777,8 +1860,9 @@ mod tests {
         .unwrap();
 
         // Line within range should NOT match (thread is resolved)
-        let not_found = db.find_thread_at_location("cr-001", "src/main.rs", 15).unwrap();
+        let not_found = db
+            .find_thread_at_location("cr-001", "src/main.rs", 15)
+            .unwrap();
         assert_eq!(not_found, None);
     }
-
 }

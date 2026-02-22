@@ -1,4 +1,4 @@
-//! crit - Agent-centric distributed code review tool for jj
+//! crit - Agent-centric distributed code review tool for Git and jj
 
 use anyhow::Result;
 use clap::Parser;
@@ -17,6 +17,7 @@ use crit::cli::{
 };
 use crit::events::get_agent_identity;
 use crit::jj::{resolve_crit_root_from_path, resolve_workspace_root};
+use crit::scm::{resolve_backend, resolve_preference};
 
 /// Resolve identity based on CLI flags.
 /// Priority: --agent > BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT > $USER (TTY only)
@@ -39,16 +40,28 @@ fn main() -> Result<()> {
     // This ensures that crit changes are tracked in the workspace's jj working copy,
     // so they're included when the workspace is merged back to main.
     let (crit_root, workspace_root) = if let Some(path) = &cli.path {
-        // --path provided: resolve crit root from that path
-        let crit_root = resolve_crit_root_from_path(path)?;
+        // --path provided: prefer an existing .crit root, otherwise fall back to
+        // detected repository root (jj/git), then the provided path itself.
+        let crit_root = resolve_crit_root_from_path(path)
+            .or_else(|_| resolve_workspace_root(path))
+            .unwrap_or_else(|_| {
+                crit::scm::git::detect_git_root(path).unwrap_or_else(|| path.clone())
+            });
         // Use the crit root as workspace root too (user-specified path)
         (crit_root.clone(), crit_root)
     } else {
         // No --path: use current directory's workspace root
         let workspace_root = env::current_dir()?;
-        let crit_root = resolve_workspace_root(&workspace_root).unwrap_or_else(|_| workspace_root.clone());
+        let crit_root = resolve_crit_root_from_path(&workspace_root)
+            .or_else(|_| resolve_workspace_root(&workspace_root))
+            .unwrap_or_else(|_| {
+                crit::scm::git::detect_git_root(&workspace_root)
+                    .unwrap_or_else(|| workspace_root.clone())
+            });
         (crit_root, workspace_root)
     };
+
+    let scm_preference = resolve_preference(cli.scm)?;
 
     // Determine output format (--format flag, --json alias, FORMAT env, or TTY detection)
     let format = cli.output_format();
@@ -62,7 +75,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Doctor => {
-            run_doctor(&crit_root, format)?;
+            run_doctor(&crit_root, &workspace_root, scm_preference, format)?;
         }
 
         Commands::Migrate {
@@ -83,10 +96,15 @@ fn main() -> Result<()> {
         },
 
         Commands::Reviews(cmd) => match cmd {
-            ReviewsCommands::Create { title, description, reviewers } => {
+            ReviewsCommands::Create {
+                title,
+                description,
+                reviewers,
+            } => {
+                let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_reviews_create(
                     &crit_root,
-                    &workspace_root,
+                    scm.as_ref(),
                     title,
                     description,
                     reviewers,
@@ -152,9 +170,10 @@ fn main() -> Result<()> {
                 commit,
                 self_approve,
             } => {
+                let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_reviews_merge(
                     &crit_root,
-                    &workspace_root,
+                    scm.as_ref(),
                     &review_id,
                     commit,
                     self_approve,
@@ -170,9 +189,10 @@ fn main() -> Result<()> {
                 file,
                 lines,
             } => {
+                let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_threads_create(
                     &crit_root,
-                    &workspace_root,
+                    scm.as_ref(),
                     &review_id,
                     &file,
                     &lines,
@@ -214,9 +234,10 @@ fn main() -> Result<()> {
             } => {
                 // --no-context overrides --context
                 let context_lines = if no_context { 0 } else { context };
+                let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_threads_show(
                     &crit_root,
-                    &workspace_root,
+                    scm.as_ref(),
                     &thread_id,
                     context_lines,
                     current,
@@ -267,9 +288,10 @@ fn main() -> Result<()> {
             review_id,
             unresolved_only,
         } => {
+            let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_status(
                 &crit_root,
-                &workspace_root,
+                scm.as_ref(),
                 review_id.as_deref(),
                 unresolved_only,
                 format,
@@ -277,7 +299,8 @@ fn main() -> Result<()> {
         }
 
         Commands::Diff { review_id } => {
-            run_diff(&crit_root, &workspace_root, &review_id, format)?;
+            let scm = resolve_backend(&workspace_root, scm_preference)?;
+            run_diff(&crit_root, scm.as_ref(), &review_id, format)?;
         }
 
         Commands::Ui => {
@@ -290,9 +313,10 @@ fn main() -> Result<()> {
             line,
             message,
         } => {
+            let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_comment(
                 &crit_root,
-                &workspace_root,
+                scm.as_ref(),
                 &review_id,
                 &file,
                 &line,
@@ -321,9 +345,10 @@ fn main() -> Result<()> {
             let since_dt = since
                 .map(|s| crit::cli::commands::reviews::parse_since(&s))
                 .transpose()?;
+            let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_review(
                 &crit_root,
-                &workspace_root,
+                scm.as_ref(),
                 &review_id,
                 context_lines,
                 since_dt,
@@ -333,7 +358,13 @@ fn main() -> Result<()> {
         }
 
         Commands::Reply { thread_id, message } => {
-            run_comments_add(&crit_root, &thread_id, &message, identity.as_deref(), format)?;
+            run_comments_add(
+                &crit_root,
+                &thread_id,
+                &message,
+                identity.as_deref(),
+                format,
+            )?;
         }
 
         Commands::Inbox => {

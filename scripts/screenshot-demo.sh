@@ -34,13 +34,13 @@ if [[ -n "${1:-}" ]]; then
 	DEMO_DIR="$1"
 else
 	echo "Generating demo project..." >&2
-	DEMO_DIR=$(./scripts/generate-demo.sh 2>/dev/null)
+	DEMO_DIR=$(./scripts/generate-demo-jj.sh 2>/dev/null)
 fi
 echo "Using demo at: $DEMO_DIR" >&2
 
 # Get the open review ID
-OPEN_REVIEW=$(cd "$DEMO_DIR" && "$CRIT" --agent viewer --json reviews list 2>/dev/null \
-	| jq -r '.[] | select(.status == "open") | .review_id')
+OPEN_REVIEW=$(cd "$DEMO_DIR" && "$CRIT" --agent viewer --json reviews list 2>/dev/null |
+	jq -r '.[] | select(.status == "open") | .review_id')
 echo "Open review: $OPEN_REVIEW" >&2
 
 mkdir -p "$OUTPUT_DIR"

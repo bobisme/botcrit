@@ -6,7 +6,7 @@
 use anyhow::{Context as AnyhowContext, Result};
 use serde::Serialize;
 
-use super::JjRepo;
+use crate::scm::ScmRepo;
 
 /// A single line of code context.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -70,7 +70,7 @@ impl CodeContext {
 /// - The jj command fails
 /// - The anchor lines are out of bounds
 pub fn extract_context(
-    repo: &JjRepo,
+    repo: &dyn ScmRepo,
     file: &str,
     commit: &str,
     anchor_start: u32,
@@ -172,17 +172,24 @@ pub fn format_context(ctx: &CodeContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scm::jj::JjScmRepo;
     use std::env;
     use std::path::Path;
 
-    fn test_repo() -> JjRepo {
+    fn test_repo() -> Option<JjScmRepo> {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        JjRepo::new(Path::new(&manifest_dir))
+        let root = Path::new(&manifest_dir);
+        if !root.join(".jj").exists() {
+            return None;
+        }
+        Some(JjScmRepo::new(root))
     }
 
     #[test]
     fn test_extract_context_middle_of_file() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Extract context around lines 5-6 of Cargo.toml with 2 lines of context
         let ctx = extract_context(&repo, "Cargo.toml", "@", 5, 6, 2).unwrap();
@@ -205,7 +212,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_start_of_file() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Extract context around line 1 with 3 lines of context
         let ctx = extract_context(&repo, "Cargo.toml", "@", 1, 1, 3).unwrap();
@@ -222,7 +231,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_single_line() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         let ctx = extract_context(&repo, "Cargo.toml", "@", 3, 3, 1).unwrap();
 
@@ -238,7 +249,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_zero_context_lines() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         let ctx = extract_context(&repo, "Cargo.toml", "@", 5, 7, 0).unwrap();
 
@@ -254,7 +267,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_invalid_range() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // anchor_start > anchor_end should fail
         let result = extract_context(&repo, "Cargo.toml", "@", 10, 5, 2);
@@ -264,7 +279,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_zero_line_numbers() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Line 0 is invalid (1-based)
         let result = extract_context(&repo, "Cargo.toml", "@", 0, 5, 2);
@@ -274,7 +291,9 @@ mod tests {
 
     #[test]
     fn test_extract_context_nonexistent_file() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         let result = extract_context(&repo, "nonexistent-file-xyz.txt", "@", 1, 1, 2);
         assert!(result.is_err());

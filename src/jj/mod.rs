@@ -89,7 +89,12 @@ pub fn resolve_repo_root(start_path: &Path) -> Result<PathBuf> {
                 repo_pointer.display()
             )
         })?;
-        let main_repo_jj_repo = PathBuf::from(main_repo_jj_repo.trim());
+        let main_repo_jj_repo_raw = PathBuf::from(main_repo_jj_repo.trim());
+        let main_repo_jj_repo = if main_repo_jj_repo_raw.is_absolute() {
+            main_repo_jj_repo_raw
+        } else {
+            jj_dir.join(main_repo_jj_repo_raw)
+        };
 
         // The path points to the main repo's .jj/repo directory
         // Return the parent of .jj (two levels up from .jj/repo)
@@ -122,9 +127,9 @@ pub fn resolve_repo_root(start_path: &Path) -> Result<PathBuf> {
 ///
 /// Returns an error if no .crit directory is found in the path hierarchy.
 pub fn resolve_crit_root_from_path(path: &Path) -> Result<PathBuf> {
-    let canonical_path = path.canonicalize().with_context(|| {
-        format!("Failed to resolve path: {}", path.display())
-    })?;
+    let canonical_path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve path: {}", path.display()))?;
 
     // If path points directly to .crit, return its parent
     if canonical_path.file_name() == Some(std::ffi::OsStr::new(".crit")) {
@@ -370,7 +375,6 @@ impl JjRepo {
             .map(ToString::to_string)
             .collect())
     }
-
 }
 
 #[cfg(test)]
@@ -380,14 +384,20 @@ mod tests {
 
     /// Get the repo path for testing. Uses `CARGO_MANIFEST_DIR` which points to
     /// the botcrit repo root.
-    fn test_repo() -> JjRepo {
+    fn test_repo() -> Option<JjRepo> {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        JjRepo::new(Path::new(&manifest_dir))
+        let manifest_path = Path::new(&manifest_dir);
+        if resolve_workspace_root(manifest_path).is_err() {
+            return None;
+        }
+        Some(JjRepo::new(manifest_path))
     }
 
     #[test]
     fn test_get_current_change_id() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
         let change_id = repo.get_current_change_id().unwrap();
 
         // Change IDs are 32 lowercase hex chars
@@ -397,7 +407,9 @@ mod tests {
 
     #[test]
     fn test_get_current_commit() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
         let commit_id = repo.get_current_commit().unwrap();
 
         // Git commit IDs are 40 hex chars
@@ -407,7 +419,9 @@ mod tests {
 
     #[test]
     fn test_diff_git() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
         // Diff from root to current - should always work
         let diff = repo.diff_git("root()", "@");
         assert!(diff.is_ok(), "diff should succeed: {:?}", diff.err());
@@ -415,7 +429,9 @@ mod tests {
 
     #[test]
     fn test_diff_git_file() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
         // Diff a file that definitely exists
         let diff = repo.diff_git_file("@-", "@", "Cargo.toml");
         // This may error if Cargo.toml wasn't changed, but the command structure is valid
@@ -425,7 +441,9 @@ mod tests {
 
     #[test]
     fn test_file_exists() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Cargo.toml should exist at @
         let exists = repo.file_exists("@", "Cargo.toml").unwrap();
@@ -440,7 +458,9 @@ mod tests {
 
     #[test]
     fn test_show_file() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Should be able to read Cargo.toml
         let contents = repo.show_file("@", "Cargo.toml").unwrap();
@@ -450,7 +470,9 @@ mod tests {
 
     #[test]
     fn test_changed_files() {
-        let repo = test_repo();
+        let Some(repo) = test_repo() else {
+            return;
+        };
 
         // Get changed files for current commit
         let files = repo.changed_files("@");
@@ -469,14 +491,24 @@ mod tests {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let manifest_path = Path::new(&manifest_dir);
 
-        // resolve_workspace_root should return the directory containing .jj
-        let root = resolve_workspace_root(manifest_path).unwrap();
-        assert!(root.join(".jj").exists(), "Root should contain .jj directory");
+        let result = resolve_workspace_root(manifest_path);
+        if manifest_path.join(".jj").exists() {
+            let root = result.unwrap();
+            assert!(
+                root.join(".jj").exists(),
+                "Root should contain .jj directory"
+            );
 
-        // Should also work from a subdirectory
-        let subdir = manifest_path.join("src");
-        let root_from_subdir = resolve_workspace_root(&subdir).unwrap();
-        assert_eq!(root, root_from_subdir, "Should find same root from subdirectory");
+            // Should also work from a subdirectory
+            let subdir = manifest_path.join("src");
+            let root_from_subdir = resolve_workspace_root(&subdir).unwrap();
+            assert_eq!(
+                root, root_from_subdir,
+                "Should find same root from subdirectory"
+            );
+        } else {
+            assert!(result.is_err(), "Expected no jj repo in test environment");
+        }
     }
 
     #[test]
@@ -484,7 +516,9 @@ mod tests {
         // /tmp is unlikely to be inside a jj repo
         let result = resolve_workspace_root(Path::new("/tmp"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Not in a jj repository"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not in a jj repository"));
     }
-
 }

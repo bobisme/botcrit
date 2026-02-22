@@ -6,8 +6,9 @@ use std::io::IsTerminal;
 pub mod commands;
 
 use crate::output::OutputFormat;
+use crate::scm::ScmPreference;
 
-/// Agent-centric distributed code review tool for jj
+/// Agent-centric distributed code review tool for Git and jj
 #[derive(Parser, Debug)]
 #[command(name = "crit")]
 #[command(author, version, about, long_about = None)]
@@ -27,6 +28,10 @@ pub struct Cli {
     /// Path to repository (can be repo root, .crit dir, or subdirectory)
     #[arg(long, global = true)]
     pub path: Option<std::path::PathBuf>,
+
+    /// Select SCM backend (auto-detected by default)
+    #[arg(long, global = true, value_enum)]
+    pub scm: Option<ScmPreference>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -80,7 +85,7 @@ pub enum Commands {
     /// Initialize a new .crit directory in the current repository
     Init,
 
-    /// Health check - verify jj, .crit/, and sync status
+    /// Health check - verify SCM detection, .crit/, and sync status
     Doctor,
 
     /// Migrate from v1 (single events.jsonl) to v2 (per-review event logs)

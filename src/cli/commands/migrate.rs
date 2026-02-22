@@ -17,9 +17,7 @@ use crate::version::{detect_version, write_version_file, DataVersion, CURRENT_VE
 /// More permissive than is_review_id - just checks prefix and basic format.
 /// Used for migration to support pre-terseid IDs that don't have digits.
 fn is_legacy_review_id(s: &str) -> bool {
-    s.starts_with("cr-")
-        && s.len() >= 6
-        && s[3..].chars().all(|c| c.is_ascii_alphanumeric())
+    s.starts_with("cr-") && s.len() >= 6 && s[3..].chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// Extract a stable, unique key for an event for dedup purposes.
@@ -149,16 +147,13 @@ pub fn run_migrate(
             // Backup and write version file
             if backup {
                 let backup_path = legacy_path.with_extension("jsonl.v1.backup");
-                fs::rename(&legacy_path, &backup_path)
-                    .context("Failed to backup events.jsonl")?;
+                fs::rename(&legacy_path, &backup_path).context("Failed to backup events.jsonl")?;
             } else {
                 fs::remove_file(&legacy_path).context("Failed to remove events.jsonl")?;
             }
             write_version_file(crit_root, DataVersion::V2)?;
             if format == OutputFormat::Json {
-                println!(
-                    r#"{{"status":"success","version":2,"events_migrated":0}}"#
-                );
+                println!(r#"{{"status":"success","version":2,"events_migrated":0}}"#);
             } else {
                 println!("✓ Migrated to v2 (no events).");
             }
@@ -306,14 +301,8 @@ pub fn run_migrate(
 /// and merges missing events into existing per-review logs. Useful for recovering
 /// CommentAdded/ThreadResolved/ThreadReopened events that were dropped by a
 /// buggy earlier migration.
-fn run_remigrate_from_backup(
-    crit_root: &Path,
-    dry_run: bool,
-    format: OutputFormat,
-) -> Result<()> {
-    let backup_path = crit_root
-        .join(".crit")
-        .join("events.jsonl.v1.backup");
+fn run_remigrate_from_backup(crit_root: &Path, dry_run: bool, format: OutputFormat) -> Result<()> {
+    let backup_path = crit_root.join(".crit").join("events.jsonl.v1.backup");
 
     if !backup_path.exists() {
         bail!(
@@ -323,9 +312,7 @@ fn run_remigrate_from_backup(
     }
 
     let legacy_log = FileLog::new(&backup_path);
-    let backup_events = legacy_log
-        .read_all()
-        .context("Failed to read v1 backup")?;
+    let backup_events = legacy_log.read_all().context("Failed to read v1 backup")?;
 
     if backup_events.is_empty() {
         if format == OutputFormat::Json {
@@ -377,10 +364,8 @@ fn run_remigrate_from_backup(
         let existing_events = log.read_all().unwrap_or_default();
 
         // Build set of existing event keys for dedup (includes event-specific IDs)
-        let existing_keys: std::collections::HashSet<String> = existing_events
-            .iter()
-            .map(event_dedup_key)
-            .collect();
+        let existing_keys: std::collections::HashSet<String> =
+            existing_events.iter().map(event_dedup_key).collect();
 
         let mut sorted = backup_review_events.clone();
         sorted.sort_by(|a, b| a.ts.cmp(&b.ts));
@@ -426,10 +411,7 @@ fn run_remigrate_from_backup(
         }
         println!("  Events recovered: {}", total_recovered);
         println!("  Reviews affected: {}", events_by_review.len());
-        println!(
-            "  Backup total events: {}",
-            backup_events.len()
-        );
+        println!("  Backup total events: {}", backup_events.len());
         if orphaned_count > 0 {
             println!(
                 "  WARNING: {} event(s) could not be associated with a review",
@@ -476,8 +458,8 @@ fn resolve_review_id<'a>(
 mod tests {
     use super::*;
     use crate::events::{
-        CodeSelection, CommentAdded, ReviewCreated, ReviewerVoted, ThreadCreated,
-        ThreadResolved, ThreadReopened, VoteType,
+        CodeSelection, CommentAdded, ReviewCreated, ReviewerVoted, ThreadCreated, ThreadReopened,
+        ThreadResolved, VoteType,
     };
     use crate::log::{list_review_ids, open_or_create};
     use tempfile::tempdir;
@@ -488,6 +470,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: review_id.to_string(),
                 jj_change_id: "change123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("change123".to_string()),
                 initial_commit: "commit456".to_string(),
                 title: format!("Test Review {}", review_id),
                 description: None,
@@ -562,8 +546,7 @@ mod tests {
         run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Check version file created
-        let version_content =
-            fs::read_to_string(crit_root.join(".crit").join("version")).unwrap();
+        let version_content = fs::read_to_string(crit_root.join(".crit").join("version")).unwrap();
         assert_eq!(version_content.trim(), "2");
     }
 
@@ -581,12 +564,16 @@ mod tests {
 
         // Add events for two reviews, including comments
         log.append(&make_review_created("cr-001")).unwrap();
-        log.append(&make_thread_created("cr-001", "th-001")).unwrap();
-        log.append(&make_comment("th-001", "c-001", "First comment")).unwrap();
+        log.append(&make_thread_created("cr-001", "th-001"))
+            .unwrap();
+        log.append(&make_comment("th-001", "c-001", "First comment"))
+            .unwrap();
         log.append(&make_review_created("cr-002")).unwrap();
         log.append(&make_vote("cr-001")).unwrap();
-        log.append(&make_thread_created("cr-002", "th-002")).unwrap();
-        log.append(&make_comment("th-002", "c-002", "Second comment")).unwrap();
+        log.append(&make_thread_created("cr-002", "th-002"))
+            .unwrap();
+        log.append(&make_comment("th-002", "c-002", "Second comment"))
+            .unwrap();
 
         // Run migration
         run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
@@ -632,12 +619,16 @@ mod tests {
 
         // Review with thread, comments, resolve, and reopen
         log.append(&make_review_created("cr-001")).unwrap();
-        log.append(&make_thread_created("cr-001", "th-001")).unwrap();
-        log.append(&make_comment("th-001", "c-001", "Issue found")).unwrap();
-        log.append(&make_comment("th-001", "c-002", "Will fix")).unwrap();
+        log.append(&make_thread_created("cr-001", "th-001"))
+            .unwrap();
+        log.append(&make_comment("th-001", "c-001", "Issue found"))
+            .unwrap();
+        log.append(&make_comment("th-001", "c-002", "Will fix"))
+            .unwrap();
         log.append(&make_thread_resolved("th-001")).unwrap();
         log.append(&make_thread_reopened("th-001")).unwrap();
-        log.append(&make_comment("th-001", "c-003", "Not actually fixed")).unwrap();
+        log.append(&make_comment("th-001", "c-003", "Not actually fixed"))
+            .unwrap();
 
         // Run migration
         run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
@@ -752,7 +743,8 @@ mod tests {
         review_log.append(&ev_thread).unwrap();
 
         // Verify only 2 events before recovery
-        let pre_events = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap()
+        let pre_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+            .unwrap()
             .read_all()
             .unwrap();
         assert_eq!(pre_events.len(), 2);
@@ -761,7 +753,8 @@ mod tests {
         run_migrate(crit_root, false, true, true, OutputFormat::Text).unwrap();
 
         // Should now have all 5 events (2 existing + 3 recovered)
-        let post_events = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap()
+        let post_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+            .unwrap()
             .read_all()
             .unwrap();
         assert_eq!(
@@ -811,6 +804,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: "../../../tmp/evil".to_string(),
                 jj_change_id: "change123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("change123".to_string()),
                 initial_commit: "commit456".to_string(),
                 title: "Malicious review".to_string(),
                 description: None,

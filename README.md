@@ -1,9 +1,9 @@
 # crit
 
-Distributed code review for [jj](https://github.com/martinvonz/jj), built for AI agents.
+Distributed code review for Git and [jj](https://github.com/martinvonz/jj), built for AI agents.
 
-**For:** Teams of AI agents (and humans) doing code review over jj repositories.
-**Not for:** GitHub/GitLab PR replacement, centralized review servers, or git-only workflows.
+**For:** Teams of AI agents (and humans) doing code review in local Git/jj repositories.
+**Not for:** GitHub/GitLab PR replacement or centralized review servers.
 
 ## Screenshot
 
@@ -42,7 +42,9 @@ Distributed code review for [jj](https://github.com/martinvonz/jj), built for AI
 ## Commands
 
 ```bash
-crit init                                        # Initialize .crit/ in a jj repo
+crit init                                        # Initialize .crit/ in your repository
+crit --scm git reviews create --title "..."     # Force Git backend
+CRIT_SCM=jj crit reviews list                    # Force jj backend via env var
 crit reviews create --title "Add feature X"      # Create a review
 crit comment <id> --file src/main.rs --line 42 "Consider Option here"
 crit reply <thread_id> "Good point, will fix"    # Reply to existing thread
@@ -57,8 +59,8 @@ All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.
 
 **Beta.** Actively developed. CLI interface may change between minor versions.
 
-- Platform: Linux, macOS (anywhere jj runs)
-- Requires: jj, Rust toolchain (for building)
+- Platform: Linux, macOS
+- Requires: git, Rust toolchain (jj optional)
 - Storage: local files only (`.crit/` directory)
 - No network, no accounts, no central server
 
@@ -66,7 +68,6 @@ All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.
 
 - Replace GitHub/GitLab pull requests
 - Provide a web UI
-- Support git without jj
 - Enforce access control or permissions
 
 ## Mental Model
@@ -75,7 +76,7 @@ All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.
 Event       = immutable action (ReviewCreated, CommentAdded, ThreadResolved, ...)
 Log         = append-only JSONL file (.crit/events.jsonl) — single source of truth
 Projection  = ephemeral SQLite cache (.crit/index.db) — rebuildable from log
-Review      = anchored to a jj Change ID (survives rebases, unlike git commit hashes)
+Review      = anchored to SCM metadata (`scm_kind` + `scm_anchor`)
 Thread      = comments on a specific file+line, tracked across commits via drift detection
 Identity    = agent name passed via --agent flag or env var
 ```
@@ -102,8 +103,8 @@ This is intentional and non-negotiable. Unlike GitHub PRs (stored on GitHub's se
 git clone https://github.com/anomalyco/botcrit && cd botcrit
 cargo install --path .
 
-# Initialize in a jj repo
-cd /path/to/your/jj/repo
+# Initialize in a repo
+cd /path/to/your/repo
 crit init
 
 # Create a review and add feedback
@@ -143,12 +144,12 @@ create → [comment/reply/vote] → approve → merge
 
 ### Workspace Support
 
-crit works across jj workspaces. The `.crit/` directory lives at the main repo root and is shared by all workspaces — agents in different workspaces see the same reviews.
+crit works across jj workspaces (when using the jj backend). The `.crit/` directory lives at the repo root and is shared by workspaces.
 
 ### Health Check
 
 ```bash
-crit doctor    # Verifies jj, .crit/, event log integrity, index sync, gitignore
+crit doctor    # Verifies SCM detection, .crit/, event log integrity, index sync, gitignore
 ```
 
 ## Demo
@@ -156,7 +157,10 @@ crit doctor    # Verifies jj, .crit/, event log integrity, index sync, gitignore
 Generate a realistic demo project with 3 reviews, 7 threads, and multiple agents:
 
 ```bash
-./scripts/generate-demo.sh
+./scripts/generate-demo-jj.sh
+
+# Or generate a pure Git demo
+./scripts/generate-demo-git.sh
 ```
 
 See [docs/demo.md](docs/demo.md) for example output.

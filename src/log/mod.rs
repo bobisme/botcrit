@@ -244,8 +244,8 @@ impl AppendLog for FileLog {
             if idx >= n {
                 break;
             }
-            let line = line_result
-                .with_context(|| format!("Failed to read line {} for hashing", idx))?;
+            let line =
+                line_result.with_context(|| format!("Failed to read line {} for hashing", idx))?;
             hash = fnv1a_hash(line.as_bytes()).wrapping_add(hash.wrapping_mul(31));
         }
 
@@ -356,8 +356,9 @@ impl ReviewLog {
         match fs::metadata(&path) {
             Ok(meta) => Ok(meta.len()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(e)
-                .with_context(|| format!("Failed to stat review log: {}", path.display())),
+            Err(e) => {
+                Err(e).with_context(|| format!("Failed to stat review log: {}", path.display()))
+            }
         }
     }
 
@@ -529,8 +530,8 @@ impl AppendLog for ReviewLog {
             if idx >= n {
                 break;
             }
-            let line = line_result
-                .with_context(|| format!("Failed to read line {} for hashing", idx))?;
+            let line =
+                line_result.with_context(|| format!("Failed to read line {} for hashing", idx))?;
             hash = fnv1a_hash(line.as_bytes()).wrapping_add(hash.wrapping_mul(31));
         }
 
@@ -612,6 +613,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: id.to_string(),
                 jj_change_id: "change123".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("change123".to_string()),
                 initial_commit: "commit456".to_string(),
                 title: format!("Test Review {}", id),
                 description: None,
@@ -803,8 +806,17 @@ mod tests {
         log.append(&make_test_event("cr-001")).unwrap();
 
         // Check directory structure
-        assert!(crit_root.join(".crit").join("reviews").join("cr-001").exists());
-        assert!(crit_root.join(".crit").join("reviews").join("cr-001").join("events.jsonl").exists());
+        assert!(crit_root
+            .join(".crit")
+            .join("reviews")
+            .join("cr-001")
+            .exists());
+        assert!(crit_root
+            .join(".crit")
+            .join("reviews")
+            .join("cr-001")
+            .join("events.jsonl")
+            .exists());
     }
 
     #[test]
@@ -905,7 +917,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let crit_root = dir.path();
 
-        let expected = crit_root.join(".crit").join("reviews").join("cr-abc").join("events.jsonl");
+        let expected = crit_root
+            .join(".crit")
+            .join("reviews")
+            .join("cr-abc")
+            .join("events.jsonl");
         assert_eq!(review_events_path(crit_root, "cr-abc"), expected);
 
         let log = ReviewLog::new(crit_root, "cr-abc").unwrap();
@@ -978,6 +994,8 @@ mod tests {
             Event::ReviewCreated(ReviewCreated {
                 review_id: "cr-hash-test".to_string(),
                 jj_change_id: "other_change".to_string(),
+                scm_kind: Some("jj".to_string()),
+                scm_anchor: Some("other_change".to_string()),
                 initial_commit: "other_commit".to_string(),
                 title: "Another review".to_string(),
                 description: Some("with description".to_string()),
@@ -989,11 +1007,17 @@ mod tests {
         let h1 = log.prefix_hash(2).unwrap();
         let h2 = log.prefix_hash(2).unwrap();
         assert_eq!(h1, h2, "prefix_hash must be deterministic across calls");
-        assert!(h1.is_some(), "prefix_hash should return Some for non-empty file");
+        assert!(
+            h1.is_some(),
+            "prefix_hash should return Some for non-empty file"
+        );
 
         // Partial prefix should differ from full
         let h_partial = log.prefix_hash(1).unwrap();
-        assert_ne!(h1, h_partial, "different prefix lengths should produce different hashes");
+        assert_ne!(
+            h1, h_partial,
+            "different prefix lengths should produce different hashes"
+        );
     }
 
     /// Verify fnv1a_hash produces known stable values (bd-2ji).

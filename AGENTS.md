@@ -4,7 +4,7 @@ Project type: cli
 Tools: `beads`, `maw`, `crit`, `botbus`, `botty`
 Reviewer roles: security
 
-Distributed code review for jj, built for AI agent teams.
+Distributed code review for Git and jj, built for AI agent teams.
 Reviews live in `.crit/` alongside the code — no server, no accounts, no network.
 Review lifecycle: create -> comment/vote -> approve -> merge.
 
@@ -17,7 +17,7 @@ Source of truth:  .crit/reviews/{review_id}/events.jsonl  (append-only JSONL, on
 Projection:       .crit/index.db  (SQLite cache, gitignored, rebuildable from logs)
 ```
 
-Reviews anchored to jj Change IDs (survive rebases). `.crit/` is version-controlled — reviews travel with code. **Never propose moving event storage out of the repo.**
+Reviews are anchored with backend-neutral SCM metadata (`scm_kind` + `scm_anchor`). `.crit/` is version-controlled — reviews travel with code. **Never propose moving event storage out of the repo.**
 
 ### Source Layout
 
@@ -27,7 +27,7 @@ Reviews anchored to jj Change IDs (survive rebases). `.crit/` is version-control
 | Events     | `events/mod.rs`, `events/ids.rs`, `events/identity.rs`                                        | Event types, terseid IDs (`cr-`, `th-`), agent identity     |
 | Storage    | `log/mod.rs`                                                                                  | `AppendLog`/`ReviewLog`, fs2 file locking, atomic appends   |
 | Projection | `projection/mod.rs`, `projection/query.rs`                                                    | SQLite schema, sync, orphan/truncation detection, query API |
-| JJ         | `jj/mod.rs`, `jj/context.rs`, `jj/drift.rs`                                                   | Workspace/repo root resolution, code context, line drift    |
+| SCM/JJ     | `scm/{mod,git,jj}.rs`, `jj/{mod,context,drift}.rs`                                            | Backend selection, Git/jj adapters, context, line drift     |
 | Output     | `output/mod.rs`                                                                               | text, pretty, and JSON formatters                           |
 | TUI        | `tui/{app,ui,theme}.rs`, `tui/views/`                                                         | Ratatui interactive browser                                 |
 | Other      | `critignore.rs`, `version.rs`                                                                 | .critignore patterns, v1/v2 format detection                |
