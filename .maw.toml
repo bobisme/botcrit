@@ -1,3 +1,0 @@
-[merge]
-# Auto-resolve conflicts in these paths by taking main's version
-auto_resolve_from_main = []

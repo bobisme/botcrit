@@ -2,14 +2,3 @@
 
 # crit index is a rebuildable cache
 .crit/index.db
-
-# bv (beads viewer) local config and caches
-.bones/
-opencode.json
-CLAUDE.md
-
-# MAW agent workspaces
-.workspaces/
-
-# maw agent workspaces
-ws/
