@@ -1,6 +1,3 @@
 [merge]
 # Auto-resolve conflicts in these paths by taking main's version
-# .beads/ contains issue tracking that changes frequently on main
-auto_resolve_from_main = [
-  ".beads/**",
-]
+auto_resolve_from_main = []

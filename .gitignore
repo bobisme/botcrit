@@ -4,7 +4,7 @@
 .crit/index.db
 
 # bv (beads viewer) local config and caches
-.bv/
+.bones/
 opencode.json
 CLAUDE.md
 
