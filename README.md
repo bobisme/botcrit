@@ -57,22 +57,11 @@ All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.
 
 ## Interactive TUI
 
-For an interactive review UI, install [botcrit-ui](https://github.com/anomalyco/botcrit-ui):
-
 ```bash
-# Install the TUI companion
-cargo install --git https://github.com/anomalyco/botcrit-ui
-crit-ui    # Launch the interactive review browser
+crit ui    # Launch the interactive review browser
 ```
 
-botcrit-ui is the canonical interactive interface for crit reviews, featuring GitHub-style
-diff rendering, side-by-side views, syntax highlighting, and themes. crit itself focuses on
-CLI and agent workflows.
-
-See [docs/botcrit-ui-transition.md](docs/botcrit-ui-transition.md) for the full architecture decision.
-
-> **Note:** The built-in `crit ui` command is deprecated and will be removed in a future release.
-> Use `crit-ui` (from botcrit-ui) instead.
+Built-in interactive UI with syntax-highlighted diffs, side-by-side views, inline commenting, and 10 built-in themes.
 
 ## Status
 
@@ -120,7 +109,7 @@ This is intentional and non-negotiable. Unlike GitHub PRs (stored on GitHub's se
 ```bash
 # Install
 git clone https://github.com/anomalyco/botcrit && cd botcrit
-cargo install --path .
+cargo install --path crates/crit-cli
 
 # Initialize in a repo
 cd /path/to/your/repo
