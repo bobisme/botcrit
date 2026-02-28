@@ -136,7 +136,7 @@ pub enum Commands {
         review_id: String,
     },
 
-    /// Interactive UI for browsing reviews (DEPRECATED: use crit-ui from botcrit-ui)
+    /// Interactive UI for browsing reviews
     Ui,
 
     /// Add a comment to a review (auto-creates thread if needed). Use `reply` to respond to an existing thread.

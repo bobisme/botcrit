@@ -28,19 +28,12 @@ which = "8.0.0"
 # CLI-specific
 clap = { version = "4.5.54", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-nix = { version = "0.29", features = ["signal"] }
-
 # TUI-specific (ftui-based)
 ftui-core = { version = "0.2.1", features = ["crossterm"] }
 ftui-render = "0.2.1"
 ftui-style = "0.2.1"
 palette = "0.7.6"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
-
-# TUI-specific (legacy, kept for compatibility)
-ansi-to-tui = "7.0"
-crossterm = "0.28"
-ratatui = "0.29"
 
 # OTEL dependencies (optional at crate level, not workspace level)
 opentelemetry = "0.31"

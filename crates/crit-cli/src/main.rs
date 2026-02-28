@@ -305,11 +305,6 @@ fn main() -> Result<()> {
         }
 
         Commands::Ui => {
-            eprintln!("WARNING: `crit ui` is deprecated and will be removed in a future release.");
-            eprintln!("  Install botcrit-ui for the canonical interactive review experience:");
-            eprintln!("    cargo install --git https://github.com/anomalyco/botcrit-ui");
-            eprintln!("  Then run: crit-ui");
-            eprintln!();
             let db_path = crit_root.join(".crit").join("index.db");
             let ctx = crit_core::core::CoreContext::new(&crit_root, &db_path)?;
             let services = ctx.services()?;
