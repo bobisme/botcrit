@@ -23,6 +23,8 @@ pub struct ReviewSummary {
 pub struct ReviewDetail {
     pub review_id: String,
     pub jj_change_id: String,
+    pub scm_kind: String,
+    pub scm_anchor: String,
     pub initial_commit: String,
     pub final_commit: Option<String>,
     pub title: String,

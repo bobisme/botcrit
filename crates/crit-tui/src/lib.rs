@@ -75,7 +75,7 @@ use ftui_render::presenter::{Presenter as FtuiPresenter, TerminalCapabilities};
 /// Returns an error if the terminal cannot be initialized or an I/O error occurs.
 pub fn run(repo_root: &Path, services: CritServices) -> Result<()> {
     let ctx = services.context().clone();
-    let client: Box<dyn CritClient> = Box::new(CoreClient::new(ctx));
+    let client: Box<dyn CritClient> = Box::new(CoreClient::new(ctx, repo_root));
 
     // Load theme
     let mut config = load_ui_config()?.unwrap_or_default();
