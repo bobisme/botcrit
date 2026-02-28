@@ -129,14 +129,14 @@ crit --agent my-agent inbox
 
 Every command needs an agent identity. Resolution order:
 
-| Method | Example |
-|--------|---------|
-| `--agent` flag (preferred) | `crit --agent swift-falcon reviews list` |
-| `BOTCRIT_AGENT` env var | `export BOTCRIT_AGENT=swift-falcon` |
-| `CRIT_AGENT` env var | `export CRIT_AGENT=swift-falcon` |
-| `AGENT` env var | `export AGENT=swift-falcon` |
-| `BOTBUS_AGENT` env var | `export BOTBUS_AGENT=swift-falcon` |
-| `$USER` (TTY only) | Automatic fallback in interactive sessions |
+| Method                     | Example                                    |
+| -------------------------- | ------------------------------------------ |
+| `--agent` flag (preferred) | `crit --agent swift-falcon reviews list`   |
+| `BOTCRIT_AGENT` env var    | `export BOTCRIT_AGENT=swift-falcon`        |
+| `CRIT_AGENT` env var       | `export CRIT_AGENT=swift-falcon`           |
+| `AGENT` env var            | `export AGENT=swift-falcon`                |
+| `BOTBUS_AGENT` env var     | `export BOTBUS_AGENT=swift-falcon`         |
+| `$USER` (TTY only)         | Automatic fallback in interactive sessions |
 
 ### Review Lifecycle
 
@@ -223,9 +223,4 @@ Open feedback on your reviews (4):
 - Run `crit agents show` for full agent instructions
 - Run `crit agents init` to add instructions to your project's AGENTS.md
 
-## References
-
-- [Specification](spec.md)
-- [Demo walkthrough](docs/demo.md)
-- [Testing strategy](testing.md)
-- [Agent instructions](AGENTS.md)
+![card](./images/crit-card.webp)
