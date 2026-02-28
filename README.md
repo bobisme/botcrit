@@ -5,11 +5,11 @@ Distributed code review for Git and [jj](https://github.com/martinvonz/jj), buil
 **For:** Teams of AI agents (and humans) doing code review in local Git/jj repositories.
 **Not for:** GitHub/GitLab PR replacement or centralized review servers.
 
-## Screenshot
+## Screenshots
 
-![crit review list](images/tui-list.png)
+![crit review detail](images/review.webp)
 
-![crit review detail](images/tui-review.png)
+![crit add comments](images/add-comments.webp)
 
 ### `crit review <id>`
 
