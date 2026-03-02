@@ -48,13 +48,13 @@ impl<'a> CommentService<'a> {
                 thread_id: thread_id.to_string(),
             })?;
 
-        // Verify review is open
+        // Verify review is open or approved
         if let Some(review) = self.db.get_review(&thread.review_id).map_err(CoreError::Internal)? {
-            if review.status != "open" {
+            if review.status != "open" && review.status != "approved" {
                 return Err(CoreError::InvalidReviewStatus {
                     review_id: thread.review_id.clone(),
                     actual: review.status,
-                    expected: "open".to_string(),
+                    expected: "open or approved".to_string(),
                 });
             }
         }
@@ -108,7 +108,7 @@ impl<'a> CommentService<'a> {
         commit_hash: String,
         author: Option<&str>,
     ) -> CoreResult<AddCommentResult> {
-        // Verify review exists and is open
+        // Verify review exists and is open or approved
         let review = self
             .db
             .get_review(review_id)
@@ -117,11 +117,11 @@ impl<'a> CommentService<'a> {
                 review_id: review_id.to_string(),
             })?;
 
-        if review.status != "open" {
+        if review.status != "open" && review.status != "approved" {
             return Err(CoreError::InvalidReviewStatus {
                 review_id: review_id.to_string(),
                 actual: review.status,
-                expected: "open".to_string(),
+                expected: "open or approved".to_string(),
             });
         }
 

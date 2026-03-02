@@ -36,7 +36,7 @@ pub fn run_threads_create(
         Some(r) => r,
     };
 
-    if review.status != "open" {
+    if review.status != "open" && review.status != "approved" {
         bail!(
             "Cannot create thread on review with status '{}': {}",
             review.status,
