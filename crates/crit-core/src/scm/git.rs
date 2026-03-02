@@ -124,11 +124,18 @@ impl ScmRepo for GitRepo {
 
     fn parent_commit(&self, commit: &str) -> Result<String> {
         validate_anchor(commit)?;
-        let rev = format!("{commit}^");
         let output = self
-            .run_git(&["rev-parse", "--verify", "--end-of-options", &rev])
+            .run_git(&["log", "-1", "--format=%P", "--end-of-options", commit])
             .with_context(|| format!("Failed to resolve parent commit for {commit}"))?;
-        Ok(output.trim().to_string())
+        
+        let parents = output.trim();
+        if parents.is_empty() {
+            // Root commit (no parents), use Git's empty tree hash
+            Ok("4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string())
+        } else {
+            // For merge commits, %P returns space-separated parents. Take the first.
+            Ok(parents.split_whitespace().next().unwrap_or(parents).to_string())
+        }
     }
 
     fn diff_git(&self, from: &str, to: &str) -> Result<String> {
@@ -153,11 +160,11 @@ impl ScmRepo for GitRepo {
         validate_anchor(to)?;
         let range = format!("{from}..{to}");
         let output = self
-            .run_git(&["diff", "--name-only", &range])
+            .run_git(&["diff", "-z", "--name-only", &range])
             .with_context(|| format!("Failed to list changed files from {from} to {to}"))?;
 
         Ok(output
-            .lines()
+            .split('\0')
             .filter(|line| !line.is_empty())
             .map(ToString::to_string)
             .collect())
@@ -170,11 +177,16 @@ impl ScmRepo for GitRepo {
 
         let output = Command::new("git")
             .current_dir(&self.root)
-            .args(["cat-file", "-e", "--end-of-options", &spec])
+            .args(["cat-file", "-t", "--end-of-options", &spec])
             .output()
             .context("Failed to execute git cat-file")?;
 
-        Ok(output.status.success())
+        if !output.status.success() {
+            return Ok(false);
+        }
+
+        let obj_type = String::from_utf8_lossy(&output.stdout);
+        Ok(obj_type.trim() == "blob")
     }
 
     fn show_file(&self, rev: &str, path: &str) -> Result<String> {
