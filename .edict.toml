@@ -4,18 +4,18 @@ version = "1.0.15"
 push_main = true
 
 [project]
-name = "botcrit"
+name = "botseal"
 type = ["cli"]
 languages = []
-default_agent = "botcrit-dev"
-channel = "botcrit"
+default_agent = "botseal-dev"
+channel = "botseal"
 install_command = "just install"
 
 # Companion tools to enable
 [tools]
 bones = true
 maw = true
-crit = true
+seal = true
 botbus = true
 botty = true
 

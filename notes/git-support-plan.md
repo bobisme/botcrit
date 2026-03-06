@@ -23,7 +23,7 @@ Without changes, `crit` cannot operate in a plain Git repository.
 ## Goals
 
 1. Run all core review commands in Git repositories without jj.
-2. Keep review data local and versioned in `.crit/` (no server dependency).
+2. Keep review data local and versioned in `.seal/` (no server dependency).
 3. Preserve existing jj reviews and avoid forced data loss or manual recovery.
 4. Keep output contracts stable for agents (`text`/`pretty`/`json`).
 5. Minimize command behavior divergence between jj and git backends.

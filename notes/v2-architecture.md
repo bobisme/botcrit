@@ -2,10 +2,10 @@
 
 ## Problem Statement
 
-v1 architecture used a single `.crit/events.jsonl` for all reviews. This caused:
+v1 architecture used a single `.seal/events.jsonl` for all reviews. This caused:
 1. **Merge conflicts** - Concurrent reviews in different workspaces all write to same file
 2. **Data loss** - jj workspace operations (squash, rebase, merge) can replace file with older version
-3. **maw auto-resolve issues** - If `.crit/**` in auto_resolve, discards ALL workspace events
+3. **maw auto-resolve issues** - If `.seal/**` in auto_resolve, discards ALL workspace events
 
 Root cause: Unit of isolation (review) didn't match unit of storage (single file).
 
@@ -14,7 +14,7 @@ Root cause: Unit of isolation (review) didn't match unit of storage (single file
 Each review gets its own event log:
 
 ```
-.crit/
+.seal/
   version           # "2" - data format version
   reviews/
     cr-abc/
@@ -59,7 +59,7 @@ Each review gets its own event log:
 **Fix:** Added `resolve_workspace_root()` which returns the local workspace path (directory containing `.jj/`) without following the pointer. Main.rs now uses this for `crit_root`.
 
 **Result:**
-- Crit writes to workspace-local `.crit/`
+- Crit writes to workspace-local `.seal/`
 - Changes tracked in workspace's jj working copy
 - `maw ws merge` includes crit changes
 - Different reviews = different files = no merge conflicts
@@ -87,7 +87,7 @@ pub fn require_v2(crit_root: &Path) -> Result<()>
 // src/log/mod.rs
 let log = ReviewLog::new(crit_root, review_id);
 log.append(&event)?;
-// Writes to: .crit/reviews/{review_id}/events.jsonl
+// Writes to: .seal/reviews/{review_id}/events.jsonl
 ```
 
 ### Reading Events (v2)
@@ -139,8 +139,8 @@ crit migrate --dry-run
 crit migrate
 
 # Verify
-ls .crit/reviews/    # Should see cr-xxx directories
-cat .crit/version    # Should be "2"
+ls .seal/reviews/    # Should see cr-xxx directories
+cat .seal/version    # Should be "2"
 ```
 
 ## Testing Notes

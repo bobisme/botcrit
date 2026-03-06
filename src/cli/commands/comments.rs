@@ -1,4 +1,4 @@
-//! Implementation of `crit comments` subcommands.
+//! Implementation of `seal comments` subcommands.
 
 use anyhow::{bail, Result};
 use std::path::Path;
@@ -89,11 +89,11 @@ pub fn run_comments_add(
 /// - If no thread exists, creates one and adds the comment
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
-#[tracing::instrument(skip(crit_root, scm, message, format))]
+#[tracing::instrument(skip(seal_root, scm, message, format))]
 pub fn run_comment(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: &str,
     file: &str,
@@ -102,13 +102,13 @@ pub fn run_comment(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
 
     // Verify review exists and is open
     let review = match db.get_review(review_id)? {
-        None => return Err(review_not_found_error(crit_root, review_id)),
+        None => return Err(review_not_found_error(seal_root, review_id)),
         Some(r) => r,
     };
 
@@ -165,7 +165,7 @@ pub fn run_comment(
                 );
 
                 // Write to the per-review log (v2)
-                let log = open_or_create_review(crit_root, review_id)?;
+                let log = open_or_create_review(seal_root, review_id)?;
                 log.append(&thread_event)?;
 
                 // New thread starts at comment number 1
@@ -186,7 +186,7 @@ pub fn run_comment(
     );
 
     // Write to the per-review log (v2)
-    let log = open_or_create_review(crit_root, review_id)?;
+    let log = open_or_create_review(seal_root, review_id)?;
     log.append(&comment_event)?;
 
     // Output result
@@ -224,7 +224,7 @@ pub fn run_comments_list(repo_root: &Path, thread_id: &str, format: OutputFormat
         &comments,
         "No comments yet",
         "comments",
-        &["crit reply <thread_id> \"...\""],
+        &["seal reply <thread_id> \"...\""],
     )?;
 
     Ok(())

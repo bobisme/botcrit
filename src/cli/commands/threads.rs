@@ -1,4 +1,4 @@
-//! Implementation of `crit threads` subcommands.
+//! Implementation of `seal threads` subcommands.
 
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -19,10 +19,10 @@ use crate::scm::ScmRepo;
 /// Create a new comment thread on a file.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_create(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: &str,
     file: &str,
@@ -30,12 +30,12 @@ pub fn run_threads_create(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
     // Verify review exists
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
     let review = match db.get_review(review_id)? {
-        None => return Err(review_not_found_error(crit_root, review_id)),
+        None => return Err(review_not_found_error(seal_root, review_id)),
         Some(r) => r,
     };
 
@@ -77,7 +77,7 @@ pub fn run_threads_create(
         }),
     );
 
-    let log = open_or_create_review(crit_root, review_id)?;
+    let log = open_or_create_review(seal_root, review_id)?;
     log.append(&event)?;
 
     // Output result
@@ -196,7 +196,7 @@ pub fn run_threads_list(
             &threads,
             empty_msg,
             "threads",
-            &["crit threads show <id>", "crit threads resolve <id>"],
+            &["seal threads show <id>", "seal threads resolve <id>"],
         )?;
     }
 
@@ -206,10 +206,10 @@ pub fn run_threads_list(
 /// Show details for a specific thread with optional context.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_threads_show(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     thread_id: &str,
     context_lines: u32,
@@ -218,9 +218,9 @@ pub fn run_threads_show(
     use_color: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
     let thread = db.get_thread(thread_id)?;
 
     match thread {
@@ -281,7 +281,7 @@ pub fn run_threads_show(
             }
         }
         None => {
-            return Err(thread_not_found_error(crit_root, thread_id));
+            return Err(thread_not_found_error(seal_root, thread_id));
         }
     }
 

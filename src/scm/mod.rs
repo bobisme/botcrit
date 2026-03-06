@@ -140,7 +140,7 @@ fn resolve_auto_backend(detection: &BackendDetection) -> Result<SelectedBackend>
         (Some(git_root), Some(jj_root)) => {
             if canonicalize_maybe(git_root) != canonicalize_maybe(jj_root) {
                 bail!(
-                    "Detected both Git and jj backends with different roots.\n  Git root: {}\n  jj root: {}\n  To fix: rerun with explicit backend, e.g. `crit --scm git ...` or `crit --scm jj ...`",
+                    "Detected both Git and jj backends with different roots.\n  Git root: {}\n  jj root: {}\n  To fix: rerun with explicit backend, e.g. `seal --scm git ...` or `seal --scm jj ...`",
                     git_root.display(),
                     jj_root.display(),
                 );
@@ -218,9 +218,9 @@ pub fn resolve_preference(cli_preference: Option<ScmPreference>) -> Result<ScmPr
         return Ok(cli);
     }
 
-    if let Ok(env_value) = std::env::var("CRIT_SCM") {
+    if let Ok(env_value) = std::env::var("SEAL_SCM") {
         return parse_preference(&env_value).with_context(|| {
-            format!("Invalid CRIT_SCM value '{env_value}'. Expected one of: auto, git, jj")
+            format!("Invalid SEAL_SCM value '{env_value}'. Expected one of: auto, git, jj")
         });
     }
 

@@ -1,11 +1,11 @@
-# crit
+# seal
 
 Project type: cli
-Tools: `beads`, `maw`, `crit`, `botbus`, `botty`
+Tools: `beads`, `maw`, `seal`, `botbus`, `botty`
 Reviewer roles: security
 
 Distributed code review for Git and jj, built for AI agent teams.
-Reviews live in `.crit/` alongside the code — no server, no accounts, no network.
+Reviews live in `.seal/` alongside the code — no server, no accounts, no network.
 Review lifecycle: create -> comment/vote -> approve -> merge.
 
 ## Architecture
@@ -13,11 +13,11 @@ Review lifecycle: create -> comment/vote -> approve -> merge.
 Event-sourced.
 
 ```
-Source of truth:  .crit/reviews/{review_id}/events.jsonl  (append-only JSONL, one per review)
-Projection:       .crit/index.db  (SQLite cache, gitignored, rebuildable from logs)
+Source of truth:  .seal/reviews/{review_id}/events.jsonl  (append-only JSONL, one per review)
+Projection:       .seal/index.db  (SQLite cache, gitignored, rebuildable from logs)
 ```
 
-Reviews are anchored with backend-neutral SCM metadata (`scm_kind` + `scm_anchor`). `.crit/` is version-controlled — reviews travel with code. **Never propose moving event storage out of the repo.**
+Reviews are anchored with backend-neutral SCM metadata (`scm_kind` + `scm_anchor`). `.seal/` is version-controlled — reviews travel with code. **Never propose moving event storage out of the repo.**
 
 ### Source Layout
 
@@ -30,7 +30,7 @@ Reviews are anchored with backend-neutral SCM metadata (`scm_kind` + `scm_anchor
 | SCM/JJ     | `scm/{mod,git,jj}.rs`, `jj/{mod,context,drift}.rs`                                            | Backend selection, Git/jj adapters, context, line drift     |
 | Output     | `output/mod.rs`                                                                               | text, pretty, and JSON formatters                           |
 | TUI        | `tui/{app,ui,theme}.rs`, `tui/views/`                                                         | Ratatui interactive browser                                 |
-| Other      | `critignore.rs`, `version.rs`                                                                 | .critignore patterns, v1/v2 format detection                |
+| Other      | `critignore.rs`, `version.rs`                                                                 | .sealignore patterns, v1/v2 format detection                |
 
 ### Data Model
 
@@ -48,9 +48,9 @@ Reviews are anchored with backend-neutral SCM metadata (`scm_kind` + `scm_anchor
 
 ### Key Constraints
 
-- `crit comment` writes ThreadCreated + CommentAdded as two events. ThreadCreated links thread_id->review_id; CommentAdded/ThreadResolved/ThreadReopened only carry thread_id.
-- jj operations (squash, rebase, workspace merge) can restore stale event logs. Detected via truncation check + content hash. Lost reviews saved to `.crit/orphaned-reviews-*.json`. Recovery: `jj file annotate .crit/reviews/{id}/events.jsonl`.
-- Every command needs identity: `--agent`, `CRIT_AGENT`, or `BOTBUS_AGENT` env var.
+- `seal comment` writes ThreadCreated + CommentAdded as two events. ThreadCreated links thread_id->review_id; CommentAdded/ThreadResolved/ThreadReopened only carry thread_id.
+- jj operations (squash, rebase, workspace merge) can restore stale event logs. Detected via truncation check + content hash. Lost reviews saved to `.seal/orphaned-reviews-*.json`. Recovery: `jj file annotate .seal/reviews/{id}/events.jsonl`.
+- Every command needs identity: `--agent`, `SEAL_AGENT`, or `BOTBUS_AGENT` env var.
 - Output: text (default, compact) or `--format json|text|pretty`. All output must be self-contained with actionable next-steps. Errors include fix commands.
 
 ### Testing
@@ -94,7 +94,7 @@ project-root/          ← bare repo (no source files here)
 - Use `maw exec <ws> -- <command>` to run commands in a workspace context
 - Use `maw exec default -- bn ...` for bones commands (always in default workspace)
 - Use `maw exec <ws> -- crit ...` for review commands (always in the review's workspace)
-- Never run `bn` or `crit` directly — always go through `maw exec`
+- Never run `bn` or `seal` directly — always go through `maw exec`
 - Do not run `jj`; this workflow is Git + maw.
 
 ### Bones Quick Reference
@@ -196,7 +196,7 @@ bus claims release --agent $AGENT --all  # when done
 Use `@<project>-<role>` mentions to request reviews:
 
 ```bash
-maw exec $WS -- crit reviews request <review-id> --reviewers $PROJECT-security --agent $AGENT
+maw exec $WS -- seal reviews request <review-id> --reviewers $PROJECT-security --agent $AGENT
 bus send --agent $AGENT $PROJECT "Review requested: <review-id> @$PROJECT-security" -L review-request
 ```
 

@@ -118,13 +118,13 @@ impl App {
 
     /// Open the projection database (static version for initialization)
     fn open_db_static(repo_root: &PathBuf) -> Result<ProjectionDb> {
-        let crit_dir = repo_root.join(".crit");
-        let index_path = crit_dir.join("index.db");
-        let events_path = crit_dir.join("events.jsonl");
+        let seal_dir = repo_root.join(".seal");
+        let index_path = seal_dir.join("index.db");
+        let events_path = seal_dir.join("events.jsonl");
         let log = crate::log::open_or_create(&events_path)?;
         let db = ProjectionDb::open(&index_path)?;
         db.init_schema()?;
-        crate::projection::sync_from_log_with_backup(&db, &log, Some(&crit_dir))?;
+        crate::projection::sync_from_log_with_backup(&db, &log, Some(&seal_dir))?;
         Ok(db)
     }
 

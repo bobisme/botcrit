@@ -1,11 +1,11 @@
-//! Implementation of `crit doctor` health check command.
+//! Implementation of `seal doctor` health check command.
 
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cli::commands::init::{events_path, index_path, is_initialized, CRIT_DIR};
+use crate::cli::commands::init::{events_path, index_path, is_initialized, SEAL_DIR};
 use crate::events::EventEnvelope;
 use crate::log::open_or_create;
 use crate::output::{Formatter, OutputFormat};
@@ -71,7 +71,7 @@ pub fn run_doctor(
     // Check 1: SCM detection / selection
     checks.push(check_scm_backend(workspace_root, scm_preference));
 
-    // Check 2: .crit directory
+    // Check 2: .seal directory
     checks.push(check_crit_initialized(repo_root));
 
     // Check 3: events.jsonl parseable (only if initialized)
@@ -128,7 +128,7 @@ fn check_scm_backend(workspace_root: &Path, scm_preference: ScmPreference) -> Ch
             &format!(
                 "Detected both backends with mismatched roots (git: {git_root}, jj: {jj_root})"
             ),
-            "Rerun with explicit backend selection: `crit --scm git ...` or `crit --scm jj ...`",
+            "Rerun with explicit backend selection: `seal --scm git ...` or `seal --scm jj ...`",
         );
     }
 
@@ -157,14 +157,14 @@ fn check_scm_backend(workspace_root: &Path, scm_preference: ScmPreference) -> Ch
     }
 }
 
-/// Check if crit is initialized.
+/// Check if seal is initialized.
 fn check_crit_initialized(repo_root: &Path) -> CheckResult {
     if is_initialized(repo_root) {
-        let crit_dir = repo_root.join(".crit");
-        let events = crit_dir.join("events.jsonl");
-        let index = crit_dir.join("index.db");
+        let seal_dir = repo_root.join(".seal");
+        let events = seal_dir.join("events.jsonl");
+        let index = seal_dir.join("index.db");
 
-        let mut details = vec![".crit/ exists"];
+        let mut details = vec![".seal/ exists"];
         if events.exists() {
             details.push("events.jsonl present");
         }
@@ -176,8 +176,8 @@ fn check_crit_initialized(repo_root: &Path) -> CheckResult {
     } else {
         CheckResult::fail(
             "crit_initialized",
-            ".crit directory not found",
-            "Run 'crit --agent <your-name> init' to initialize crit in this repository",
+            ".seal directory not found",
+            "Run 'seal --agent <your-name> init' to initialize seal in this repository",
         )
     }
 }
@@ -233,18 +233,18 @@ fn check_legacy_events_parseable(repo_root: &Path) -> CheckResult {
         Err(e) => CheckResult::fail(
             "events_parseable",
             &format!("Cannot read events.jsonl: {}", e),
-            "Check file permissions or run 'crit --agent <your-name> init' to recreate",
+            "Check file permissions or run 'seal --agent <your-name> init' to recreate",
         ),
     }
 }
 
 fn check_review_logs_parseable(repo_root: &Path) -> CheckResult {
-    let reviews_dir = repo_root.join(CRIT_DIR).join("reviews");
+    let reviews_dir = repo_root.join(SEAL_DIR).join("reviews");
     if !reviews_dir.exists() {
         return CheckResult::warn(
             "events_parseable",
-            "No .crit/reviews directory found for v2 repository",
-            Some("Run `crit sync --rebuild` to regenerate projection after creating review logs"),
+            "No .seal/reviews directory found for v2 repository",
+            Some("Run `seal sync --rebuild` to regenerate projection after creating review logs"),
         );
     }
 
@@ -254,7 +254,7 @@ fn check_review_logs_parseable(repo_root: &Path) -> CheckResult {
             return CheckResult::fail(
                 "events_parseable",
                 &format!("Cannot read review logs directory: {}", e),
-                "Check file permissions on .crit/reviews",
+                "Check file permissions on .seal/reviews",
             );
         }
     };
@@ -327,7 +327,7 @@ fn check_review_logs_parseable(repo_root: &Path) -> CheckResult {
                 errors.len(),
                 errors.join("; ")
             ),
-            "Fix malformed log lines or restore affected .crit/reviews/<id>/events.jsonl files",
+            "Fix malformed log lines or restore affected .seal/reviews/<id>/events.jsonl files",
         )
     }
 }
@@ -344,13 +344,13 @@ fn check_index_sync(repo_root: &Path) -> CheckResult {
                 return CheckResult::fail(
                     "index_sync",
                     &format!("Failed to initialize schema: {}", e),
-                    "Delete .crit/index.db and it will be recreated",
+                    "Delete .seal/index.db and it will be recreated",
                 );
             }
 
             // Try to sync and check for errors
-            let crit_dir = repo_root.join(CRIT_DIR);
-            match sync_from_log_with_backup(&db, &log, Some(&crit_dir)) {
+            let seal_dir = repo_root.join(SEAL_DIR);
+            match sync_from_log_with_backup(&db, &log, Some(&seal_dir)) {
                 Ok(events_processed) => {
                     // Get some stats
                     let review_count = db.list_reviews(None, None).map(|r| r.len()).unwrap_or(0);
@@ -372,7 +372,7 @@ fn check_index_sync(repo_root: &Path) -> CheckResult {
         (Err(e), _) => CheckResult::fail(
             "index_sync",
             &format!("Cannot open index.db: {}", e),
-            "Delete .crit/index.db and it will be recreated on next command",
+            "Delete .seal/index.db and it will be recreated on next command",
         ),
         (_, Err(e)) => CheckResult::fail(
             "index_sync",
@@ -382,11 +382,11 @@ fn check_index_sync(repo_root: &Path) -> CheckResult {
     }
 }
 
-/// Check if .crit/index.db is gitignored.
+/// Check if .seal/index.db is gitignored.
 ///
 /// The index is an ephemeral cache rebuilt from events.jsonl and should not be committed.
 fn check_index_gitignored(repo_root: &Path) -> CheckResult {
-    let index_rel = ".crit/index.db";
+    let index_rel = ".seal/index.db";
 
     // Use git check-ignore (works in both git and jj-backed repos)
     let result = Command::new("git")
@@ -396,12 +396,12 @@ fn check_index_gitignored(repo_root: &Path) -> CheckResult {
 
     match result {
         Ok(output) if output.status.success() => {
-            CheckResult::pass("index_gitignored", ".crit/index.db is gitignored")
+            CheckResult::pass("index_gitignored", ".seal/index.db is gitignored")
         }
         Ok(_) => CheckResult::warn(
             "index_gitignored",
-            ".crit/index.db is not gitignored",
-            Some("Add '.crit/index.db' to .gitignore — it's a rebuildable cache"),
+            ".seal/index.db is not gitignored",
+            Some("Add '.seal/index.db' to .gitignore — it's a rebuildable cache"),
         ),
         Err(_) => {
             // git not available — skip silently

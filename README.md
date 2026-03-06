@@ -1,4 +1,4 @@
-# crit
+# seal
 
 Distributed code review for Git and [jj](https://github.com/martinvonz/jj), built for AI agents.
 
@@ -7,11 +7,11 @@ Distributed code review for Git and [jj](https://github.com/martinvonz/jj), buil
 
 ## Screenshots
 
-![crit review detail](images/review.webp)
+![seal review detail](images/review.webp)
 
-![crit add comments](images/add-comments.webp)
+![seal add comments](images/add-comments.webp)
 
-### `crit review <id>`
+### `seal review <id>`
 
 ```
 ○ cr-cccn · Refactor auth: replace unsafe static with RwLock
@@ -42,23 +42,23 @@ Distributed code review for Git and [jj](https://github.com/martinvonz/jj), buil
 ## Commands
 
 ```bash
-crit init                                        # Initialize .crit/ in your repository
-crit --scm git reviews create --title "..."     # Force Git backend
-CRIT_SCM=jj crit reviews list                    # Force jj backend via env var
-crit reviews create --title "Add feature X"      # Create a review
-crit comment <id> --file src/main.rs --line 42 "Consider Option here"
-crit reply <thread_id> "Good point, will fix"    # Reply to existing thread
-crit lgtm <id> -m "Looks good"                   # Approve
-crit block <id> -r "Need tests"                  # Request changes
-crit reviews mark-merged <id>                    # Mark as merged
+seal init                                        # Initialize .seal/ in your repository
+seal --scm git reviews create --title "..."     # Force Git backend
+SEAL_SCM=jj seal reviews list                    # Force jj backend via env var
+seal reviews create --title "Add feature X"      # Create a review
+seal comment <id> --file src/main.rs --line 42 "Consider Option here"
+seal reply <thread_id> "Good point, will fix"    # Reply to existing thread
+seal lgtm <id> -m "Looks good"                   # Approve
+seal block <id> -r "Need tests"                  # Request changes
+seal reviews mark-merged <id>                    # Mark as merged
 ```
 
-All commands require `--agent <name>` or a `CRIT_AGENT`/`BOTBUS_AGENT` env var.
+All commands require `--agent <name>` or a `SEAL_AGENT`/`BOTBUS_AGENT` env var.
 
 ## Interactive TUI
 
 ```bash
-crit ui    # Launch the interactive review browser
+seal ui    # Launch the interactive review browser
 ```
 
 Built-in interactive UI with syntax-highlighted diffs, side-by-side views, inline commenting, and 10 built-in themes.
@@ -69,7 +69,7 @@ Built-in interactive UI with syntax-highlighted diffs, side-by-side views, inlin
 
 - Platform: Linux, macOS
 - Requires: git, Rust toolchain (jj optional)
-- Storage: local files only (`.crit/` directory)
+- Storage: local files only (`.seal/` directory)
 - No network, no accounts, no central server
 
 ## Non-Goals
@@ -82,14 +82,14 @@ Built-in interactive UI with syntax-highlighted diffs, side-by-side views, inlin
 
 ```
 Event       = immutable action (ReviewCreated, CommentAdded, ThreadResolved, ...)
-Log         = append-only JSONL file (.crit/events.jsonl) — single source of truth
-Projection  = ephemeral SQLite cache (.crit/index.db) — rebuildable from log
+Log         = append-only JSONL file (.seal/events.jsonl) — single source of truth
+Projection  = ephemeral SQLite cache (.seal/index.db) — rebuildable from log
 Review      = anchored to SCM metadata (`scm_kind` + `scm_anchor`)
 Thread      = comments on a specific file+line, tracked across commits via drift detection
 Identity    = agent name passed via --agent flag or env var
 ```
 
-Reviews live entirely in `.crit/` — portable, versionable, no server needed.
+Reviews live entirely in `.seal/` — portable, versionable, no server needed.
 
 ## Reviews Travel With Code
 
@@ -100,27 +100,27 @@ Reviews live entirely in `.crit/` — portable, versionable, no server needed.
 - Archive a project → reviews are preserved
 - No external server, no accounts, no network dependency
 
-This is intentional and non-negotiable. Unlike GitHub PRs (stored on GitHub's servers) or Gerrit (stored in a separate database), crit reviews are first-class repository content.
+This is intentional and non-negotiable. Unlike GitHub PRs (stored on GitHub's servers) or Gerrit (stored in a separate database), seal reviews are first-class repository content.
 
-**Trade-off**: jj working copy operations (squash, rebase, workspace merge) can occasionally restore older versions of the event log. Crit detects this and saves affected reviews to `.crit/orphaned-reviews-*.json` for recovery via `jj file annotate`.
+**Trade-off**: jj working copy operations (squash, rebase, workspace merge) can occasionally restore older versions of the event log. Seal detects this and saves affected reviews to `.seal/orphaned-reviews-*.json` for recovery via `jj file annotate`.
 
 ## Quick Start
 
 ```bash
 # Install
-git clone https://github.com/anomalyco/botcrit && cd botcrit
-cargo install --path crates/crit-cli
+git clone https://github.com/bobisme/botseal && cd botseal
+cargo install --path crates/seal-cli
 
 # Initialize in a repo
 cd /path/to/your/repo
-crit init
+seal init
 
 # Create a review and add feedback
-crit --agent my-agent reviews create --title "My change"
-crit --agent my-agent comment <review_id> --file src/lib.rs --line 10 "Needs error handling"
+seal --agent my-agent reviews create --title "My change"
+seal --agent my-agent comment <review_id> --file src/lib.rs --line 10 "Needs error handling"
 
 # Check your inbox
-crit --agent my-agent inbox
+seal --agent my-agent inbox
 ```
 
 ## Usage
@@ -131,9 +131,9 @@ Every command needs an agent identity. Resolution order:
 
 | Method                     | Example                                    |
 | -------------------------- | ------------------------------------------ |
-| `--agent` flag (preferred) | `crit --agent swift-falcon reviews list`   |
-| `BOTCRIT_AGENT` env var    | `export BOTCRIT_AGENT=swift-falcon`        |
-| `CRIT_AGENT` env var       | `export CRIT_AGENT=swift-falcon`           |
+| `--agent` flag (preferred) | `seal --agent swift-falcon reviews list`   |
+| `BOTSEAL_AGENT` env var    | `export BOTSEAL_AGENT=swift-falcon`        |
+| `SEAL_AGENT` env var       | `export SEAL_AGENT=swift-falcon`           |
 | `AGENT` env var            | `export AGENT=swift-falcon`                |
 | `BOTBUS_AGENT` env var     | `export BOTBUS_AGENT=swift-falcon`         |
 | `$USER` (TTY only)         | Automatic fallback in interactive sessions |
@@ -153,12 +153,12 @@ create → [comment/reply/vote] → approve → merge
 
 ### Workspace Support
 
-crit works across jj workspaces (when using the jj backend). The `.crit/` directory lives at the repo root and is shared by workspaces.
+seal works across jj workspaces (when using the jj backend). The `.seal/` directory lives at the repo root and is shared by workspaces.
 
 ### Health Check
 
 ```bash
-crit doctor    # Verifies SCM detection, .crit/, event log integrity, index sync, gitignore
+seal doctor    # Verifies SCM detection, .seal/, event log integrity, index sync, gitignore
 ```
 
 ## Demo
@@ -176,7 +176,7 @@ See [docs/demo.md](docs/demo.md) for example output.
 
 ## More Examples
 
-### `crit reviews list`
+### `seal reviews list`
 
 ```
 [3]{author,open_thread_count,review_id,status,thread_count,title}:
@@ -185,7 +185,7 @@ See [docs/demo.md](docs/demo.md) for example output.
   swift-falcon,4,cr-cccn,open,5,"Refactor auth: replace unsafe static with RwLock"
 ```
 
-### `crit inbox`
+### `seal inbox`
 
 ```
 Inbox for swift-falcon (4 items)
@@ -201,7 +201,7 @@ Open feedback on your reviews (4):
     in cr-cccn (Refactor auth: replace unsafe static with RwLock)
 ```
 
-### `crit threads list <id> -v`
+### `seal threads list <id> -v`
 
 ```
 ○ th-rrmx src/auth.rs:4 (open, 1 comment)
@@ -218,9 +218,9 @@ Open feedback on your reviews (4):
 
 - Use `--agent <name>` on every command (env vars may not persist)
 - Use `--json` for machine-parseable output
-- `crit comment` for new feedback, `crit reply` for responses
-- `crit inbox` to find items needing attention
-- Run `crit agents show` for full agent instructions
-- Run `crit agents init` to add instructions to your project's AGENTS.md
+- `seal comment` for new feedback, `seal reply` for responses
+- `seal inbox` to find items needing attention
+- Run `seal agents show` for full agent instructions
+- Run `seal agents init` to add instructions to your project's AGENTS.md
 
 ![card](./images/crit-card.webp)

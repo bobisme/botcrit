@@ -1,0 +1,27 @@
+[package]
+name = "seal-tui"
+description = "Terminal UI for seal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+seal-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Rendering
+ftui-core.workspace = true
+ftui-render.workspace = true
+ftui-style.workspace = true
+palette.workspace = true
+
+# Syntax highlighting
+syntect.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

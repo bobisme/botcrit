@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/crit-core",
-    "crates/crit-cli",
-    "crates/crit-tui",
+    "crates/seal-core",
+    "crates/seal-cli",
+    "crates/seal-tui",
 ]
 resolver = "2"
 
@@ -46,7 +46,7 @@ tracing-opentelemetry = "0.32"
 tempfile = "3.24.0"
 
 # Internal
-crit-core = { path = "crates/crit-core" }
+seal-core = { path = "crates/seal-core" }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

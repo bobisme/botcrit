@@ -5,4 +5,4 @@ test:
   cargo test
 
 install:
-  cargo install --locked --force --path crates/crit-cli
+  cargo install --locked --force --path crates/seal-cli

@@ -2,78 +2,78 @@
 
 ## What Changed
 
-The single `crit` crate has been split into a 3-crate Cargo workspace:
+The single `seal` crate has been split into a 3-crate Cargo workspace:
 
 ```
-botcrit/
+botseal/
 ├── Cargo.toml              (workspace root)
 ├── crates/
-│   ├── crit-core/          domain logic: events, storage, projection, SCM
-│   ├── crit-cli/           CLI handlers, output formatting, binary entry point
-│   └── crit-tui/           terminal UI (review TUI, thread viewer)
+│   ├── seal-core/          domain logic: events, storage, projection, SCM
+│   ├── seal-cli/           CLI handlers, output formatting, binary entry point
+│   └── seal-tui/           terminal UI (review TUI, thread viewer)
 ```
 
 ### Dependency graph
 
 ```
-crit-cli ──► crit-core
+seal-cli ──► seal-core
     │
-    └──────► crit-tui ──► crit-core
+    └──────► seal-tui ──► seal-core
 ```
 
-`crit-core` is the leaf crate with no internal dependencies.
-`crit-tui` depends only on `crit-core`.
-`crit-cli` depends on both and produces the `crit` binary.
+`seal-core` is the leaf crate with no internal dependencies.
+`seal-tui` depends only on `seal-core`.
+`seal-cli` depends on both and produces the `seal` binary.
 
 ## What Stays the Same
 
-- **Binary name**: still `crit`
+- **Binary name**: still `seal`
 - **All CLI commands**: identical syntax and behavior
 - **Output formats**: text, JSON, and pretty output unchanged
-- **Event log format**: `.crit/reviews/{id}/events.jsonl` is the same v2 format
+- **Event log format**: `.seal/reviews/{id}/events.jsonl` is the same v2 format
 - **Projection database**: SQLite schema unchanged
-- **Configuration**: `.critignore`, `.crit/version`, agent identity — all the same
-- **Feature flags**: `otel` feature still available on `crit-cli`
+- **Configuration**: `.sealignore`, `.seal/version`, agent identity — all the same
+- **Feature flags**: `otel` feature still available on `seal-cli`
 
 ## For Users
 
-No behavior change. The binary is still called `crit` and every command works exactly as before. Upgrade by building from the workspace root:
+No behavior change. The binary is still called `seal` and every command works exactly as before. Upgrade by building from the workspace root:
 
 ```bash
-cargo install --path crates/crit-cli
+cargo install --path crates/seal-cli
 ```
 
 Or from the workspace root:
 
 ```bash
 cargo build --release
-# binary at target/release/crit
+# binary at target/release/seal
 ```
 
 ## For Developers
 
 ### Import paths
 
-Domain types now live in `crit_core`:
+Domain types now live in `seal_core`:
 
 ```rust
-use crit_core::events::{Event, ReviewCreated, ThreadCreated};
-use crit_core::projection::{ProjectionDb, ReviewState};
-use crit_core::log::EventLog;
-use crit_core::core::CritServices;
+use seal_core::events::{Event, ReviewCreated, ThreadCreated};
+use seal_core::projection::{ProjectionDb, ReviewState};
+use seal_core::log::EventLog;
+use seal_core::core::SealServices;
 ```
 
-CLI-specific types live in `crit_cli`:
+CLI-specific types live in `seal_cli`:
 
 ```rust
-use crit_cli::cli::commands;
-use crit_cli::output::Formatter;
+use seal_cli::cli::commands;
+use seal_cli::output::Formatter;
 ```
 
-TUI types live in `crit_tui`:
+TUI types live in `seal_tui`:
 
 ```rust
-use crit_tui::review_tui::ReviewTui;
+use seal_tui::review_tui::ReviewTui;
 ```
 
 ### Workspace dependencies
@@ -86,6 +86,6 @@ Clippy lints are configured at the workspace level under `[workspace.lints.clipp
 
 ### Adding a new crate
 
-1. Create `crates/crit-newcrate/` with its `Cargo.toml` (use `version.workspace = true`, `edition.workspace = true`, `license.workspace = true`)
+1. Create `crates/seal-newcrate/` with its `Cargo.toml` (use `version.workspace = true`, `edition.workspace = true`, `license.workspace = true`)
 2. Add it to the `members` list in the workspace `Cargo.toml`
 3. Add `[lints] workspace = true` to inherit lint config

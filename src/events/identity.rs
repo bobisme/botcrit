@@ -9,8 +9,8 @@ use std::io::IsTerminal;
 
 /// Environment variables checked for agent identity, in priority order.
 const IDENTITY_VARS: &[&str] = &[
-    "BOTCRIT_AGENT",
-    "CRIT_AGENT",
+    "BOTSEAL_AGENT",
+    "SEAL_AGENT",
     "AGENT",
     "BOTBUS_AGENT",
 ];
@@ -19,8 +19,8 @@ const IDENTITY_VARS: &[&str] = &[
 ///
 /// Resolution order:
 /// 1. Explicit override (`--agent`)
-/// 2. BOTCRIT_AGENT environment variable
-/// 3. CRIT_AGENT environment variable
+/// 2. BOTSEAL_AGENT environment variable
+/// 3. SEAL_AGENT environment variable
 /// 4. AGENT environment variable
 /// 5. BOTBUS_AGENT environment variable
 /// 6. $USER (only when stdin is a TTY)
@@ -49,7 +49,7 @@ pub fn get_agent_identity(explicit: Option<&str>) -> Result<String> {
     }
 
     bail!(
-        "Agent identity required. Use --agent <name> or set BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT."
+        "Agent identity required. Use --agent <name> or set BOTSEAL_AGENT/SEAL_AGENT/AGENT/BOTBUS_AGENT."
     )
 }
 

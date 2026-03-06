@@ -1,4 +1,4 @@
-# Botcrit: Agent-Centric Distributed Code Review Tool
+# Botseal: Agent-Centric Distributed Code Review Tool
 
 **Version:** 0.1.0 (Draft)  
 **Stack:** Rust, Jujutsu (jj), SQLite, JSONL  
@@ -6,9 +6,9 @@
 
 ## 1. Executive Summary
 
-botcrit is a CLI-first code review tool designed specifically for AI Agents working in a distributed, asynchronous environment. Unlike traditional tools that rely on central servers (GitHub/GitLab), botcrit operates locally on the filesystem using an append-only event log (`events.jsonl`).
+botseal is a CLI-first code review tool designed specifically for AI Agents working in a distributed, asynchronous environment. Unlike traditional tools that rely on central servers (GitHub/GitLab), botseal operates locally on the filesystem using an append-only event log (`events.jsonl`).
 
-It leverages Jujutsu (jj) to solve the "rebase problem" inherent in agent workflows. By anchoring reviews to stable `change_id`s while tracking comments against specific `commit_hash` snapshots, botcrit allows agents to review code that is actively being rewritten without losing context.
+It leverages Jujutsu (jj) to solve the "rebase problem" inherent in agent workflows. By anchoring reviews to stable `change_id`s while tracking comments against specific `commit_hash` snapshots, botseal allows agents to review code that is actively being rewritten without losing context.
 
 ## 2. Core Architecture
 
@@ -16,16 +16,16 @@ It leverages Jujutsu (jj) to solve the "rebase problem" inherent in agent workfl
 
 The system follows an Event Sourcing pattern with a CQRS (Command Query Responsibility Segregation) split.
 
-- **Write Path (Command):** Agents append immutable events to `.crit/events.jsonl`. This file is the single source of truth.
-- **Read Path (Query):** A "Projection" process reads the log and updates a local SQLite database (`.crit/index.db`). This allows for instant querying of complex states (e.g., "Show me all unresolved threads for this file").
+- **Write Path (Command):** Agents append immutable events to `.seal/events.jsonl`. This file is the single source of truth.
+- **Read Path (Query):** A "Projection" process reads the log and updates a local SQLite database (`.seal/index.db`). This allows for instant querying of complex states (e.g., "Show me all unresolved threads for this file").
 
 ### 2.2 Storage Model
 
 | Component   | Description                              |
 |-------------|------------------------------------------|
-| Directory   | `.crit/` at repository root              |
-| Log         | `.crit/events.jsonl` (Human-readable, append-only) |
-| Index       | `.crit/index.db` (Ephemeral, rebuildable cache)  |
+| Directory   | `.seal/` at repository root              |
+| Log         | `.seal/events.jsonl` (Human-readable, append-only) |
+| Index       | `.seal/index.db` (Ephemeral, rebuildable cache)  |
 | Concurrency | Writes to `events.jsonl` are guarded by advisory file locks (`fs2` crate) to ensure atomic appends from multiple concurrent agents |
 
 ### 2.3 Agent Identity
@@ -33,13 +33,13 @@ The system follows an Event Sourcing pattern with a CQRS (Command Query Responsi
 The `author` field on events is determined by (in priority order):
 
 1. `--author` flag (explicit override)
-2. `CRIT_AGENT` environment variable
+2. `SEAL_AGENT` environment variable
 3. `BOTBUS_AGENT` environment variable (interop with BotBus)
 4. `USER` environment variable (fallback for human users)
 
 ### 2.4 The jj Integration Strategy
 
-Git-based tools fail when commits are amended. botcrit succeeds by distinguishing between:
+Git-based tools fail when commits are amended. botseal succeeds by distinguishing between:
 
 - **The Review Target:** Anchored to a jj Change ID (persistent across rebases/amends).
 - **The Comment Anchor:** Anchored to a specific Commit Hash (snapshot in time).
@@ -73,7 +73,7 @@ The event log consists of strictly typed events serialized as JSON Lines. Each e
 
 ## 4. Drift Detection (The "Magic")
 
-Since agents review specific snapshots while the code evolves, botcrit must calculate where comments "live" in the current version.
+Since agents review specific snapshots while the code evolves, botseal must calculate where comments "live" in the current version.
 
 ### Algorithm
 
@@ -93,7 +93,7 @@ Agents are token-sensitive and lack visual intuition. The interface is optimized
 
 By default, `crit` outputs [TOON](https://toonformat.dev/) (Token-Oriented Object Notation) - a compact, human-readable format optimized for LLM token efficiency. Use `--json` for machine-parseable JSON output.
 
-**Example:** `crit threads show th-99a`
+**Example:** `seal threads show th-99a`
 
 ```yaml
 thread:
@@ -143,7 +143,7 @@ The `context` field shows the code at the anchored location. Use `--context <lin
 Agents can prevent hallucinations by asserting the state of the world when they write.
 
 ```bash
-crit comments add th-99a "Fix this" --expected-hash 7b3f1a
+seal comments add th-99a "Fix this" --expected-hash 7b3f1a
 ```
 
 - **Success:** Hash matches `thread.current_commit`.
@@ -154,7 +154,7 @@ crit comments add th-99a "Fix this" --expected-hash 7b3f1a
 Agents may retry commands on timeout.
 
 ```bash
-crit comments add ... --request-id <UUID>
+seal comments add ... --request-id <UUID>
 ```
 
 Duplicate request IDs are silently ignored (returning success).
@@ -164,71 +164,71 @@ Duplicate request IDs are silently ignored (returning success).
 ### Setup
 
 ```bash
-crit init
+seal init
 ```
-**Action:** Creates `.crit/` directory with empty `events.jsonl`.
+**Action:** Creates `.seal/` directory with empty `events.jsonl`.
 
 ### Reviews
 
 ```bash
-crit reviews create --title "..." [--desc "..."]
+seal reviews create --title "..." [--desc "..."]
 ```
 **Action:** Infers `change_id` from `@`, generates `review_id`.
 
 ```bash
-crit reviews list [--status open|merged|abandoned] [--author <name>]
-crit reviews show <review_id>
-crit reviews request <review_id> --reviewers agent_a,agent_b
-crit reviews approve <review_id>
-crit reviews abandon <review_id> [--reason "..."]
+seal reviews list [--status open|merged|abandoned] [--author <name>]
+seal reviews show <review_id>
+seal reviews request <review_id> --reviewers agent_a,agent_b
+seal reviews approve <review_id>
+seal reviews abandon <review_id> [--reason "..."]
 ```
 
 ### Threads
 
 ```bash
-crit threads create <review_id> --file <path> --lines <start>[-<end>]
+seal threads create <review_id> --file <path> --lines <start>[-<end>]
 ```
 **Action:** Locks current commit hash as anchor.
 
 ```bash
-crit threads list <review_id> [--status open|resolved] [--file <path>]
-crit threads show <thread_id> [--context <lines>]
-crit threads resolve <thread_id> [--reason "..."]
-crit threads reopen <thread_id> [--reason "..."]
+seal threads list <review_id> [--status open|resolved] [--file <path>]
+seal threads show <thread_id> [--context <lines>]
+seal threads resolve <thread_id> [--reason "..."]
+seal threads reopen <thread_id> [--reason "..."]
 ```
 
 ### Comments
 
 ```bash
-crit comments add <thread_id> <msg> [--request-id <uuid>] [--expected-hash <hash>]
-crit comments list <thread_id>
+seal comments add <thread_id> <msg> [--request-id <uuid>] [--expected-hash <hash>]
+seal comments list <thread_id>
 ```
 
 ### Querying
 
 ```bash
-crit status [<review_id>] [--unresolved-only] [--json]
+seal status [<review_id>] [--unresolved-only] [--json]
 ```
 **Action:** Without review_id, shows all open reviews. With review_id, shows detailed status including drift detection.
 
 ```bash
-crit diff <review_id>
+seal diff <review_id>
 ```
 **Action:** Returns a structured diff of the whole change.
 
 ### Batch Operations
 
 ```bash
-crit threads resolve --all --file <path>    # Resolve all threads in a file
-crit threads resolve --all <review_id>      # Resolve all threads in a review
+seal threads resolve --all --file <path>    # Resolve all threads in a file
+seal threads resolve --all <review_id>      # Resolve all threads in a review
 ```
 
 ### Utilities
 
 ```bash
-crit doctor
+seal doctor
 ```
-**Action:** Health check - verifies jj is installed, repo is jj-managed, `.crit/` exists, `events.jsonl` is valid, `index.db` is in sync. Outputs pass/fail with remediation hints.
+**Action:** Health check - verifies jj is installed, repo is jj-managed, `.seal/` exists, `events.jsonl` is valid, `index.db` is in sync. Outputs pass/fail with remediation hints.
 
 ```bash
 crit agents init
@@ -238,7 +238,7 @@ crit agents show
 
 ## 7. Implementation Roadmap
 
-1. **Core Crate (`botcrit_core`):**
+1. **Core Crate (`botseal_core`):**
    - Define Event structs with serde
    - Implement `AppendLog` trait with file locking
    - Agent identity resolution
@@ -256,7 +256,7 @@ crit agents show
 4. **CLI (`crit`):**
    - `clap` definitions
    - Output formatters (TOON default, JSON with `--json`)
-   - `crit init` command
+   - `seal init` command
 
 5. **TUI (Lower Priority):**
    - `ratatui` terminal interface for interactive review

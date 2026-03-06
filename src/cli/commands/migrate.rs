@@ -1,6 +1,6 @@
 //! Migration command: v1 -> v2 data format upgrade.
 //!
-//! Converts from single `.crit/events.jsonl` to per-review event logs.
+//! Converts from single `.seal/events.jsonl` to per-review event logs.
 
 use std::collections::HashMap;
 use std::fs;
@@ -60,13 +60,13 @@ fn event_type_label(event: &Event) -> &'static str {
 }
 
 /// Path to legacy events.jsonl
-fn legacy_events_path(crit_root: &Path) -> std::path::PathBuf {
-    crit_root.join(".crit").join("events.jsonl")
+fn legacy_events_path(seal_root: &Path) -> std::path::PathBuf {
+    seal_root.join(".seal").join("events.jsonl")
 }
 
 /// Run the migrate command.
 pub fn run_migrate(
-    crit_root: &Path,
+    seal_root: &Path,
     dry_run: bool,
     backup: bool,
     from_backup: bool,
@@ -74,11 +74,11 @@ pub fn run_migrate(
 ) -> Result<()> {
     // If --from-backup, handle re-migration from v1 backup
     if from_backup {
-        return run_remigrate_from_backup(crit_root, dry_run, format);
+        return run_remigrate_from_backup(seal_root, dry_run, format);
     }
 
     // Check current version
-    let version = detect_version(crit_root)?;
+    let version = detect_version(seal_root)?;
 
     match version {
         Some(DataVersion::V2) => {
@@ -93,11 +93,11 @@ pub fn run_migrate(
             return Ok(());
         }
         None => {
-            // Check if .crit/ exists at all
-            let crit_dir = crit_root.join(".crit");
-            if !crit_dir.exists() {
+            // Check if .seal/ exists at all
+            let seal_dir = seal_root.join(".seal");
+            if !seal_dir.exists() {
                 bail!(
-                    "No .crit/ directory found. Run 'crit init' first to initialize the repository."
+                    "No .seal/ directory found. Run 'seal init' first to initialize the repository."
                 );
             }
 
@@ -111,7 +111,7 @@ pub fn run_migrate(
                     println!("Would create v2 version file (no events to migrate).");
                 }
             } else {
-                write_version_file(crit_root, DataVersion::V2)?;
+                write_version_file(seal_root, DataVersion::V2)?;
                 if format == OutputFormat::Json {
                     println!(
                         r#"{{"status":"success","version":2,"message":"Created v2 version file","events_migrated":0}}"#
@@ -128,7 +128,7 @@ pub fn run_migrate(
     }
 
     // Read all events from legacy file
-    let legacy_path = legacy_events_path(crit_root);
+    let legacy_path = legacy_events_path(seal_root);
     let legacy_log = FileLog::new(&legacy_path);
     let events = legacy_log
         .read_all()
@@ -151,7 +151,7 @@ pub fn run_migrate(
             } else {
                 fs::remove_file(&legacy_path).context("Failed to remove events.jsonl")?;
             }
-            write_version_file(crit_root, DataVersion::V2)?;
+            write_version_file(seal_root, DataVersion::V2)?;
             if format == OutputFormat::Json {
                 println!(r#"{{"status":"success","version":2,"events_migrated":0}}"#);
             } else {
@@ -234,7 +234,7 @@ pub fn run_migrate(
                 review_id
             );
         }
-        let log = open_or_create_review(crit_root, review_id)?;
+        let log = open_or_create_review(seal_root, review_id)?;
 
         // Sort by timestamp (should already be sorted, but be safe)
         let mut sorted_events = review_events.clone();
@@ -254,10 +254,10 @@ pub fn run_migrate(
     }
 
     // Write version file
-    write_version_file(crit_root, DataVersion::V2)?;
+    write_version_file(seal_root, DataVersion::V2)?;
 
     // Delete old index.db to force rebuild from new structure
-    let index_path = crit_root.join(".crit").join("index.db");
+    let index_path = seal_root.join(".seal").join("index.db");
     if index_path.exists() {
         fs::remove_file(&index_path).context("Failed to remove old index.db")?;
     }
@@ -301,8 +301,8 @@ pub fn run_migrate(
 /// and merges missing events into existing per-review logs. Useful for recovering
 /// CommentAdded/ThreadResolved/ThreadReopened events that were dropped by a
 /// buggy earlier migration.
-fn run_remigrate_from_backup(crit_root: &Path, dry_run: bool, format: OutputFormat) -> Result<()> {
-    let backup_path = crit_root.join(".crit").join("events.jsonl.v1.backup");
+fn run_remigrate_from_backup(seal_root: &Path, dry_run: bool, format: OutputFormat) -> Result<()> {
+    let backup_path = seal_root.join(".seal").join("events.jsonl.v1.backup");
 
     if !backup_path.exists() {
         bail!(
@@ -360,7 +360,7 @@ fn run_remigrate_from_backup(crit_root: &Path, dry_run: bool, format: OutputForm
                 review_id
             );
         }
-        let log = open_or_create_review(crit_root, review_id)?;
+        let log = open_or_create_review(seal_root, review_id)?;
         let existing_events = log.read_all().unwrap_or_default();
 
         // Build set of existing event keys for dedup (includes event-specific IDs)
@@ -383,7 +383,7 @@ fn run_remigrate_from_backup(crit_root: &Path, dry_run: bool, format: OutputForm
 
         if recovered_for_review > 0 && !dry_run {
             // Delete index.db to force rebuild with new events
-            let index_path = crit_root.join(".crit").join("index.db");
+            let index_path = seal_root.join(".seal").join("index.db");
             if index_path.exists() {
                 fs::remove_file(&index_path).context("Failed to remove index.db for rebuild")?;
             }
@@ -537,29 +537,29 @@ mod tests {
     #[test]
     fn test_migrate_empty_repo() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
-        // Create empty .crit/ directory
-        fs::create_dir(crit_root.join(".crit")).unwrap();
+        // Create empty .seal/ directory
+        fs::create_dir(seal_root.join(".seal")).unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Check version file created
-        let version_content = fs::read_to_string(crit_root.join(".crit").join("version")).unwrap();
+        let version_content = fs::read_to_string(seal_root.join(".seal").join("version")).unwrap();
         assert_eq!(version_content.trim(), "2");
     }
 
     #[test]
     fn test_migrate_v1_to_v2() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
         // Create v1 structure with events
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
-        let legacy_path = crit_dir.join("events.jsonl");
+        let legacy_path = seal_dir.join("events.jsonl");
         let log = open_or_create(&legacy_path).unwrap();
 
         // Add events for two reviews, including comments
@@ -576,10 +576,10 @@ mod tests {
             .unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Check version file
-        let version_content = fs::read_to_string(crit_dir.join("version")).unwrap();
+        let version_content = fs::read_to_string(seal_dir.join("version")).unwrap();
         assert_eq!(version_content.trim(), "2");
 
         // Check backup exists
@@ -587,18 +587,18 @@ mod tests {
         assert!(!legacy_path.exists());
 
         // Check review directories created
-        let review_ids = list_review_ids(crit_root).unwrap();
+        let review_ids = list_review_ids(seal_root).unwrap();
         assert_eq!(review_ids.len(), 2);
         assert!(review_ids.contains(&"cr-001".to_string()));
         assert!(review_ids.contains(&"cr-002".to_string()));
 
         // Check events in cr-001 (ReviewCreated, ThreadCreated, CommentAdded, ReviewerVoted)
-        let log1 = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap();
+        let log1 = crate::log::ReviewLog::new(seal_root, "cr-001").unwrap();
         let events1 = log1.read_all().unwrap();
         assert_eq!(events1.len(), 4);
 
         // Check events in cr-002 (ReviewCreated, ThreadCreated, CommentAdded)
-        let log2 = crate::log::ReviewLog::new(crit_root, "cr-002").unwrap();
+        let log2 = crate::log::ReviewLog::new(seal_root, "cr-002").unwrap();
         let events2 = log2.read_all().unwrap();
         assert_eq!(events2.len(), 3);
     }
@@ -609,12 +609,12 @@ mod tests {
     #[test]
     fn test_migrate_preserves_thread_linked_events() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
-        let legacy_path = crit_dir.join("events.jsonl");
+        let legacy_path = seal_dir.join("events.jsonl");
         let log = open_or_create(&legacy_path).unwrap();
 
         // Review with thread, comments, resolve, and reopen
@@ -631,10 +631,10 @@ mod tests {
             .unwrap();
 
         // Run migration
-        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, true, false, OutputFormat::Text).unwrap();
 
         // All 7 events must be present in the per-review log
-        let review_log = crate::log::ReviewLog::new(crit_root, "cr-001").unwrap();
+        let review_log = crate::log::ReviewLog::new(seal_root, "cr-001").unwrap();
         let events = review_log.read_all().unwrap();
         assert_eq!(
             events.len(),
@@ -673,40 +673,40 @@ mod tests {
     #[test]
     fn test_migrate_dry_run() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
         // Create v1 structure
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
-        let legacy_path = crit_dir.join("events.jsonl");
+        let legacy_path = seal_dir.join("events.jsonl");
         let log = open_or_create(&legacy_path).unwrap();
         log.append(&make_review_created("cr-001")).unwrap();
 
         // Run dry run
-        run_migrate(crit_root, true, true, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, true, true, false, OutputFormat::Text).unwrap();
 
         // Nothing should change
         assert!(legacy_path.exists());
-        assert!(!crit_dir.join("version").exists());
-        assert!(!crit_dir.join("reviews").exists());
+        assert!(!seal_dir.join("version").exists());
+        assert!(!seal_dir.join("reviews").exists());
     }
 
     #[test]
     fn test_migrate_already_v2() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
         // Create v2 structure
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
-        fs::write(crit_dir.join("version"), "2\n").unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
+        fs::write(seal_dir.join("version"), "2\n").unwrap();
 
         // Run migration - should be no-op
-        run_migrate(crit_root, false, true, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, true, false, OutputFormat::Text).unwrap();
 
         // Still v2
-        let version_content = fs::read_to_string(crit_dir.join("version")).unwrap();
+        let version_content = fs::read_to_string(seal_dir.join("version")).unwrap();
         assert_eq!(version_content.trim(), "2");
     }
 
@@ -714,10 +714,10 @@ mod tests {
     #[test]
     fn test_remigrate_from_backup_recovers_comments() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
         // Create events once so timestamps match across backup and existing logs
         let ev_review = make_review_created("cr-001");
@@ -727,7 +727,7 @@ mod tests {
         let ev_resolved = make_thread_resolved("th-001");
 
         // Write all 5 events to v1 backup (simulating original v1 file)
-        let backup_path = crit_dir.join("events.jsonl.v1.backup");
+        let backup_path = seal_dir.join("events.jsonl.v1.backup");
         let backup_log = open_or_create(&backup_path).unwrap();
         backup_log.append(&ev_review).unwrap();
         backup_log.append(&ev_thread).unwrap();
@@ -737,23 +737,23 @@ mod tests {
 
         // Simulate existing v2 state with only ReviewCreated + ThreadCreated (comments lost)
         // Uses the SAME events so timestamps match for dedup
-        fs::write(crit_dir.join("version"), "2\n").unwrap();
-        let review_log = open_or_create_review(crit_root, "cr-001").unwrap();
+        fs::write(seal_dir.join("version"), "2\n").unwrap();
+        let review_log = open_or_create_review(seal_root, "cr-001").unwrap();
         review_log.append(&ev_review).unwrap();
         review_log.append(&ev_thread).unwrap();
 
         // Verify only 2 events before recovery
-        let pre_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+        let pre_events = crate::log::ReviewLog::new(seal_root, "cr-001")
             .unwrap()
             .read_all()
             .unwrap();
         assert_eq!(pre_events.len(), 2);
 
         // Run --from-backup
-        run_migrate(crit_root, false, true, true, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, true, true, OutputFormat::Text).unwrap();
 
         // Should now have all 5 events (2 existing + 3 recovered)
-        let post_events = crate::log::ReviewLog::new(crit_root, "cr-001")
+        let post_events = crate::log::ReviewLog::new(seal_root, "cr-001")
             .unwrap()
             .read_all()
             .unwrap();
@@ -768,18 +768,18 @@ mod tests {
     #[test]
     fn test_migrate_no_backup() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
         // Create v1 structure
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
-        let legacy_path = crit_dir.join("events.jsonl");
+        let legacy_path = seal_dir.join("events.jsonl");
         let log = open_or_create(&legacy_path).unwrap();
         log.append(&make_review_created("cr-001")).unwrap();
 
         // Run migration without backup
-        run_migrate(crit_root, false, false, false, OutputFormat::Text).unwrap();
+        run_migrate(seal_root, false, false, false, OutputFormat::Text).unwrap();
 
         // Original file should be gone, no backup
         assert!(!legacy_path.exists());
@@ -790,12 +790,12 @@ mod tests {
     #[test]
     fn test_migrate_rejects_path_traversal_review_id() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
+        let seal_root = dir.path();
 
-        let crit_dir = crit_root.join(".crit");
-        fs::create_dir(&crit_dir).unwrap();
+        let seal_dir = seal_root.join(".seal");
+        fs::create_dir(&seal_dir).unwrap();
 
-        let legacy_path = crit_dir.join("events.jsonl");
+        let legacy_path = seal_dir.join("events.jsonl");
         let log = open_or_create(&legacy_path).unwrap();
 
         // Craft a malicious ReviewCreated with a path traversal review_id
@@ -813,7 +813,7 @@ mod tests {
         ))
         .unwrap();
 
-        let result = run_migrate(crit_root, false, true, false, OutputFormat::Text);
+        let result = run_migrate(seal_root, false, true, false, OutputFormat::Text);
         assert!(result.is_err(), "Should reject invalid review_id");
         let err = result.unwrap_err().to_string();
         assert!(

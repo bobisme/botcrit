@@ -103,7 +103,7 @@ impl ReviewListView {
     fn render_header(&self, frame: &mut Frame, area: Rect) {
         let header = Paragraph::new(Line::from(vec![
             Span::styled(
-                " crit ",
+                " seal ",
                 Style::default()
                     .fg(theme::FOCUSED)
                     .add_modifier(Modifier::BOLD),

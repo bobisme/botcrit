@@ -242,7 +242,7 @@ $CRIT reviews list --status abandoned
 After running tests, verify:
 
 - [ ] `crit doctor` shows all checks passing
-- [ ] `.crit/events.jsonl` contains valid JSON lines
+- [ ] `.seal/events.jsonl` contains valid JSON lines
 - [ ] Thread context extraction shows correct code
 - [ ] Drift detection works when code changes
 - [ ] Multiple agents can interact on same review

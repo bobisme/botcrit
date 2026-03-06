@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Generate a demo project with realistic crit data for screenshots and docs.
+# Generate a demo project with realistic seal data for screenshots and docs.
 #
 # Usage:
-#   ./scripts/generate-demo-jj.sh          # Creates demo in /tmp/crit-demo-XXXXXX
+#   ./scripts/generate-demo-jj.sh          # Creates demo in /tmp/seal-demo-XXXXXX
 #   ./scripts/generate-demo-jj.sh /path    # Creates demo at custom path
 #
 # The demo project is a fake jj repo with multiple reviews, threads,
-# comments, votes, and resolved threads — exercising most crit features.
+# comments, votes, and resolved threads — exercising most seal features.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DEMO_DIR="${1:-$(mktemp -d /tmp/crit-demo-XXXXXX)}"
-CRIT="$(pwd)/target/release/crit"
+DEMO_DIR="${1:-$(mktemp -d /tmp/seal-demo-XXXXXX)}"
+SEAL="$(pwd)/target/release/crit"
 
 # Build a fresh release binary (demo scripts rely on current CLI flags)
-echo "Building crit release binary..." >&2
+echo "Building seal release binary..." >&2
 cargo build --release --quiet
 
 # Clean slate
@@ -128,7 +128,7 @@ TOML
 cat >README.md <<'MD'
 # demo-app
 
-A sample web server for demonstrating crit code review.
+A sample web server for demonstrating seal code review.
 MD
 
 # Commit the initial codebase
@@ -137,21 +137,21 @@ jj commit -m "feat: initial project structure
 Add main server, auth module, config, and server setup." 2>/dev/null
 
 # ============================================================================
-# Initialize crit
+# Initialize seal
 # ============================================================================
 
-"$CRIT" --agent setup-bot init >/dev/null 2>&1
+"$SEAL" --agent setup-bot init >/dev/null 2>&1
 
-echo "Crit initialized." >&2
+echo "Seal initialized." >&2
 
 # ============================================================================
 # Helpers
 # ============================================================================
 
-crit_as() {
+seal_as() {
 	local agent="$1"
 	shift
-	"$CRIT" --agent "$agent" --scm jj "$@"
+	"$SEAL" --agent "$agent" --scm jj "$@"
 }
 
 # Extract a field from JSON output (requires jq)
@@ -256,7 +256,7 @@ Replace unsafe mutable static SESSIONS with lazy_static RwLock.
 Add session expiry checking and revocation support." 2>/dev/null
 
 # Create the review while changes are in @ (so change ID captures auth.rs)
-R1=$(crit_as "swift-falcon" --json reviews create \
+R1=$(seal_as "swift-falcon" --json reviews create \
 	--title "Refactor auth: replace unsafe static with RwLock" \
 	--desc "Replaces the unsafe mutable static SESSIONS HashMap with a properly synchronized RwLock. Also adds token expiry validation and session revocation." \
 	2>/dev/null | extract_id review_id)
@@ -266,50 +266,50 @@ jj new 2>/dev/null
 echo "Review 1: $R1" >&2
 
 # Request reviewers
-crit_as "swift-falcon" reviews request "$R1" --reviewers "bold-tiger,quiet-owl" >/dev/null 2>&1
+seal_as "swift-falcon" reviews request "$R1" --reviewers "bold-tiger,quiet-owl" >/dev/null 2>&1
 
 # Bold-tiger reviews and leaves comments
-crit_as "bold-tiger" comment "$R1" --file src/auth.rs --line 4 \
+seal_as "bold-tiger" comment "$R1" --file src/auth.rs --line 4 \
 	"Nice — removing the unsafe block is a big improvement." >/dev/null 2>&1
 
-T_SIZE=$(crit_as "bold-tiger" --json comment "$R1" --file src/auth.rs --line 14 \
+T_SIZE=$(seal_as "bold-tiger" --json comment "$R1" --file src/auth.rs --line 14 \
 	"Should we bound the session map size? In production this could grow unbounded if sessions aren't cleaned up." \
 	2>/dev/null | extract_id thread_id)
 
-crit_as "bold-tiger" comment "$R1" --file src/auth.rs --line 37 \
+seal_as "bold-tiger" comment "$R1" --file src/auth.rs --line 37 \
 	"The revoke function looks good. Should we also add a revoke_all_for_user for account lockout scenarios?" >/dev/null 2>&1
 
 # Comment on main.rs at an UNCHANGED line (line 3, the mod auth declaration)
-crit_as "bold-tiger" comment "$R1" --file src/main.rs --line 3 \
+seal_as "bold-tiger" comment "$R1" --file src/main.rs --line 3 \
 	"Good call adding the init_sessions() call, but should we also add error handling here in case auth module fails to initialize?" >/dev/null 2>&1
 
 # Comment on a file NOT IN THE CHANGE at all (config.rs wasn't touched in Review 1)
-crit_as "quiet-owl" comment "$R1" --file src/config.rs --line 6 \
+seal_as "quiet-owl" comment "$R1" --file src/config.rs --line 6 \
 	"Since we're adding session management, should we also add a session_max_size config here?" >/dev/null 2>&1
 
 # Swift-falcon replies to the size concern
-crit_as "swift-falcon" reply "$T_SIZE" \
+seal_as "swift-falcon" reply "$T_SIZE" \
 	"Good point. I'll add a max_sessions config option and a background cleanup task." >/dev/null 2>&1
 
 # Quiet-owl also reviews
-crit_as "quiet-owl" comment "$R1" --file src/auth.rs --line 22 \
+seal_as "quiet-owl" comment "$R1" --file src/auth.rs --line 22 \
 	"Consider returning a Result instead of unwrap() on the RwLock. A poisoned lock would panic the server." >/dev/null 2>&1
 
-T_CRYPTO=$(crit_as "quiet-owl" --json comment "$R1" --file src/auth.rs --line 43 \
+T_CRYPTO=$(seal_as "quiet-owl" --json comment "$R1" --file src/auth.rs --line 43 \
 	"fastrand isn't cryptographically secure. For session tokens, use rand::OsRng or similar." \
 	2>/dev/null | extract_id thread_id)
 
 # Swift-falcon acknowledges the crypto concern
-crit_as "swift-falcon" reply "$T_CRYPTO" \
+seal_as "swift-falcon" reply "$T_CRYPTO" \
 	"You're right, I'll switch to rand::OsRng. Good catch." >/dev/null 2>&1
-crit_as "swift-falcon" threads resolve "$T_CRYPTO" \
+seal_as "swift-falcon" threads resolve "$T_CRYPTO" \
 	--reason "Switched to rand::OsRng in follow-up commit" >/dev/null 2>&1
 
 # Bold-tiger approves
-crit_as "bold-tiger" lgtm "$R1" -m "Looks good overall. The unsafe removal is solid." >/dev/null 2>&1
+seal_as "bold-tiger" lgtm "$R1" -m "Looks good overall. The unsafe removal is solid." >/dev/null 2>&1
 
 # Quiet-owl blocks pending the crypto fix
-crit_as "quiet-owl" block "$R1" -r "Need cryptographically secure token generation before merge" >/dev/null 2>&1
+seal_as "quiet-owl" block "$R1" -r "Need cryptographically secure token generation before merge" >/dev/null 2>&1
 
 echo "  7 threads (2 on unchanged code), 1 resolved, 1 LGTM, 1 block" >&2
 
@@ -369,7 +369,7 @@ All config fields now have sensible defaults and can be overridden
 via environment variables." 2>/dev/null
 
 # Create the review while changes are in @
-R2_JSON=$(crit_as "bold-tiger" --json reviews create \
+R2_JSON=$(seal_as "bold-tiger" --json reviews create \
 	--title "Config: add Default impl and env var overrides" \
 	--desc "All config fields now have sensible defaults and can be individually overridden via environment variables." \
 	2>/dev/null)
@@ -380,25 +380,25 @@ jj new 2>/dev/null
 
 echo "Review 2: $R2" >&2
 
-crit_as "bold-tiger" reviews request "$R2" --reviewers "swift-falcon" >/dev/null 2>&1
+seal_as "bold-tiger" reviews request "$R2" --reviewers "swift-falcon" >/dev/null 2>&1
 
 # Swift-falcon reviews with minor feedback
-crit_as "swift-falcon" comment "$R2" --file src/config.rs --line 32 \
+seal_as "swift-falcon" comment "$R2" --file src/config.rs --line 32 \
 	"Consider using a builder pattern instead of mutating fields. It's more idiomatic." >/dev/null 2>&1
 
 # Bold-tiger replies
-T_BUILDER=$(crit_as "bold-tiger" --json threads list "$R2" 2>/dev/null | jq -r '.threads[0].thread_id')
-crit_as "bold-tiger" reply "$T_BUILDER" \
+T_BUILDER=$(seal_as "bold-tiger" --json threads list "$R2" 2>/dev/null | jq -r '.threads[0].thread_id')
+seal_as "bold-tiger" reply "$T_BUILDER" \
 	"Fair point, but for a simple config this is more readable. I'll refactor if we add more fields." >/dev/null 2>&1
-crit_as "swift-falcon" reply "$T_BUILDER" \
+seal_as "swift-falcon" reply "$T_BUILDER" \
 	"That's reasonable. Ship it." >/dev/null 2>&1
-crit_as "swift-falcon" threads resolve "$T_BUILDER" \
+seal_as "swift-falcon" threads resolve "$T_BUILDER" \
 	--reason "Agreed to defer" >/dev/null 2>&1
 
 # Approve and merge (LGTM auto-approves when no blocking votes)
-crit_as "swift-falcon" lgtm "$R2" -m "Clean implementation. Good defaults." >/dev/null 2>&1
+seal_as "swift-falcon" lgtm "$R2" -m "Clean implementation. Good defaults." >/dev/null 2>&1
 # Review is now auto-approved, mark it as merged
-crit_as "bold-tiger" reviews mark-merged "$R2" --commit "$R2_COMMIT" >/dev/null 2>&1
+seal_as "bold-tiger" reviews mark-merged "$R2" --commit "$R2_COMMIT" >/dev/null 2>&1
 
 echo "  1 thread (resolved), merged" >&2
 
@@ -431,7 +431,7 @@ RUST
 jj describe -m "feat(server): add TCP listener with basic accept loop" 2>/dev/null
 
 # Create the review while changes are in @
-R3=$(crit_as "quiet-owl" --json reviews create \
+R3=$(seal_as "quiet-owl" --json reviews create \
 	--title "Server: add TCP listener" \
 	--desc "Replace placeholder with actual TcpListener. Basic accept loop with error logging." \
 	2>/dev/null | extract_id review_id)
@@ -440,10 +440,10 @@ jj new 2>/dev/null
 
 echo "Review 3: $R3" >&2
 
-crit_as "swift-falcon" comment "$R3" --file src/server.rs --line 5 \
+seal_as "swift-falcon" comment "$R3" --file src/server.rs --line 5 \
 	"We decided to use tokio for async I/O instead. Let's close this and start fresh with an async approach." >/dev/null 2>&1
 
-crit_as "quiet-owl" reviews abandon "$R3" \
+seal_as "quiet-owl" reviews abandon "$R3" \
 	--reason "Superseded by async server approach" >/dev/null 2>&1
 
 echo "  1 thread, abandoned" >&2
@@ -540,11 +540,11 @@ jj describe -m "feat(api): add REST API handler with auth integration
 Adds ApiServer struct with request handling for /health and /config endpoints.
 Integrates with auth module for token validation." 2>/dev/null
 
-# Initialize crit in the workspace (it should find parent .crit)
-"$CRIT" --agent setup-bot init >/dev/null 2>&1 || true
+# Initialize seal in the workspace (it should find parent .seal)
+"$SEAL" --agent setup-bot init >/dev/null 2>&1 || true
 
 # Create review in this workspace
-R4=$(crit_as "mystic-pine" --json reviews create \
+R4=$(seal_as "mystic-pine" --json reviews create \
 	--title "API: add REST handler with auth" \
 	--desc "New api.rs module with authenticated endpoints. Adds /health and /config routes." \
 	2>/dev/null | extract_id review_id)
@@ -552,17 +552,17 @@ R4=$(crit_as "mystic-pine" --json reviews create \
 echo "Review 4: $R4 (in workspace api-feature)" >&2
 
 # Request review
-crit_as "mystic-pine" reviews request "$R4" --reviewers "swift-falcon" >/dev/null 2>&1
+seal_as "mystic-pine" reviews request "$R4" --reviewers "swift-falcon" >/dev/null 2>&1
 
 # Swift-falcon reviews from default workspace perspective
-crit_as "swift-falcon" comment "$R4" --file src/api.rs --line 15 \
+seal_as "swift-falcon" comment "$R4" --file src/api.rs --line 15 \
 	"Nice pattern matching for routes. Consider extracting route definitions to a separate module as we add more." >/dev/null 2>&1
 
-crit_as "swift-falcon" comment "$R4" --file src/api.rs --line 27 \
+seal_as "swift-falcon" comment "$R4" --file src/api.rs --line 27 \
 	"Should Response implement Display or Debug for logging?" >/dev/null 2>&1
 
 # LGTM
-crit_as "swift-falcon" lgtm "$R4" -m "Good foundation for the API layer." >/dev/null 2>&1
+seal_as "swift-falcon" lgtm "$R4" -m "Good foundation for the API layer." >/dev/null 2>&1
 
 popd >/dev/null
 
@@ -615,18 +615,18 @@ jj describe -m "feat(logging): add structured logging module
 Adds LogLevel enum and log() function with timestamp.
 Includes info! macro for convenient logging." 2>/dev/null
 
-"$CRIT" --agent setup-bot init >/dev/null 2>&1 || true
+"$SEAL" --agent setup-bot init >/dev/null 2>&1 || true
 
-R5=$(crit_as "bold-tiger" --json reviews create \
+R5=$(seal_as "bold-tiger" --json reviews create \
 	--title "Logging: add structured logging module" \
 	--desc "New logging.rs with LogLevel enum, timestamp formatting, and convenience macros." \
 	2>/dev/null | extract_id review_id)
 
 echo "Review 5: $R5 (in workspace logging-feature)" >&2
 
-crit_as "bold-tiger" reviews request "$R5" --reviewers "quiet-owl" >/dev/null 2>&1
+seal_as "bold-tiger" reviews request "$R5" --reviewers "quiet-owl" >/dev/null 2>&1
 
-crit_as "quiet-owl" comment "$R5" --file src/logging.rs --line 11 \
+seal_as "quiet-owl" comment "$R5" --file src/logging.rs --line 11 \
 	"Consider using the log crate's standard levels for ecosystem compatibility." >/dev/null 2>&1
 
 popd >/dev/null
@@ -665,7 +665,7 @@ jj describe -m "refactor(server): extract handle_connection function
 
 Separates connection handling into its own function for clarity." 2>/dev/null
 
-R6=$(crit_as "swift-falcon" --json reviews create \
+R6=$(seal_as "swift-falcon" --json reviews create \
 	--title "Server: extract connection handler" \
 	--desc "Pulls connection handling into handle_connection() for readability." \
 	2>/dev/null | extract_id review_id)
@@ -693,9 +693,9 @@ echo "  $R6  (logging-feature workspace, bare open — for testing)" >&2
 echo "" >&2
 echo "Try:" >&2
 echo "  cd $DEMO_DIR" >&2
-echo "  crit --agent demo-viewer reviews list" >&2
-echo "  crit --agent demo-viewer review $R1" >&2
-echo "  crit --agent bold-tiger inbox" >&2
+echo "  seal --agent demo-viewer reviews list" >&2
+echo "  seal --agent demo-viewer review $R1" >&2
+echo "  seal --agent bold-tiger inbox" >&2
 echo "" >&2
 
 echo "$DEMO_DIR"

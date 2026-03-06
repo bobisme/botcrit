@@ -10,7 +10,7 @@ use crate::scm::ScmPreference;
 
 /// Agent-centric distributed code review tool for Git and jj
 #[derive(Parser, Debug)]
-#[command(name = "crit")]
+#[command(name = "seal")]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Output format (default: auto-detected based on TTY - 'pretty' for interactive, 'text' for pipes)
@@ -25,7 +25,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub agent: Option<String>,
 
-    /// Path to repository (can be repo root, .crit dir, or subdirectory)
+    /// Path to repository (can be repo root, .seal dir, or subdirectory)
     #[arg(long, global = true)]
     pub path: Option<std::path::PathBuf>,
 
@@ -82,10 +82,10 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Initialize a new .crit directory in the current repository
+    /// Initialize a new .seal directory in the current repository
     Init,
 
-    /// Health check - verify SCM detection, .crit/, and sync status
+    /// Health check - verify SCM detection, .seal/, and sync status
     Doctor,
 
     /// Migrate from v1 (single events.jsonl) to v2 (per-review event logs)
@@ -136,7 +136,7 @@ pub enum Commands {
         review_id: String,
     },
 
-    /// Interactive UI for browsing reviews (DEPRECATED: use crit-ui from botcrit-ui)
+    /// Interactive UI for browsing reviews (DEPRECATED: use seal-ui from botseal-ui)
     Ui,
 
     /// Add a comment to a review (auto-creates thread if needed). Use `reply` to respond to an existing thread.
@@ -230,9 +230,9 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentsCommands {
-    /// Insert crit instructions into AGENTS.md
+    /// Insert seal instructions into AGENTS.md
     Init,
-    /// Print crit instructions to stdout
+    /// Print seal instructions to stdout
     Show,
 }
 

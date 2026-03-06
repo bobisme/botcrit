@@ -1,4 +1,4 @@
-//! Terminal User Interface for crit.
+//! Terminal User Interface for seal.
 //!
 //! Provides an interactive TUI for browsing and managing code reviews.
 

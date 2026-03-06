@@ -13,10 +13,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PROJECT_ROOT="$(pwd)"
 
-CRIT="$PROJECT_ROOT/target/release/crit"
+SEAL="$PROJECT_ROOT/target/release/crit"
 OUTPUT_DIR="$PROJECT_ROOT/images"
-TMUX_SESSION="crit-screenshot"
-WINDOW_TITLE="crit-screenshot"
+TMUX_SESSION="seal-screenshot"
+WINDOW_TITLE="seal-screenshot"
 
 TUI_WIDTH="${SCREENSHOT_TUI_WIDTH:-1200}"
 TUI_HEIGHT="${SCREENSHOT_TUI_HEIGHT:-800}"
@@ -24,8 +24,8 @@ CLI_WIDTH="${SCREENSHOT_WIDTH:-1000}"
 CLI_HEIGHT="${SCREENSHOT_HEIGHT:-700}"
 
 # Build if needed
-if [[ ! -x "$CRIT" ]]; then
-	echo "Building crit release binary..." >&2
+if [[ ! -x "$SEAL" ]]; then
+	echo "Building seal release binary..." >&2
 	cargo build --release --quiet
 fi
 
@@ -39,7 +39,7 @@ fi
 echo "Using demo at: $DEMO_DIR" >&2
 
 # Get the open review ID
-OPEN_REVIEW=$(cd "$DEMO_DIR" && "$CRIT" --agent viewer --json reviews list 2>/dev/null |
+OPEN_REVIEW=$(cd "$DEMO_DIR" && "$SEAL" --agent viewer --json reviews list 2>/dev/null |
 	jq -r '.[] | select(.status == "open") | .review_id')
 echo "Open review: $OPEN_REVIEW" >&2
 
@@ -83,7 +83,7 @@ launch_kitty_tmux() {
 # Capture the kitty window to a file
 capture_kitty() {
 	local output="$1"
-	local tmp="/tmp/crit-screenshot-tmp.png"
+	local tmp="/tmp/seal-screenshot-tmp.png"
 
 	local geometry
 	geometry=$(hyprctl clients -j | jq -r ".[] | select(.title == \"$WINDOW_TITLE\") | \"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"")
@@ -117,8 +117,8 @@ echo "Capturing TUI screenshots..." >&2
 
 launch_kitty_tmux "$TUI_WIDTH" "$TUI_HEIGHT"
 
-# Run crit ui
-tmux send-keys -t "$TMUX_SESSION" "$CRIT --agent viewer ui" Enter
+# Run seal ui
+tmux send-keys -t "$TMUX_SESSION" "$SEAL --agent viewer ui" Enter
 sleep 1.5
 
 # Screenshot 1: Review list view
@@ -182,11 +182,11 @@ if [[ "${ALL_SCREENSHOTS:-}" == "1" ]] || [[ "${2:-}" == "--all" ]]; then
 		cleanup
 	}
 
-	capture_cli "reviews-list" "$CRIT --agent viewer reviews list"
-	capture_cli "review" "$CRIT --agent viewer review $OPEN_REVIEW"
-	capture_cli "threads-list" "$CRIT --agent viewer threads list $OPEN_REVIEW -v"
-	capture_cli "inbox" "$CRIT --agent swift-falcon inbox"
-	capture_cli "doctor" "$CRIT --agent viewer doctor"
+	capture_cli "reviews-list" "$SEAL --agent viewer reviews list"
+	capture_cli "review" "$SEAL --agent viewer review $OPEN_REVIEW"
+	capture_cli "threads-list" "$SEAL --agent viewer threads list $OPEN_REVIEW -v"
+	capture_cli "inbox" "$SEAL --agent swift-falcon inbox"
+	capture_cli "doctor" "$SEAL --agent viewer doctor"
 fi
 
 echo "" >&2

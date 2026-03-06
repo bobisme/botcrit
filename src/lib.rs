@@ -1,7 +1,7 @@
-//! botcrit - Agent-centric distributed code review tool for Git and jj
+//! botseal - Agent-centric distributed code review tool for Git and jj
 
 pub mod cli;
-pub mod critignore;
+pub mod sealignore;
 pub mod events;
 pub mod jj;
 pub mod log;

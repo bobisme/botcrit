@@ -1,11 +1,11 @@
-//! Implementation of `crit reviews` subcommands.
+//! Implementation of `seal reviews` subcommands.
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
 
 use crate::cli::commands::helpers::{ensure_initialized, open_and_sync};
-use crate::critignore::{AllFilesIgnoredError, CritIgnore};
+use crate::sealignore::{AllFilesIgnoredError, SealIgnore};
 use crate::events::{
     get_agent_identity, new_review_id, Event, EventEnvelope, ReviewAbandoned, ReviewApproved,
     ReviewCreated, ReviewMerged, ReviewerVoted, ReviewersRequested, VoteType,
@@ -53,11 +53,11 @@ pub fn parse_since(value: &str) -> Result<DateTime<Utc>> {
 /// Create a new review for the current jj change.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
-#[tracing::instrument(skip(crit_root, scm, format, description, reviewers), fields(title = %title))]
+#[tracing::instrument(skip(seal_root, scm, format, description, reviewers), fields(title = %title))]
 pub fn run_reviews_create(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     title: String,
     description: Option<String>,
@@ -65,7 +65,7 @@ pub fn run_reviews_create(
     author: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
     let change_id = scm
         .current_anchor()
@@ -77,15 +77,15 @@ pub fn run_reviews_create(
     // Check if there are any non-ignored files to review
     let parent_commit = scm.parent_commit(&commit_id)?;
     let all_files = scm.changed_files_between(&parent_commit, &commit_id)?;
-    let critignore = CritIgnore::load(crit_root);
-    let (reviewable_files, ignored_count) = critignore.filter_files(all_files);
+    let sealignore = SealIgnore::load(seal_root);
+    let (reviewable_files, ignored_count) = sealignore.filter_files(all_files);
 
     if reviewable_files.is_empty() {
         if ignored_count > 0 {
             // All files were ignored
             return Err(AllFilesIgnoredError {
                 ignored_count,
-                has_critignore: CritIgnore::has_critignore_file(crit_root),
+                has_sealignore: SealIgnore::has_sealignore_file(seal_root),
             }
             .into());
         }
@@ -110,10 +110,10 @@ pub fn run_reviews_create(
     );
 
     // Enforce v2 format
-    require_v2(crit_root)?;
+    require_v2(seal_root)?;
 
     // Write to per-review event log (v2)
-    let log = open_or_create_review(crit_root, &review_id)?;
+    let log = open_or_create_review(seal_root, &review_id)?;
     log.append(&event)?;
 
     // If reviewers specified, request them immediately
@@ -160,10 +160,10 @@ pub fn run_reviews_create(
         println!();
         println!("Next:");
         if reviewer_list.is_none() {
-            println!("  crit reviews request {review_id} --reviewers <name>");
+            println!("  seal reviews request {review_id} --reviewers <name>");
         }
-        println!("  crit comment {review_id} --file <path> --line <n> \"feedback\"");
-        println!("  crit review {review_id}");
+        println!("  seal comment {review_id} --file <path> --line <n> \"feedback\"");
+        println!("  seal review {review_id}");
     }
 
     Ok(())
@@ -171,16 +171,16 @@ pub fn run_reviews_create(
 
 /// List reviews with optional filters.
 pub fn run_reviews_list(
-    crit_root: &Path,
+    seal_root: &Path,
     status: Option<&str>,
     author: Option<&str>,
     needs_reviewer: Option<&str>,
     has_unresolved: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
     let reviews = db.list_reviews_filtered(status, author, needs_reviewer, has_unresolved)?;
 
     // Build context-aware empty message
@@ -199,7 +199,7 @@ pub fn run_reviews_list(
         &reviews,
         empty_msg,
         "reviews",
-        &["crit reviews show <id>", "crit lgtm <id> -m \"...\""],
+        &["seal reviews show <id>", "seal lgtm <id> -m \"...\""],
     )?;
 
     Ok(())
@@ -359,11 +359,11 @@ pub fn run_reviews_abandon(
 /// Mark a review as merged.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 /// * `self_approve` - If true, auto-approve open reviews before merging
 pub fn run_reviews_merge(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: &str,
     commit: Option<String>,
@@ -373,10 +373,10 @@ pub fn run_reviews_merge(
 ) -> Result<()> {
     use crate::cli::commands::helpers::require_local_review;
 
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
     // Verify review exists locally (need to write to its log)
-    let review = require_local_review(crit_root, review_id)?;
+    let review = require_local_review(seal_root, review_id)?;
     if review.status == "merged" {
         bail!("Review is already merged: {}", review_id);
     }
@@ -398,12 +398,12 @@ pub fn run_reviews_merge(
                 review_id: review_id.to_string(),
             }),
         );
-        let log = open_or_create_review(crit_root, review_id)?;
+        let log = open_or_create_review(seal_root, review_id)?;
         log.append(&approve_event)?;
     }
 
     // Re-open the database to get fresh state after any approval
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
 
     // Check for blocking votes
     if db.has_blocking_votes(review_id)? {
@@ -421,7 +421,7 @@ pub fn run_reviews_merge(
             .collect();
 
         bail!(
-            "Cannot merge review with blocking votes:\n{}\n\nReviewers must change their vote with 'crit --agent <their-name> lgtm {}' before merging.",
+            "Cannot merge review with blocking votes:\n{}\n\nReviewers must change their vote with 'seal --agent <their-name> lgtm {}' before merging.",
             blockers.join("\n"),
             review_id
         );
@@ -444,7 +444,7 @@ pub fn run_reviews_merge(
         }),
     );
 
-    let log = open_or_create_review(crit_root, review_id)?;
+    let log = open_or_create_review(seal_root, review_id)?;
     log.append(&event)?;
 
     let result = serde_json::json!({
@@ -575,12 +575,12 @@ fn run_vote(
 /// Show full review with all threads and comments.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 /// * `since` - Optional filter to only show activity after this time
-#[tracing::instrument(skip(crit_root, scm, format))]
+#[tracing::instrument(skip(seal_root, scm, format))]
 pub fn run_review(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: &str,
     context_lines: u32,
@@ -591,10 +591,10 @@ pub fn run_review(
     use crate::cli::commands::helpers::get_review;
     use crate::jj::context::{extract_context, format_context};
 
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let review = get_review(crit_root, review_id)?;
-    let db = open_and_sync(crit_root)?;
+    let review = get_review(seal_root, review_id)?;
+    let db = open_and_sync(seal_root)?;
 
     // For JSON output, build a complete structure
     if matches!(format, OutputFormat::Json) {
@@ -677,7 +677,7 @@ pub fn run_review(
         // Include per-file diffs when requested
         if include_diffs {
             let files_value =
-                build_file_diffs(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
+                build_file_diffs(scm, &review, &threads, &commit_ref, &file_cache, seal_root);
             result["files"] = files_value;
         }
 
@@ -747,10 +747,10 @@ pub fn run_review(
 
     if threads.is_empty() {
         if include_diffs {
-            print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
+            print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, seal_root);
         } else {
             println!(
-                "\n  No threads yet. Use crit diff {} to view changes.",
+                "\n  No threads yet. Use seal diff {} to view changes.",
                 review_id
             );
         }
@@ -869,7 +869,7 @@ pub fn run_review(
     }
 
     if include_diffs {
-        print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, crit_root);
+        print_file_diffs_text(scm, &review, &threads, &commit_ref, &file_cache, seal_root);
     }
 
     println!();
@@ -882,9 +882,9 @@ fn print_file_diffs_text(
     threads: &[ThreadSummary],
     commit_ref: &str,
     file_cache: &std::collections::HashMap<String, String>,
-    crit_root: &Path,
+    seal_root: &Path,
 ) {
-    let files_value = build_file_diffs(scm, review, threads, commit_ref, file_cache, crit_root);
+    let files_value = build_file_diffs(scm, review, threads, commit_ref, file_cache, seal_root);
     let Some(files) = files_value.as_array() else {
         return;
     };
@@ -1085,7 +1085,7 @@ fn build_file_diffs(
     threads: &[ThreadSummary],
     target_commit: &str,
     file_cache: &std::collections::HashMap<String, String>,
-    crit_root: &Path,
+    seal_root: &Path,
 ) -> serde_json::Value {
     // Collect unique files that have threads
     let files_with_threads: std::collections::BTreeSet<String> =
@@ -1102,8 +1102,8 @@ fn build_file_diffs(
         .unwrap_or_default();
     let diffs_by_file = split_diff_by_file(&full_diff);
 
-    // All files: union of files with threads and files with diffs, filtered by critignore
-    let critignore = CritIgnore::load(crit_root);
+    // All files: union of files with threads and files with diffs, filtered by sealignore
+    let sealignore = SealIgnore::load(seal_root);
     let all_files: Vec<String> = {
         let mut files = files_with_threads.clone();
         for key in diffs_by_file.keys() {
@@ -1111,7 +1111,7 @@ fn build_file_diffs(
         }
         files
             .into_iter()
-            .filter(|f| !critignore.is_ignored(f))
+            .filter(|f| !sealignore.is_ignored(f))
             .collect()
     };
 

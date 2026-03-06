@@ -1,10 +1,10 @@
-//! crit - Agent-centric distributed code review tool for Git and jj
+//! seal - Agent-centric distributed code review tool for Git and jj
 
 use anyhow::Result;
 use clap::Parser;
 use std::env;
 
-use crit::cli::commands::{
+use seal::cli::commands::{
     run_agents_init, run_agents_show, run_block, run_comment, run_comments_add, run_comments_list,
     run_diff, run_doctor, run_inbox, run_init, run_lgtm, run_migrate, run_review,
     run_reviews_abandon, run_reviews_approve, run_reviews_create, run_reviews_list,
@@ -12,15 +12,15 @@ use crit::cli::commands::{
     run_threads_create, run_threads_list, run_threads_reopen, run_threads_resolve,
     run_threads_show,
 };
-use crit::cli::{
+use seal::cli::{
     AgentsCommands, Cli, Commands, CommentsCommands, ReviewsCommands, ThreadsCommands,
 };
-use crit::events::get_agent_identity;
-use crit::jj::{resolve_crit_root_from_path, resolve_workspace_root};
-use crit::scm::{resolve_backend, resolve_preference};
+use seal::events::get_agent_identity;
+use seal::jj::{resolve_seal_root_from_path, resolve_workspace_root};
+use seal::scm::{resolve_backend, resolve_preference};
 
 /// Resolve identity based on CLI flags.
-/// Priority: --agent > BOTCRIT_AGENT/CRIT_AGENT/AGENT/BOTBUS_AGENT > $USER (TTY only)
+/// Priority: --agent > BOTSEAL_AGENT/SEAL_AGENT/AGENT/BOTBUS_AGENT > $USER (TTY only)
 fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
     if let Some(ref agent) = cli.agent {
         return Ok(Some(agent.clone()));
@@ -30,36 +30,36 @@ fn resolve_identity(cli: &Cli) -> Result<Option<String>> {
 }
 
 fn main() -> Result<()> {
-    let _telemetry = crit::telemetry::init();
+    let _telemetry = seal::telemetry::init();
     let cli = Cli::parse();
 
     // We need two paths:
-    // 1. crit_root: where .crit/ lives (workspace-local, so changes are tracked in workspace)
+    // 1. seal_root: where .seal/ lives (workspace-local, so changes are tracked in workspace)
     // 2. workspace_root: where jj commands run (current workspace, for @ resolution)
     //
-    // IMPORTANT: crit_root uses workspace-local path (not following .jj/repo pointer to main).
-    // This ensures that crit changes are tracked in the workspace's jj working copy,
+    // IMPORTANT: seal_root uses workspace-local path (not following .jj/repo pointer to main).
+    // This ensures that seal changes are tracked in the workspace's jj working copy,
     // so they're included when the workspace is merged back to main.
-    let (crit_root, workspace_root) = if let Some(path) = &cli.path {
-        // --path provided: prefer an existing .crit root, otherwise fall back to
+    let (seal_root, workspace_root) = if let Some(path) = &cli.path {
+        // --path provided: prefer an existing .seal root, otherwise fall back to
         // detected repository root (jj/git), then the provided path itself.
-        let crit_root = resolve_crit_root_from_path(path)
+        let seal_root = resolve_seal_root_from_path(path)
             .or_else(|_| resolve_workspace_root(path))
             .unwrap_or_else(|_| {
-                crit::scm::git::detect_git_root(path).unwrap_or_else(|| path.clone())
+                seal::scm::git::detect_git_root(path).unwrap_or_else(|| path.clone())
             });
-        // Use the crit root as workspace root too (user-specified path)
-        (crit_root.clone(), crit_root)
+        // Use the seal root as workspace root too (user-specified path)
+        (seal_root.clone(), seal_root)
     } else {
         // No --path: use current directory's workspace root
         let workspace_root = env::current_dir()?;
-        let crit_root = resolve_crit_root_from_path(&workspace_root)
+        let seal_root = resolve_seal_root_from_path(&workspace_root)
             .or_else(|_| resolve_workspace_root(&workspace_root))
             .unwrap_or_else(|_| {
-                crit::scm::git::detect_git_root(&workspace_root)
+                seal::scm::git::detect_git_root(&workspace_root)
                     .unwrap_or_else(|| workspace_root.clone())
             });
-        (crit_root, workspace_root)
+        (seal_root, workspace_root)
     };
 
     let scm_preference = resolve_preference(cli.scm)?;
@@ -72,11 +72,11 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => {
-            run_init(&crit_root)?;
+            run_init(&seal_root)?;
         }
 
         Commands::Doctor => {
-            run_doctor(&crit_root, &workspace_root, scm_preference, format)?;
+            run_doctor(&seal_root, &workspace_root, scm_preference, format)?;
         }
 
         Commands::Migrate {
@@ -84,12 +84,12 @@ fn main() -> Result<()> {
             backup,
             from_backup,
         } => {
-            run_migrate(&crit_root, dry_run, backup, from_backup, format)?;
+            run_migrate(&seal_root, dry_run, backup, from_backup, format)?;
         }
 
         Commands::Agents(cmd) => match cmd {
             AgentsCommands::Init => {
-                run_agents_init(&crit_root)?;
+                run_agents_init(&seal_root)?;
             }
             AgentsCommands::Show => {
                 run_agents_show()?;
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
             } => {
                 let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_reviews_create(
-                    &crit_root,
+                    &seal_root,
                     scm.as_ref(),
                     title,
                     description,
@@ -120,10 +120,10 @@ fn main() -> Result<()> {
                 has_unresolved,
             } => {
                 let status_str = status.map(|s| match s {
-                    crit::cli::ReviewStatus::Open => "open",
-                    crit::cli::ReviewStatus::Approved => "approved",
-                    crit::cli::ReviewStatus::Merged => "merged",
-                    crit::cli::ReviewStatus::Abandoned => "abandoned",
+                    seal::cli::ReviewStatus::Open => "open",
+                    seal::cli::ReviewStatus::Approved => "approved",
+                    seal::cli::ReviewStatus::Merged => "merged",
+                    seal::cli::ReviewStatus::Abandoned => "abandoned",
                 });
                 // For --needs-review, use the subcommand --author as identity (if provided),
                 // falling back to resolved identity.
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
                     (author.as_deref().map(String::from), None)
                 };
                 run_reviews_list(
-                    &crit_root,
+                    &seal_root,
                     status_str,
                     author_filter.as_deref(),
                     needs_reviewer.as_deref(),
@@ -146,14 +146,14 @@ fn main() -> Result<()> {
                 )?;
             }
             ReviewsCommands::Show { review_id } => {
-                run_reviews_show(&crit_root, &review_id, format)?;
+                run_reviews_show(&seal_root, &review_id, format)?;
             }
             ReviewsCommands::Request {
                 review_id,
                 reviewers,
             } => {
                 run_reviews_request(
-                    &crit_root,
+                    &seal_root,
                     &review_id,
                     &reviewers,
                     identity.as_deref(),
@@ -161,10 +161,10 @@ fn main() -> Result<()> {
                 )?;
             }
             ReviewsCommands::Approve { review_id } => {
-                run_reviews_approve(&crit_root, &review_id, identity.as_deref(), format)?;
+                run_reviews_approve(&seal_root, &review_id, identity.as_deref(), format)?;
             }
             ReviewsCommands::Abandon { review_id, reason } => {
-                run_reviews_abandon(&crit_root, &review_id, reason, identity.as_deref(), format)?;
+                run_reviews_abandon(&seal_root, &review_id, reason, identity.as_deref(), format)?;
             }
             ReviewsCommands::MarkMerged {
                 review_id,
@@ -173,7 +173,7 @@ fn main() -> Result<()> {
             } => {
                 let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_reviews_merge(
-                    &crit_root,
+                    &seal_root,
                     scm.as_ref(),
                     &review_id,
                     commit,
@@ -192,7 +192,7 @@ fn main() -> Result<()> {
             } => {
                 let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_threads_create(
-                    &crit_root,
+                    &seal_root,
                     scm.as_ref(),
                     &review_id,
                     &file,
@@ -209,14 +209,14 @@ fn main() -> Result<()> {
                 since,
             } => {
                 let status_str = status.map(|s| match s {
-                    crit::cli::ThreadStatus::Open => "open",
-                    crit::cli::ThreadStatus::Resolved => "resolved",
+                    seal::cli::ThreadStatus::Open => "open",
+                    seal::cli::ThreadStatus::Resolved => "resolved",
                 });
                 let since_dt = since
-                    .map(|s| crit::cli::commands::reviews::parse_since(&s))
+                    .map(|s| seal::cli::commands::reviews::parse_since(&s))
                     .transpose()?;
                 run_threads_list(
-                    &crit_root,
+                    &seal_root,
                     &review_id,
                     status_str,
                     file.as_deref(),
@@ -237,7 +237,7 @@ fn main() -> Result<()> {
                 let context_lines = if no_context { 0 } else { context };
                 let scm = resolve_backend(&workspace_root, scm_preference)?;
                 run_threads_show(
-                    &crit_root,
+                    &seal_root,
                     scm.as_ref(),
                     &thread_id,
                     context_lines,
@@ -254,7 +254,7 @@ fn main() -> Result<()> {
                 reason,
             } => {
                 run_threads_resolve(
-                    &crit_root,
+                    &seal_root,
                     &thread_ids,
                     all,
                     file.as_deref(),
@@ -264,7 +264,7 @@ fn main() -> Result<()> {
                 )?;
             }
             ThreadsCommands::Reopen { thread_id, reason } => {
-                run_threads_reopen(&crit_root, &thread_id, reason, identity.as_deref(), format)?;
+                run_threads_reopen(&seal_root, &thread_id, reason, identity.as_deref(), format)?;
             }
         },
 
@@ -278,10 +278,10 @@ fn main() -> Result<()> {
                 let msg = message.or(message_positional).ok_or_else(|| {
                     anyhow::anyhow!("Message is required (use --message or provide as argument)")
                 })?;
-                run_comments_add(&crit_root, &thread_id, &msg, identity.as_deref(), format)?;
+                run_comments_add(&seal_root, &thread_id, &msg, identity.as_deref(), format)?;
             }
             CommentsCommands::List { thread_id } => {
-                run_comments_list(&crit_root, &thread_id, format)?;
+                run_comments_list(&seal_root, &thread_id, format)?;
             }
         },
 
@@ -291,7 +291,7 @@ fn main() -> Result<()> {
         } => {
             let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_status(
-                &crit_root,
+                &seal_root,
                 scm.as_ref(),
                 review_id.as_deref(),
                 unresolved_only,
@@ -301,16 +301,16 @@ fn main() -> Result<()> {
 
         Commands::Diff { review_id } => {
             let scm = resolve_backend(&workspace_root, scm_preference)?;
-            run_diff(&crit_root, scm.as_ref(), &review_id, format)?;
+            run_diff(&seal_root, scm.as_ref(), &review_id, format)?;
         }
 
         Commands::Ui => {
-            eprintln!("WARNING: `crit ui` is deprecated and will be removed in a future release.");
-            eprintln!("  Install botcrit-ui for the canonical interactive review experience:");
-            eprintln!("    cargo install --git https://github.com/anomalyco/botcrit-ui");
-            eprintln!("  Then run: crit-ui");
+            eprintln!("WARNING: `seal ui` is deprecated and will be removed in a future release.");
+            eprintln!("  Install botseal-ui for the canonical interactive review experience:");
+            eprintln!("    cargo install --git https://github.com/bobisme/botseal-ui");
+            eprintln!("  Then run: seal-ui");
             eprintln!();
-            crit::tui::run(&crit_root)?;
+            seal::tui::run(&seal_root)?;
         }
 
         Commands::Comment {
@@ -321,7 +321,7 @@ fn main() -> Result<()> {
         } => {
             let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_comment(
-                &crit_root,
+                &seal_root,
                 scm.as_ref(),
                 &review_id,
                 &file,
@@ -333,11 +333,11 @@ fn main() -> Result<()> {
         }
 
         Commands::Lgtm { review_id, message } => {
-            run_lgtm(&crit_root, &review_id, message, identity.as_deref(), format)?;
+            run_lgtm(&seal_root, &review_id, message, identity.as_deref(), format)?;
         }
 
         Commands::Block { review_id, reason } => {
-            run_block(&crit_root, &review_id, reason, identity.as_deref(), format)?;
+            run_block(&seal_root, &review_id, reason, identity.as_deref(), format)?;
         }
 
         Commands::Review {
@@ -349,11 +349,11 @@ fn main() -> Result<()> {
         } => {
             let context_lines = if no_context { 0 } else { context };
             let since_dt = since
-                .map(|s| crit::cli::commands::reviews::parse_since(&s))
+                .map(|s| seal::cli::commands::reviews::parse_since(&s))
                 .transpose()?;
             let scm = resolve_backend(&workspace_root, scm_preference)?;
             run_review(
-                &crit_root,
+                &seal_root,
                 scm.as_ref(),
                 &review_id,
                 context_lines,
@@ -365,7 +365,7 @@ fn main() -> Result<()> {
 
         Commands::Reply { thread_id, message } => {
             run_comments_add(
-                &crit_root,
+                &seal_root,
                 &thread_id,
                 &message,
                 identity.as_deref(),
@@ -375,14 +375,14 @@ fn main() -> Result<()> {
 
         Commands::Inbox => {
             let agent = get_agent_identity(identity.as_deref())?;
-            run_inbox(&crit_root, &agent, format)?;
+            run_inbox(&seal_root, &agent, format)?;
         }
 
         Commands::Sync {
             rebuild,
             accept_regression,
         } => {
-            run_sync(&crit_root, rebuild, accept_regression, format)?;
+            run_sync(&seal_root, rebuild, accept_regression, format)?;
         }
     }
 

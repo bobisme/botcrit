@@ -1,10 +1,10 @@
 # Demo Project
 
-Generate a realistic crit demo with either script:
+Generate a realistic seal demo with either script:
 - `scripts/generate-demo-jj.sh` for a jj-based demo (multi-workspace)
 - `scripts/generate-demo-git.sh` for a pure Git demo
 
-Both initialize crit and exercise reviews, threads, comments, replies, votes,
+Both initialize seal and exercise reviews, threads, comments, replies, votes,
 and lifecycle transitions.
 
 ## Generate
@@ -36,7 +36,7 @@ Or specify a custom path:
 
 ## Example Output
 
-### `crit reviews list`
+### `seal reviews list`
 
 ```
 [3]{author,open_thread_count,review_id,status,thread_count,title}:
@@ -45,7 +45,7 @@ Or specify a custom path:
   swift-falcon,4,cr-cccn,open,5,"Refactor auth: replace unsafe static with RwLock"
 ```
 
-### `crit review <id>`
+### `seal review <id>`
 
 Shows the full review with inline code context, threads, comments, and votes:
 
@@ -93,7 +93,7 @@ Shows the full review with inline code context, threads, comments, and votes:
        You're right, I'll switch to rand::OsRng. Good catch.
 ```
 
-### `crit threads list <id> -v`
+### `seal threads list <id> -v`
 
 ```
 ○ th-rrmx src/auth.rs:4 (open, 1 comment)
@@ -108,7 +108,7 @@ Shows the full review with inline code context, threads, comments, and votes:
     quiet-owl: fastrand isn't cryptographically secure. For session tokens, use rand::OsRng...
 ```
 
-### `crit inbox` (as swift-falcon, the review author)
+### `seal inbox` (as swift-falcon, the review author)
 
 ```
 Inbox for swift-falcon (4 items)
@@ -124,7 +124,7 @@ Open feedback on your reviews (4):
     in cr-cccn (Refactor auth: replace unsafe static with RwLock)
 ```
 
-### `crit inbox` (as bold-tiger, a reviewer)
+### `seal inbox` (as bold-tiger, a reviewer)
 
 ```
 Inbox for bold-tiger (1 items)
@@ -134,13 +134,13 @@ Threads with new responses (1):
     in cr-cccn (Refactor auth: replace unsafe static with RwLock)
 ```
 
-### `crit doctor`
+### `seal doctor`
 
 ```
 checks[5]{message,name,status}:
   "jj is installed: jj 0.37.0",jj_installed,pass
   Current directory is a jj repository,jj_repo,pass
-  ".crit/ exists, events.jsonl present, index.db present",crit_initialized,pass
+  ".seal/ exists, events.jsonl present, index.db present",crit_initialized,pass
   events.jsonl is valid (31 events),events_parseable,pass
   "index.db is in sync (3 reviews, 0 events)",index_sync,pass
 healthy: true
@@ -150,7 +150,7 @@ healthy: true
 
 | Feature | Where |
 |---------|-------|
-| `crit init` | Setup |
+| `seal init` | Setup |
 | `reviews create` | Reviews 1, 2, 3 |
 | `reviews request` | Reviews 1, 2 |
 | `comment` (auto-thread) | All reviews |

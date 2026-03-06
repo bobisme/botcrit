@@ -16,7 +16,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::critignore::CritIgnore;
+use crate::sealignore::SealIgnore;
 use crate::jj::JjRepo;
 use crate::projection::{Comment, ProjectionDb, ReviewDetail, ThreadSummary};
 use crate::tui::theme;
@@ -148,9 +148,9 @@ impl ReviewDetailView {
             .changed_files_between(&base_commit, target_commit)
             .unwrap_or_default();
 
-        // Load critignore patterns and filter files
-        let critignore = CritIgnore::load(jj.root());
-        let (changed_files, _ignored_count) = critignore.filter_files(all_files);
+        // Load sealignore patterns and filter files
+        let sealignore = SealIgnore::load(jj.root());
+        let (changed_files, _ignored_count) = sealignore.filter_files(all_files);
 
         let mut sections = Vec::new();
 

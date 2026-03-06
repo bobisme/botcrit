@@ -1,11 +1,11 @@
-//! Implementation of `crit status` and `crit diff` commands.
+//! Implementation of `seal status` and `seal diff` commands.
 
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::commands::helpers::{ensure_initialized, open_and_sync, review_not_found_error};
-use crate::critignore::{AllFilesIgnoredError, CritIgnore};
+use crate::sealignore::{AllFilesIgnoredError, SealIgnore};
 use crate::jj::drift::{calculate_drift, DriftResult};
 use crate::output::{Formatter, OutputFormat};
 use crate::projection::ThreadSummary;
@@ -38,18 +38,18 @@ pub struct ReviewStatus {
 /// Show status of reviews with drift detection.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_status(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: Option<&str>,
     unresolved_only: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
     let current_commit = scm.current_commit()?;
 
     // Get reviews to process
@@ -57,7 +57,7 @@ pub fn run_status(
         let review = db.get_review(rid)?;
         match review {
             Some(r) => vec![r],
-            None => return Err(review_not_found_error(crit_root, rid)),
+            None => return Err(review_not_found_error(seal_root, rid)),
         }
     } else {
         // Get all open reviews
@@ -161,7 +161,7 @@ pub fn run_status(
         &statuses,
         empty_msg,
         "reviews",
-        &["crit review <id>", "crit threads list <id>"],
+        &["seal review <id>", "seal threads list <id>"],
     )?;
 
     Ok(())
@@ -170,23 +170,23 @@ pub fn run_status(
 /// Show diff for a review.
 ///
 /// # Arguments
-/// * `crit_root` - Path to main repo (where .crit/ lives)
+/// * `seal_root` - Path to main repo (where .seal/ lives)
 /// * `workspace_root` - Path to current workspace (for jj @ resolution)
 pub fn run_diff(
-    crit_root: &Path,
+    seal_root: &Path,
     scm: &dyn ScmRepo,
     review_id: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    ensure_initialized(crit_root)?;
+    ensure_initialized(seal_root)?;
 
-    let db = open_and_sync(crit_root)?;
+    let db = open_and_sync(seal_root)?;
 
     // Get the review
     let review = db.get_review(review_id)?;
     let review = match review {
         Some(r) => r,
-        None => return Err(review_not_found_error(crit_root, review_id)),
+        None => return Err(review_not_found_error(seal_root, review_id)),
     };
 
     // Get target commit: resolve the review's change_id to its current commit
@@ -209,16 +209,16 @@ pub fn run_diff(
     // Get the diff between base and target
     let diff = scm.diff_git(&base_commit, &target_commit)?;
 
-    // Get changed files from the diff and filter with critignore
+    // Get changed files from the diff and filter with sealignore
     let all_files = extract_changed_files_from_diff(&diff);
-    let critignore = CritIgnore::load(crit_root);
-    let (changed_files, ignored_count) = critignore.filter_files(all_files);
+    let sealignore = SealIgnore::load(seal_root);
+    let (changed_files, ignored_count) = sealignore.filter_files(all_files);
 
     // Check if all files were ignored
     if changed_files.is_empty() && ignored_count > 0 {
         return Err(AllFilesIgnoredError {
             ignored_count,
-            has_critignore: CritIgnore::has_critignore_file(crit_root),
+            has_sealignore: SealIgnore::has_sealignore_file(seal_root),
         }
         .into());
     }

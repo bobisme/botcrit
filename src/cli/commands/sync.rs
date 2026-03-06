@@ -1,4 +1,4 @@
-//! Implementation of `crit sync` command.
+//! Implementation of `seal sync` command.
 
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -63,7 +63,7 @@ struct RebuildOutput {
 
 /// Run the sync command.
 pub fn run_sync(
-    crit_root: &Path,
+    seal_root: &Path,
     rebuild: bool,
     accept_regression: Option<String>,
     format: OutputFormat,
@@ -72,20 +72,20 @@ pub fn run_sync(
         bail!("Cannot use --rebuild and --accept-regression together.\n  Use --rebuild for full rebuild, or --accept-regression <review-id> for a single file.");
     }
 
-    ensure_initialized(crit_root)?;
-    require_v2(crit_root)?;
+    ensure_initialized(seal_root)?;
+    require_v2(seal_root)?;
 
-    let db = ProjectionDb::open(&index_path(crit_root))?;
+    let db = ProjectionDb::open(&index_path(seal_root))?;
     db.init_schema()?;
 
     let formatter = Formatter::new(format);
 
     if rebuild {
         // Full destructive rebuild
-        let events_rebuilt = rebuild_from_review_logs(&db, crit_root)?;
+        let events_rebuilt = rebuild_from_review_logs(&db, seal_root)?;
 
         // Re-populate review_file_state by syncing (all files are "new" now)
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let report = sync_from_review_logs(&db, seal_root)?;
 
         let output = RebuildOutput {
             action: "rebuild".to_string(),
@@ -108,13 +108,13 @@ pub fn run_sync(
         // Re-baseline a single review file
         db.delete_review_file_state(&review_id)?;
 
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let report = sync_from_review_logs(&db, seal_root)?;
 
         let output = SyncOutput::from_report("accept-regression", &report);
         formatter.print(&output)?;
     } else {
         // Normal sync
-        let report = sync_from_review_logs(&db, crit_root)?;
+        let report = sync_from_review_logs(&db, seal_root)?;
 
         let output = SyncOutput::from_report("sync", &report);
         formatter.print(&output)?;
@@ -130,14 +130,14 @@ mod tests {
     use crate::log::{AppendLog, ReviewLog};
     use tempfile::tempdir;
 
-    /// Set up a v2 crit repository with one review containing events.
-    fn setup_v2_repo_with_review(crit_root: &Path, review_id: &str) -> ProjectionDb {
-        let crit_dir = crit_root.join(".crit");
-        std::fs::create_dir_all(crit_dir.join("reviews")).unwrap();
-        std::fs::write(crit_dir.join("version"), "2\n").unwrap();
+    /// Set up a v2 seal repository with one review containing events.
+    fn setup_v2_repo_with_review(seal_root: &Path, review_id: &str) -> ProjectionDb {
+        let seal_dir = seal_root.join(".seal");
+        std::fs::create_dir_all(seal_dir.join("reviews")).unwrap();
+        std::fs::write(seal_dir.join("version"), "2\n").unwrap();
 
         // Write review events
-        let log = ReviewLog::new(crit_root, review_id).unwrap();
+        let log = ReviewLog::new(seal_root, review_id).unwrap();
         log.append(&EventEnvelope::new(
             "test-author",
             Event::ReviewCreated(ReviewCreated {
@@ -163,7 +163,7 @@ mod tests {
         ))
         .unwrap();
 
-        let db = ProjectionDb::open(&index_path(crit_root)).unwrap();
+        let db = ProjectionDb::open(&index_path(seal_root)).unwrap();
         db.init_schema().unwrap();
         db
     }
@@ -171,15 +171,15 @@ mod tests {
     #[test]
     fn test_run_sync_basic() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
-        let _db = setup_v2_repo_with_review(crit_root, "cr-sync1");
+        let seal_root = dir.path();
+        let _db = setup_v2_repo_with_review(seal_root, "cr-sync1");
 
         // Run sync command
-        let result = run_sync(crit_root, false, None, OutputFormat::Text);
+        let result = run_sync(seal_root, false, None, OutputFormat::Text);
         assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
 
         // Verify data was synced by opening the db again
-        let db = ProjectionDb::open(&index_path(crit_root)).unwrap();
+        let db = ProjectionDb::open(&index_path(seal_root)).unwrap();
         db.init_schema().unwrap();
         let review_count: i64 = db
             .conn()
@@ -197,11 +197,11 @@ mod tests {
     #[test]
     fn test_run_sync_rebuild() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
-        let db = setup_v2_repo_with_review(crit_root, "cr-rebuild1");
+        let seal_root = dir.path();
+        let db = setup_v2_repo_with_review(seal_root, "cr-rebuild1");
 
         // Initial sync to populate data
-        sync_from_review_logs(&db, crit_root).unwrap();
+        sync_from_review_logs(&db, seal_root).unwrap();
 
         // Verify data exists
         let review_count: i64 = db
@@ -214,11 +214,11 @@ mod tests {
         drop(db);
 
         // Run rebuild
-        let result = run_sync(crit_root, true, None, OutputFormat::Text);
+        let result = run_sync(seal_root, true, None, OutputFormat::Text);
         assert!(result.is_ok(), "rebuild should succeed: {:?}", result.err());
 
         // Verify data still exists after rebuild
-        let db = ProjectionDb::open(&index_path(crit_root)).unwrap();
+        let db = ProjectionDb::open(&index_path(seal_root)).unwrap();
         db.init_schema().unwrap();
         let review_count: i64 = db
             .conn()
@@ -242,11 +242,11 @@ mod tests {
     #[test]
     fn test_run_sync_accept_regression() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
-        let db = setup_v2_repo_with_review(crit_root, "cr-regress1");
+        let seal_root = dir.path();
+        let db = setup_v2_repo_with_review(seal_root, "cr-regress1");
 
         // Initial sync
-        sync_from_review_logs(&db, crit_root).unwrap();
+        sync_from_review_logs(&db, seal_root).unwrap();
 
         // Verify review_file_state exists
         let state_count: i64 = db
@@ -271,7 +271,7 @@ mod tests {
 
         // Run accept-regression
         let result = run_sync(
-            crit_root,
+            seal_root,
             false,
             Some("cr-regress1".to_string()),
             OutputFormat::Text,
@@ -283,7 +283,7 @@ mod tests {
         );
 
         // Verify review_file_state was re-populated with correct values
-        let db = ProjectionDb::open(&index_path(crit_root)).unwrap();
+        let db = ProjectionDb::open(&index_path(seal_root)).unwrap();
         db.init_schema().unwrap();
         let line_count: i64 = db
             .conn()
@@ -302,11 +302,11 @@ mod tests {
     #[test]
     fn test_run_sync_rebuild_and_accept_regression_mutually_exclusive() {
         let dir = tempdir().unwrap();
-        let crit_root = dir.path();
-        let _db = setup_v2_repo_with_review(crit_root, "cr-both");
+        let seal_root = dir.path();
+        let _db = setup_v2_repo_with_review(seal_root, "cr-both");
 
         let result = run_sync(
-            crit_root,
+            seal_root,
             true,
             Some("cr-both".to_string()),
             OutputFormat::Text,
