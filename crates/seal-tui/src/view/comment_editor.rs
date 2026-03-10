@@ -5,6 +5,8 @@
 //! - Text area with existing comments context
 //! - Bottom bar with title (left) and hotkeys (right)
 
+use crate::db::Comment;
+use crate::markdown::{draw_markdown_content, markdown_line_bg, render_markdown};
 use crate::render_backend::{buffer_draw_text, buffer_fill_rect, OptimizedBuffer, Style};
 
 use crate::model::{Focus, InlineEditor, Model};
@@ -17,6 +19,9 @@ const MIN_HEIGHT: u32 = 8;
 const MIN_WIDTH: u32 = 60;
 /// Horizontal padding inside the panel.
 const H_PAD: u32 = 2;
+const COMMENT_BODY_INDENT: u32 = 2;
+const MAX_CONTEXT_ROWS: u32 = 10;
+const MAX_CONTEXT_COMMENTS: usize = 4;
 
 pub fn view(model: &Model, buffer: &mut OptimizedBuffer) {
     if model.focus != Focus::Commenting {
@@ -128,12 +133,8 @@ fn compute_panel(
         (natural_w, x)
     };
 
-    let existing_count = editor.request.existing_comments.len() as u32;
-    let context_rows = if existing_count > 0 {
-        existing_count.min(6) + 1 // comments + blank separator
-    } else {
-        0
-    };
+    let content_width = panel_width.saturating_sub(H_PAD * 2);
+    let context_rows = existing_comments_height(&editor.request.existing_comments, content_width);
     let text_area_height = 8u32;
     // 1 top padding + context + text + 1 gap + 1 hotkey row + 1 bottom padding
     let ideal_height = 1 + context_rows + text_area_height + 1 + 1 + 1;
@@ -158,25 +159,83 @@ fn render_existing_comments(
     if editor.request.existing_comments.is_empty() {
         return y;
     }
-    let existing_count = editor.request.existing_comments.len() as u32;
-    let max_comments = 6u32.min(existing_count);
-    let skip = existing_count.saturating_sub(max_comments) as usize;
-    for comment in editor.request.existing_comments.iter().skip(skip) {
+    let skip = existing_comments_start_index(&editor.request.existing_comments, content_width);
+    let body_x = content_x + COMMENT_BODY_INDENT;
+    let body_width = content_width.saturating_sub(COMMENT_BODY_INDENT);
+
+    'comments: for comment in editor.request.existing_comments.iter().skip(skip) {
         if y >= panel.y + panel.height - 3 {
             break;
         }
-        let text = format!("{}: {}", comment.author, comment.body);
+
         draw_text_truncated(
             buffer,
             content_x,
             y,
-            &text,
+            &format!("@{}", comment.author),
             content_width,
-            theme.style_muted(),
+            theme.style_primary().with_bg(theme.panel_bg),
         );
         y += 1;
+
+        for line in render_markdown(&comment.body, body_width as usize) {
+            if y >= panel.y + panel.height - 3 {
+                break 'comments;
+            }
+
+            let line_bg = markdown_line_bg(theme, theme.panel_bg, line.style);
+            buffer_fill_rect(buffer, body_x, y, body_width, 1, line_bg);
+            draw_markdown_content(
+                buffer,
+                theme,
+                body_x,
+                y,
+                body_width,
+                line_bg,
+                &line.content,
+                line.style,
+            );
+            y += 1;
+        }
     }
     y + 1 // blank separator
+}
+
+fn existing_comments_height(comments: &[Comment], content_width: u32) -> u32 {
+    if comments.is_empty() {
+        return 0;
+    }
+
+    let skip = existing_comments_start_index(comments, content_width);
+    let body_width = content_width.saturating_sub(COMMENT_BODY_INDENT) as usize;
+    let mut rows = 0u32;
+    for comment in comments.iter().skip(skip) {
+        rows += 1;
+        rows += render_markdown(&comment.body, body_width).len() as u32;
+    }
+
+    rows + 1
+}
+
+fn existing_comments_start_index(comments: &[Comment], content_width: u32) -> usize {
+    let body_width = content_width.saturating_sub(COMMENT_BODY_INDENT) as usize;
+    let mut rows = 0u32;
+    let mut count = 0usize;
+
+    for comment in comments.iter().rev() {
+        let comment_rows = 1 + render_markdown(&comment.body, body_width).len() as u32;
+        if count > 0 && rows + comment_rows > MAX_CONTEXT_ROWS {
+            break;
+        }
+        if count >= MAX_CONTEXT_COMMENTS {
+            break;
+        }
+
+        rows += comment_rows;
+        count += 1;
+    }
+
+    comments.len().saturating_sub(count)
 }
 
 fn render_text_area(
@@ -259,5 +318,40 @@ fn render_line_with_cursor(
     // If cursor is at end of line, draw cursor block on the space after
     if cursor_col >= chars.len() && col < max_width {
         buffer_draw_text(buffer, x + col, y, " ", cursor_style);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn comment(author: &str, body: &str) -> Comment {
+        Comment {
+            comment_id: "th-1.1".to_string(),
+            author: author.to_string(),
+            body: body.to_string(),
+            created_at: "2026-03-10T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn context_height_counts_markdown_rows() {
+        let comments = vec![comment("alice", "```rust\nfn main() {}\n```")];
+        assert!(existing_comments_height(&comments, 40) > 3);
+    }
+
+    #[test]
+    fn context_window_prefers_latest_comments() {
+        let comments = vec![
+            comment("a", "old"),
+            comment("b", "older"),
+            comment("c", "new"),
+            comment("d", "newest"),
+            comment("e", "latest"),
+        ];
+
+        let skip = existing_comments_start_index(&comments, 20);
+        assert!(skip > 0);
+        assert_eq!(comments[skip].author, "b");
     }
 }

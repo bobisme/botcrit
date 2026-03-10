@@ -4,13 +4,14 @@ use crate::render_backend::{buffer_draw_text, buffer_fill_rect, color_lerp, Styl
 
 use crate::db::ThreadSummary;
 use crate::layout::BLOCK_PADDING;
-use crate::markdown::{render_markdown, MarkdownContent, MarkdownStyle};
+use crate::markdown::{
+    draw_markdown_content, markdown_line_bg, render_markdown, MarkdownContent, MarkdownStyle,
+};
 use crate::view::components::Rect;
 
 use super::helpers::{
     comment_block_area, comment_content_area, draw_plain_line_with_right, PlainLineContent,
 };
-use super::text_util::{draw_highlighted_text, HighlightContent};
 use super::StreamCursor;
 
 #[derive(Clone)]
@@ -60,7 +61,7 @@ fn build_comment_lines(
         kind: CommentLineKind::Markdown(MarkdownStyle::Body),
     });
 
-    for comment in comments {
+    for (index, comment) in comments.iter().enumerate() {
         let left = format!("@{}", comment.author);
         let right_max = content_width.saturating_sub(left.len().saturating_add(1));
         let right = if right_max > 0 {
@@ -83,6 +84,13 @@ fn build_comment_lines(
                 content: line.content,
                 right: None,
                 kind: CommentLineKind::Markdown(line.style),
+            });
+        }
+        if index + 1 < comments.len() {
+            content_lines.push(CommentLine {
+                content: MarkdownContent::Text(String::new()),
+                right: None,
+                kind: CommentLineKind::Markdown(MarkdownStyle::Body),
             });
         }
     }
@@ -137,12 +145,12 @@ pub(super) fn emit_comment_block(
         cursor.mark_cursor_stop();
         cursor.emit(|buf, y, theme| {
             let base_bg = if is_highlighted {
-                color_lerp(theme.panel_bg, theme.primary, 0.06)
+                color_lerp(theme.panel_bg, theme.primary, 0.03)
             } else {
                 theme.panel_bg
             };
             let block_bg = if is_cursor {
-                color_lerp(base_bg, theme.primary, 0.15)
+                color_lerp(base_bg, theme.primary, 0.08)
             } else {
                 base_bg
             };
@@ -177,32 +185,38 @@ pub(super) fn emit_comment_block(
                 buffer_draw_text(buf, rc, y, "▐", bar_style);
             } else if row < content_end {
                 let line = &content_lines[row - content_start];
+                let markdown_style = match line.kind {
+                    CommentLineKind::Header => MarkdownStyle::Body,
+                    CommentLineKind::Author => MarkdownStyle::Heading,
+                    CommentLineKind::Markdown(style) => style,
+                };
+                let line_bg = markdown_line_bg(theme, block_bg, markdown_style);
                 let (left_style, right_style) = match line.kind {
-                    CommentLineKind::Header => (
-                        theme.style_muted_on(block_bg),
-                        theme.style_muted_on(block_bg),
-                    ),
+                    CommentLineKind::Header => {
+                        (theme.style_muted_on(line_bg), theme.style_muted_on(line_bg))
+                    }
                     CommentLineKind::Author => (
-                        theme.style_primary_on(block_bg),
-                        theme.style_muted_on(block_bg),
+                        theme.style_primary_on(line_bg),
+                        theme.style_muted_on(line_bg),
                     ),
                     CommentLineKind::Markdown(style) => {
-                        (style.style(theme, block_bg), theme.style_muted_on(block_bg))
+                        (style.style(theme, line_bg), theme.style_muted_on(line_bg))
                     }
                 };
                 buffer_fill_rect(buf, area.x, y, area.width, 1, theme.background);
                 buffer_fill_rect(buf, block.x, y, block.width, 1, block_bg);
+                buffer_fill_rect(buf, padded.x, y, padded.width, 1, line_bg);
                 buffer_draw_text(buf, block.x, y, "▌", bar_style);
                 buffer_draw_text(buf, block.x + 1, y, "▌", bar_style);
                 buffer_draw_text(buf, rc2, y, "▐", bar_style);
                 buffer_draw_text(buf, rc, y, "▐", bar_style);
                 match &line.content {
-                    MarkdownContent::Text(text) => {
+                    MarkdownContent::Text(text) if line.right.is_some() => {
                         draw_plain_line_with_right(
                             buf,
                             padded,
                             y,
-                            block_bg,
+                            line_bg,
                             &PlainLineContent {
                                 left: text,
                                 right: line.right.as_deref(),
@@ -211,19 +225,31 @@ pub(super) fn emit_comment_block(
                             },
                         );
                     }
-                    MarkdownContent::Highlighted { spans, fallback } => {
-                        draw_highlighted_text(
+                    _ => {
+                        draw_markdown_content(
                             buf,
+                            theme,
                             padded.x,
                             y,
                             padded.width,
-                            &HighlightContent {
-                                spans: Some(spans),
-                                fallback_text: fallback,
-                                fallback_fg: left_style.fg.unwrap_or(theme.foreground),
-                                bg: block_bg,
-                            },
+                            line_bg,
+                            &line.content,
+                            markdown_style,
                         );
+                        if let Some(right) = line.right.as_deref() {
+                            draw_plain_line_with_right(
+                                buf,
+                                padded,
+                                y,
+                                line_bg,
+                                &PlainLineContent {
+                                    left: "",
+                                    right: Some(right),
+                                    left_style,
+                                    right_style,
+                                },
+                            );
+                        }
                     }
                 }
             } else if row < content_end + BLOCK_PADDING {
@@ -254,5 +280,48 @@ pub(super) fn emit_comment_block(
                 buffer_fill_rect(buf, area.x, y, area.width, 1, theme.background);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn comment(id: &str, author: &str, body: &str) -> crate::db::Comment {
+        crate::db::Comment {
+            comment_id: id.to_string(),
+            author: author.to_string(),
+            body: body.to_string(),
+            created_at: "2026-03-10T00:00:00Z".to_string(),
+        }
+    }
+
+    fn thread() -> ThreadSummary {
+        ThreadSummary {
+            thread_id: "th-1234".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            selection_start: 10,
+            selection_end: None,
+            status: "open".to_string(),
+            comment_count: 2,
+        }
+    }
+
+    #[test]
+    fn build_comment_lines_inserts_blank_row_between_comments() {
+        let lines = build_comment_lines(
+            &thread(),
+            &[
+                comment("th-1234.1", "alice", "first"),
+                comment("th-1234.2", "bob", "second"),
+            ],
+            40,
+        );
+
+        let blanks = lines
+            .iter()
+            .filter(|line| matches!(&line.content, MarkdownContent::Text(text) if text.is_empty()))
+            .count();
+        assert!(blanks >= 2);
     }
 }

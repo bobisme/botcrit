@@ -26,7 +26,7 @@ use crate::layout::{
     block_height, BLOCK_MARGIN, BLOCK_PADDING, SBS_LINE_NUM_WIDTH, THREAD_COL_WIDTH,
     UNIFIED_LINE_NUM_WIDTH,
 };
-use crate::markdown::{render_markdown, MarkdownContent};
+use crate::markdown::{draw_markdown_content, markdown_line_bg, render_markdown, MarkdownContent};
 use crate::syntax::HighlightSpan;
 use crate::theme::Theme;
 
@@ -46,7 +46,7 @@ use helpers::{
     PlainLineContent,
 };
 use side_by_side::{render_side_by_side_line_block, render_side_by_side_line_wrapped_row};
-use text_util::{draw_highlighted_text, wrap_content, HighlightContent};
+use text_util::wrap_content;
 use unified::{render_unified_diff_line_block, render_unified_diff_line_wrapped_row};
 
 /// Map from display-line index to the anchors at that position.
@@ -455,36 +455,34 @@ fn render_description_block(
                 buffer_draw_text(buf, rc2, y, "▐", bar_style);
                 buffer_draw_text(buf, rc, y, "▐", bar_style);
                 if let Some(line) = line_content {
-                    let left_style = line.style.style(theme, block_bg);
+                    let line_bg = markdown_line_bg(theme, block_bg, line.style);
+                    let left_style = line.style.style(theme, line_bg);
+                    buffer_fill_rect(buf, padded.x, y, padded.width, 1, line_bg);
                     match &line.content {
                         MarkdownContent::Text(text) => {
                             draw_plain_line_with_right(
                                 buf,
                                 padded,
                                 y,
-                                block_bg,
+                                line_bg,
                                 &PlainLineContent {
                                     left: text,
                                     right: None,
                                     left_style,
-                                    right_style: theme.style_muted_on(block_bg),
+                                    right_style: theme.style_muted_on(line_bg),
                                 },
                             );
                         }
-                        MarkdownContent::Highlighted { spans, fallback } => {
-                            draw_highlighted_text(
-                                buf,
-                                padded.x,
-                                y,
-                                padded.width,
-                                &HighlightContent {
-                                    spans: Some(spans),
-                                    fallback_text: fallback,
-                                    fallback_fg: left_style.fg.unwrap_or(theme.foreground),
-                                    bg: block_bg,
-                                },
-                            );
-                        }
+                        _ => draw_markdown_content(
+                            buf,
+                            theme,
+                            padded.x,
+                            y,
+                            padded.width,
+                            line_bg,
+                            &line.content,
+                            line.style,
+                        ),
                     }
                 }
             } else if row < content_end + BLOCK_PADDING {
