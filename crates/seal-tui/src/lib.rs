@@ -17,6 +17,7 @@ pub mod db;
 pub mod diff;
 pub mod input;
 pub mod layout;
+pub mod markdown;
 pub mod message;
 pub mod model;
 pub mod render_backend;

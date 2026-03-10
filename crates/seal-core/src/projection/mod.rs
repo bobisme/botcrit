@@ -18,6 +18,7 @@ pub use query::{
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -30,6 +31,122 @@ use crate::events::{
     ThreadResolved,
 };
 use crate::log::{list_review_ids, read_all_reviews, AppendLog, ReviewLog};
+use crate::scm::BackendDetection;
+
+static EMITTED_WARNING_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HistoryBackend {
+    Git,
+    Jj,
+    Unknown,
+}
+
+fn history_backend(seal_root: Option<&Path>) -> HistoryBackend {
+    let Some(seal_root) = seal_root else {
+        return HistoryBackend::Unknown;
+    };
+
+    let detection = BackendDetection::detect(seal_root);
+    if detection.jj_root.is_some() {
+        HistoryBackend::Jj
+    } else if detection.git_root.is_some() {
+        HistoryBackend::Git
+    } else {
+        HistoryBackend::Unknown
+    }
+}
+
+fn history_lookup_command(seal_root: Option<&Path>, path: &str) -> Option<String> {
+    match history_backend(seal_root) {
+        HistoryBackend::Git => Some(format!("git log --follow -p -- {path}")),
+        HistoryBackend::Jj => Some(format!("jj file annotate {path}")),
+        HistoryBackend::Unknown => None,
+    }
+}
+
+fn rebuild_recovery_hint(seal_root: Option<&Path>) -> String {
+    if let Some(command) = history_lookup_command(seal_root, ".seal/events.jsonl") {
+        format!(
+            "These reviews were in index.db but not in the restored events.jsonl. Check repository history for older versions using: {command}"
+        )
+    } else {
+        "These reviews were in index.db but not in the restored events.jsonl. Check repository history for older versions of .seal/events.jsonl.".to_string()
+    }
+}
+
+fn should_emit_warning_once(key: String) -> bool {
+    let emitted = EMITTED_WARNING_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut emitted = emitted
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    emitted.insert(key)
+}
+
+fn emit_orphaned_reviews_warning(seal_root: Option<&Path>, review_ids: &[String]) {
+    if review_ids.is_empty() {
+        return;
+    }
+
+    let repo_key = seal_root
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let key = format!("orphaned-reviews:{repo_key}:{}", review_ids.join(","));
+    if !should_emit_warning_once(key) {
+        return;
+    }
+
+    eprintln!(
+        "WARNING: {} review(s) have events but no ReviewCreated - skipping orphaned events",
+        review_ids.len()
+    );
+    for review_id in review_ids {
+        eprintln!("  {review_id}");
+    }
+    if let Some(command) = history_lookup_command(seal_root, ".seal/events.jsonl") {
+        eprintln!("  Use `{command}` to find lost reviews in history");
+    }
+}
+
+fn emit_stale_review_logs_warning(seal_root: &Path, anomalies: &[SyncAnomaly]) {
+    if anomalies.is_empty() {
+        return;
+    }
+
+    let mut anomaly_lines: Vec<String> = anomalies
+        .iter()
+        .map(|anomaly| format!("{}: {}", anomaly.review_id, anomaly.detail))
+        .collect();
+    anomaly_lines.sort();
+
+    let key = format!(
+        "stale-review-logs:{}:{}",
+        seal_root.display(),
+        anomaly_lines.join("|")
+    );
+    if !should_emit_warning_once(key) {
+        return;
+    }
+
+    let header = match history_backend(Some(seal_root)) {
+        HistoryBackend::Jj => "review event file(s) appear stale (likely jj workspace sync)",
+        HistoryBackend::Git | HistoryBackend::Unknown => "review event file(s) appear stale",
+    };
+    tracing::warn!("{header}");
+    for line in anomaly_lines {
+        tracing::warn!("  {line}");
+    }
+    tracing::warn!("Projection data preserved. To investigate:");
+    if let Some(command) =
+        history_lookup_command(Some(seal_root), ".seal/reviews/<review_id>/events.jsonl")
+    {
+        tracing::warn!("  {command}");
+    } else {
+        tracing::warn!("  Inspect repository history for .seal/reviews/<review_id>/events.jsonl");
+    }
+    tracing::warn!("To force rebuild from current files:");
+    tracing::warn!("  seal sync --rebuild");
+}
 
 // ============================================================================
 // Sync report types
@@ -504,6 +621,8 @@ fn rebuild_projection_with_orphan_detection(
             eprintln!("  ... and {} more", orphaned.len() - 5);
         }
 
+        let repo_root = seal_dir.and_then(Path::parent);
+
         if let Some(dir) = seal_dir {
             let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
             let backup_path = dir.join(format!("orphaned-reviews-{}.json", timestamp));
@@ -534,7 +653,7 @@ fn rebuild_projection_with_orphan_detection(
                 "timestamp": Utc::now().to_rfc3339(),
                 "reason": "events.jsonl truncation or content mismatch detected",
                 "orphaned_reviews": orphan_details,
-                "recovery_hint": "These reviews were in index.db but not in the restored events.jsonl. Check jj history for older versions of events.jsonl using: jj file annotate .seal/events.jsonl"
+                "recovery_hint": rebuild_recovery_hint(repo_root)
             });
 
             std::fs::write(&backup_path, serde_json::to_string_pretty(&backup)?)?;
@@ -542,8 +661,12 @@ fn rebuild_projection_with_orphan_detection(
                 "Orphaned review details saved to: {}",
                 backup_path.display()
             );
+        } else if let Some(command) = history_lookup_command(repo_root, ".seal/events.jsonl") {
+            eprintln!("HINT: Run '{command}' to find older versions");
         } else {
-            eprintln!("HINT: Run 'jj file annotate .seal/events.jsonl' to find older versions");
+            eprintln!(
+                "HINT: Inspect repository history for .seal/events.jsonl to find older versions"
+            );
         }
     }
 
@@ -615,12 +738,20 @@ fn event_thread_id(event: &Event) -> Option<&str> {
 
 /// Filter out orphaned events that reference reviews without a ReviewCreated event.
 ///
-/// When a jj workspace operation restores an older version of events.jsonl,
-/// the ReviewCreated event may be lost while ThreadCreated/CommentAdded events
-/// remain. This function detects and removes such orphaned events, printing a warning.
+/// When repository history restores an older version of events.jsonl, the
+/// ReviewCreated event may be lost while ThreadCreated/CommentAdded events remain.
+/// This function detects and removes such orphaned events, printing a warning.
 ///
 /// Returns the filtered events and the count of skipped events.
+#[cfg_attr(not(test), allow(dead_code))]
 fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, usize) {
+    filter_orphaned_events_for_repo(events, None)
+}
+
+fn filter_orphaned_events_for_repo(
+    events: Vec<EventEnvelope>,
+    seal_root: Option<&Path>,
+) -> (Vec<EventEnvelope>, usize) {
     // Pass 1: collect known review_ids (from ReviewCreated) and thread→review map
     let mut known_reviews: HashSet<String> = HashSet::new();
     let mut thread_to_review: HashMap<String, String> = HashMap::new();
@@ -666,19 +797,14 @@ fn filter_orphaned_events(events: Vec<EventEnvelope>) -> (Vec<EventEnvelope>, us
     }
 
     // Warn about orphaned reviews
-    let real_orphans: Vec<&String> = orphaned_reviews
+    let mut real_orphans: Vec<String> = orphaned_reviews
         .iter()
-        .filter(|r| !r.starts_with("unknown-thread:"))
+        .filter(|review_id| !review_id.starts_with("unknown-thread:"))
+        .cloned()
         .collect();
+    real_orphans.sort();
     if !real_orphans.is_empty() {
-        eprintln!(
-            "WARNING: {} review(s) have events but no ReviewCreated — skipping orphaned events",
-            real_orphans.len()
-        );
-        for rid in &real_orphans {
-            eprintln!("  {rid}");
-        }
-        eprintln!("  Use `jj file annotate .seal/events.jsonl` to find lost reviews in history");
+        emit_orphaned_reviews_warning(seal_root, &real_orphans);
     }
 
     // Pass 3: filter out orphaned events
@@ -836,7 +962,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, seal_root: &Path) -> Result<Sync
         match stored_states.get(review_id.as_str()) {
             None => {
                 // NEW file: read all events, apply
-                sync_new_file(db, &log, review_id, &mut report)?;
+                sync_new_file(db, &log, review_id, seal_root, &mut report)?;
             }
             Some(stored) => {
                 if current_byte_count == stored.byte_count {
@@ -877,7 +1003,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, seal_root: &Path) -> Result<Sync
                     Ok(Some(h)) => h,
                     Ok(None) => {
                         // Empty prefix — treat as new file
-                        sync_new_file(db, &log, review_id, &mut report)?;
+                        sync_new_file(db, &log, review_id, seal_root, &mut report)?;
                         continue;
                     }
                     Err(e) => {
@@ -905,7 +1031,14 @@ pub fn sync_from_review_logs(db: &ProjectionDb, seal_root: &Path) -> Result<Sync
                 }
 
                 // GREW: prefix matches, read new lines only
-                sync_grew_file(db, &log, review_id, stored.line_count, &mut report)?;
+                sync_grew_file(
+                    db,
+                    &log,
+                    review_id,
+                    stored.line_count,
+                    seal_root,
+                    &mut report,
+                )?;
             }
         }
     }
@@ -922,16 +1055,7 @@ pub fn sync_from_review_logs(db: &ProjectionDb, seal_root: &Path) -> Result<Sync
     }
 
     // Print warnings if there are anomalies
-    if !report.anomalies.is_empty() {
-        tracing::warn!("review event file(s) appear stale (likely jj workspace sync)");
-        for anomaly in &report.anomalies {
-            tracing::warn!("  {}: {}", anomaly.review_id, anomaly.detail);
-        }
-        tracing::warn!("Projection data preserved. To investigate:");
-        tracing::warn!("  jj file annotate .seal/reviews/<review_id>/events.jsonl");
-        tracing::warn!("To force rebuild from current files:");
-        tracing::warn!("  seal sync --rebuild");
-    }
+    emit_stale_review_logs_warning(seal_root, &report.anomalies);
 
     Ok(report)
 }
@@ -943,6 +1067,7 @@ fn sync_new_file(
     db: &ProjectionDb,
     log: &ReviewLog,
     review_id: &str,
+    seal_root: &Path,
     report: &mut SyncReport,
 ) -> Result<()> {
     let events = match log.read_all() {
@@ -962,7 +1087,7 @@ fn sync_new_file(
     }
 
     // Filter orphaned events for this file
-    let (events, _orphaned) = filter_orphaned_events(events);
+    let (events, _orphaned) = filter_orphaned_events_for_repo(events, Some(seal_root));
     if events.is_empty() {
         return Ok(());
     }
@@ -1033,6 +1158,7 @@ fn sync_grew_file(
     log: &ReviewLog,
     review_id: &str,
     old_line_count: usize,
+    _seal_root: &Path,
     report: &mut SyncReport,
 ) -> Result<()> {
     let new_events = match log.read_from(old_line_count) {
@@ -1239,7 +1365,8 @@ pub fn rebuild_from_review_logs(db: &ProjectionDb, seal_root: &Path) -> Result<u
     }
 
     // Filter out orphaned events (bd-2ys)
-    let (all_events, _orphaned_count) = filter_orphaned_events(all_events);
+    let (all_events, _orphaned_count) =
+        filter_orphaned_events_for_repo(all_events, Some(seal_root));
 
     if all_events.is_empty() {
         return Ok(0);
@@ -1754,6 +1881,7 @@ mod tests {
     use super::*;
     use crate::events::{CodeSelection, Event};
     use crate::log::{open_or_create, AppendLog};
+    use std::process::Command;
     use tempfile::tempdir;
 
     fn make_review_created(review_id: &str) -> EventEnvelope {
@@ -1782,6 +1910,30 @@ mod tests {
                 commit_hash: "abc123".to_string(),
             }),
         )
+    }
+
+    #[test]
+    fn test_history_lookup_command_uses_git_in_git_repo() {
+        let dir = tempdir().unwrap();
+        let status = Command::new("git")
+            .arg("init")
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let command = history_lookup_command(Some(dir.path()), ".seal/events.jsonl");
+        assert_eq!(
+            command.as_deref(),
+            Some("git log --follow -p -- .seal/events.jsonl")
+        );
+    }
+
+    #[test]
+    fn test_rebuild_recovery_hint_falls_back_without_repo() {
+        let hint = rebuild_recovery_hint(None);
+        assert!(hint.contains("Check repository history"));
+        assert!(!hint.contains("jj file annotate"));
     }
 
     #[test]

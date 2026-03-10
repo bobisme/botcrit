@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use crate::db::{Comment, ThreadSummary};
 use crate::diff::ParsedDiff;
 use crate::layout;
+use crate::markdown::render_markdown;
 use crate::model::{DiffViewMode, FileCacheEntry, FileEntry};
-use crate::text::{wrap_text, wrap_text_preserve};
+use crate::text::wrap_text_preserve;
 
 // Re-export for downstream users that were importing from stream::
 pub use crate::layout::{
@@ -53,7 +54,7 @@ pub fn description_block_height(description: Option<&str>, pane_width: u32) -> u
         return 0;
     }
     let wrap_width = block_wrap_width(pane_width);
-    let wrapped = wrap_text(desc, wrap_width);
+    let wrapped = render_markdown(desc, wrap_width);
     block_height(wrapped.len())
 }
 
@@ -335,7 +336,7 @@ fn comment_block_height(comments: &[Comment], content_width: u32) -> usize {
     let mut content_lines = 2; // thread header line + spacing
     for comment in comments {
         content_lines += 1; // author line
-        let wrapped = wrap_text(&comment.body, max_width);
+        let wrapped = render_markdown(&comment.body, max_width);
         content_lines += wrapped.len();
     }
     block_height(content_lines).saturating_sub(BLOCK_MARGIN)

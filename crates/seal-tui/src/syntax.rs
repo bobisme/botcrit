@@ -135,6 +135,33 @@ impl Highlighter {
         })
     }
 
+    /// Create a stateful highlighter for a fenced markdown code block.
+    #[must_use]
+    pub fn for_fence_info(&self, fence_info: Option<&str>) -> Option<FileHighlighter<'_>> {
+        let language = fence_info?.split_whitespace().next()?;
+        let lower = language.to_ascii_lowercase();
+        let path_hint = match lower.as_str() {
+            "rust" | "rs" => "snippet.rs".to_string(),
+            "python" | "py" => "snippet.py".to_string(),
+            "javascript" | "js" => "snippet.js".to_string(),
+            "typescript" | "ts" => "snippet.ts".to_string(),
+            "tsx" => "snippet.tsx".to_string(),
+            "jsx" => "snippet.jsx".to_string(),
+            "json" => "snippet.json".to_string(),
+            "toml" => "snippet.toml".to_string(),
+            "yaml" | "yml" => "snippet.yaml".to_string(),
+            "shell" | "sh" | "bash" | "zsh" => "snippet.sh".to_string(),
+            "diff" | "patch" => "snippet.diff".to_string(),
+            "html" => "snippet.html".to_string(),
+            "css" => "snippet.css".to_string(),
+            "sql" => "snippet.sql".to_string(),
+            "markdown" | "md" => "snippet.md".to_string(),
+            _ => format!("snippet.{lower}"),
+        };
+
+        self.for_file(&path_hint)
+    }
+
     /// List available theme names
     #[must_use]
     pub fn available_themes() -> Vec<&'static str> {
@@ -351,5 +378,16 @@ mod tests {
                 num_s.fg
             );
         }
+    }
+
+    #[test]
+    fn test_fence_info_maps_common_languages() {
+        let highlighter = Highlighter::new();
+        let mut file_hl = highlighter
+            .for_fence_info(Some("rust"))
+            .expect("Should resolve rust fence");
+
+        let spans = file_hl.highlight_line("fn main() {}");
+        assert!(!spans.is_empty());
     }
 }

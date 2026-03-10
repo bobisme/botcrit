@@ -26,6 +26,7 @@ use crate::layout::{
     block_height, BLOCK_MARGIN, BLOCK_PADDING, SBS_LINE_NUM_WIDTH, THREAD_COL_WIDTH,
     UNIFIED_LINE_NUM_WIDTH,
 };
+use crate::markdown::{render_markdown, MarkdownContent};
 use crate::syntax::HighlightSpan;
 use crate::theme::Theme;
 
@@ -45,7 +46,7 @@ use helpers::{
     PlainLineContent,
 };
 use side_by_side::{render_side_by_side_line_block, render_side_by_side_line_wrapped_row};
-use text_util::wrap_content;
+use text_util::{draw_highlighted_text, wrap_content, HighlightContent};
 use unified::{render_unified_diff_line_block, render_unified_diff_line_wrapped_row};
 
 /// Map from display-line index to the anchors at that position.
@@ -393,12 +394,11 @@ fn render_description_block(
     _theme: &Theme,
 ) {
     use crate::render_backend::Style;
-    use crate::text::wrap_text;
 
     let block = comment_block_area(area);
     let padded = comment_content_area(block);
     let content_width = padded.width as usize;
-    let content_lines = wrap_text(description, content_width);
+    let content_lines = render_markdown(description, content_width);
 
     let top_margin = BLOCK_MARGIN;
     let bottom_margin = BLOCK_MARGIN;
@@ -409,8 +409,8 @@ fn render_description_block(
         .saturating_add(bottom_margin);
 
     for row in 0..total_rows {
-        let line_text = if row >= content_start && row < content_end {
-            Some(content_lines[row - content_start].as_str())
+        let line_content = if row >= content_start && row < content_end {
+            Some(&content_lines[row - content_start])
         } else {
             None
         };
@@ -454,19 +454,38 @@ fn render_description_block(
                 buffer_draw_text(buf, block.x + 1, y, "▌", bar_style);
                 buffer_draw_text(buf, rc2, y, "▐", bar_style);
                 buffer_draw_text(buf, rc, y, "▐", bar_style);
-                if let Some(text) = line_text {
-                    draw_plain_line_with_right(
-                        buf,
-                        padded,
-                        y,
-                        block_bg,
-                        &PlainLineContent {
-                            left: text,
-                            right: None,
-                            left_style: theme.style_foreground_on(block_bg),
-                            right_style: theme.style_muted_on(block_bg),
-                        },
-                    );
+                if let Some(line) = line_content {
+                    let left_style = line.style.style(theme, block_bg);
+                    match &line.content {
+                        MarkdownContent::Text(text) => {
+                            draw_plain_line_with_right(
+                                buf,
+                                padded,
+                                y,
+                                block_bg,
+                                &PlainLineContent {
+                                    left: text,
+                                    right: None,
+                                    left_style,
+                                    right_style: theme.style_muted_on(block_bg),
+                                },
+                            );
+                        }
+                        MarkdownContent::Highlighted { spans, fallback } => {
+                            draw_highlighted_text(
+                                buf,
+                                padded.x,
+                                y,
+                                padded.width,
+                                &HighlightContent {
+                                    spans: Some(spans),
+                                    fallback_text: fallback,
+                                    fallback_fg: left_style.fg.unwrap_or(theme.foreground),
+                                    bg: block_bg,
+                                },
+                            );
+                        }
+                    }
                 }
             } else if row < content_end + BLOCK_PADDING {
                 buffer_fill_rect(buf, area.x, y, area.width, 1, theme.background);
