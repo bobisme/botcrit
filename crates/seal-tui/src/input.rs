@@ -11,6 +11,7 @@ use crate::render_backend::{
 
 use crate::message::Message;
 use crate::model::{Focus, LayoutMode, Model, Screen};
+use crate::stream::description_block_height;
 
 pub fn map_event_to_message(model: &mut Model, event: &Event) -> Message {
     match event {
@@ -288,38 +289,62 @@ fn map_review_detail_key(model: &Model, key: KeyCode, modifiers: KeyModifiers) -
             KeyCode::Char('V') | KeyCode::Esc => Message::VisualToggle,
             _ => Message::Noop,
         },
-        Focus::DiffPane => match key {
-            KeyCode::Char('q') => Message::Quit,
-            KeyCode::Esc => Message::Back,
-            KeyCode::Tab | KeyCode::Char('h') => Message::ToggleFocus,
-            KeyCode::Char('j') | KeyCode::Down => Message::CursorDown,
-            KeyCode::Char('k') | KeyCode::Up => Message::CursorUp,
-            KeyCode::Char('g') | KeyCode::Home => Message::CursorTop,
-            KeyCode::Char('G') | KeyCode::End => Message::CursorBottom,
-            KeyCode::Char('n') => Message::NextThread,
-            KeyCode::Char('p' | 'N') => Message::PrevThread,
-            KeyCode::Char('v') => Message::ToggleDiffView,
-            KeyCode::Char('w') => Message::ToggleDiffWrap,
-            KeyCode::Char('o') => Message::OpenFileInEditor,
-            KeyCode::Char('u') => Message::ScrollHalfPageUp,
-            KeyCode::Char('d') => Message::ScrollHalfPageDown,
-            KeyCode::Char('b') | KeyCode::PageUp => Message::PageUp,
-            KeyCode::Char('f') | KeyCode::PageDown => Message::PageDown,
-            KeyCode::Char('s') => Message::ToggleSidebar,
-            KeyCode::Enter => {
-                // Expand the current thread (if one is selected via n/p)
-                model
+        Focus::DiffPane => {
+            let description_visible = description_scroll_active(model);
+            match key {
+                KeyCode::Char('q') => Message::Quit,
+                KeyCode::Esc => Message::Back,
+                KeyCode::Tab | KeyCode::Char('h') => Message::ToggleFocus,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if description_visible {
+                        Message::ScrollDown
+                    } else {
+                        Message::CursorDown
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if description_visible {
+                        Message::ScrollUp
+                    } else {
+                        Message::CursorUp
+                    }
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    if description_visible {
+                        Message::ScrollTop
+                    } else {
+                        Message::CursorTop
+                    }
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    if description_visible {
+                        Message::ScrollBottom
+                    } else {
+                        Message::CursorBottom
+                    }
+                }
+                KeyCode::Char('n') => Message::NextThread,
+                KeyCode::Char('p' | 'N') => Message::PrevThread,
+                KeyCode::Char('v') => Message::ToggleDiffView,
+                KeyCode::Char('w') => Message::ToggleDiffWrap,
+                KeyCode::Char('o') => Message::OpenFileInEditor,
+                KeyCode::Char('u') => Message::ScrollHalfPageUp,
+                KeyCode::Char('d') => Message::ScrollHalfPageDown,
+                KeyCode::Char('b') | KeyCode::PageUp => Message::PageUp,
+                KeyCode::Char('f') | KeyCode::PageDown => Message::PageDown,
+                KeyCode::Char('s') => Message::ToggleSidebar,
+                KeyCode::Enter => model
                     .expanded_thread
                     .as_ref()
-                    .map_or(Message::NextThread, |id| Message::ExpandThread(id.clone()))
+                    .map_or(Message::NextThread, |id| Message::ExpandThread(id.clone())),
+                KeyCode::Char('a') => Message::StartComment,
+                KeyCode::Char('A') => Message::StartCommentExternal,
+                KeyCode::Char('V') => Message::VisualToggle,
+                KeyCode::Char('[') => Message::PrevFile,
+                KeyCode::Char(']') => Message::NextFile,
+                _ => Message::Noop,
             }
-            KeyCode::Char('a') => Message::StartComment,
-            KeyCode::Char('A') => Message::StartCommentExternal,
-            KeyCode::Char('V') => Message::VisualToggle,
-            KeyCode::Char('[') => Message::PrevFile,
-            KeyCode::Char(']') => Message::NextFile,
-            _ => Message::Noop,
-        },
+        }
         Focus::ThreadExpanded => match key {
             KeyCode::Esc => Message::CollapseThread,
             KeyCode::Char('j') | KeyCode::Down => Message::ScrollDown,
@@ -367,6 +392,65 @@ fn map_review_detail_key(model: &Model, key: KeyCode, modifiers: KeyModifiers) -
             }
         }
         _ => Message::Noop,
+    }
+}
+
+fn description_scroll_active(model: &Model) -> bool {
+    let description = model
+        .current_review
+        .as_ref()
+        .and_then(|review| review.description.as_deref());
+    let description_lines = description_block_height(description, diff_content_width(model));
+    description_lines > 0 && model.diff_scroll < description_lines
+}
+
+fn diff_content_width(model: &Model) -> u32 {
+    const DIFF_MARGIN: u32 = 2;
+    let total_width = u32::from(model.width);
+    let pane_width = match model.layout_mode {
+        LayoutMode::Full | LayoutMode::Compact | LayoutMode::Overlay => {
+            if model.sidebar_visible {
+                total_width.saturating_sub(u32::from(model.layout_mode.sidebar_width()))
+            } else {
+                total_width
+            }
+        }
+        LayoutMode::Single => total_width,
+    };
+    pane_width.saturating_sub(DIFF_MARGIN * 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::UiConfig;
+
+    #[test]
+    fn diff_pane_j_scrolls_when_description_visible() {
+        let mut model = Model::new(120, 40, UiConfig::default());
+        model.screen = Screen::ReviewDetail;
+        model.focus = Focus::DiffPane;
+        model.current_review = Some(crate::db::ReviewDetail {
+            review_id: "cr-1".to_string(),
+            jj_change_id: "main".to_string(),
+            scm_kind: "git".to_string(),
+            scm_anchor: "main".to_string(),
+            initial_commit: "abc123".to_string(),
+            final_commit: None,
+            title: "Title".to_string(),
+            description: Some("Line one\n\nLine two\n\nLine three".to_string()),
+            author: "alice".to_string(),
+            created_at: "2026-03-10T00:00:00Z".to_string(),
+            status: "open".to_string(),
+            status_changed_at: None,
+            status_changed_by: None,
+            abandon_reason: None,
+            thread_count: 0,
+            open_thread_count: 0,
+        });
+
+        let msg = map_review_detail_key(&model, KeyCode::Char('j'), KeyModifiers::empty());
+        assert!(matches!(msg, Message::ScrollDown));
     }
 }
 

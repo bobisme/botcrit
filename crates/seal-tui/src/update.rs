@@ -10,7 +10,7 @@ use crate::model::{
 use crate::stream::{
     active_file_index, compute_stream_layout, file_scroll_offset, StreamLayoutParams,
 };
-use crate::{config, theme, Highlighter};
+use crate::{config, rehighlight_file_cache, theme, Highlighter};
 
 fn update_list_nav(model: &mut Model, msg: &Message) {
     match msg {
@@ -121,23 +121,31 @@ fn update_cursor(model: &mut Model, msg: &Message) {
         }
     }
 
-    center_cursor_scroll(model);
+    ensure_cursor_visible(model);
     update_active_file_from_scroll(model);
 }
 
-/// Center the viewport around the cursor position.
-/// When at the top or bottom of the stream, clamps scroll appropriately.
-fn center_cursor_scroll(model: &mut Model) {
+/// Keep the cursor visible without recentering the viewport on every move.
+fn ensure_cursor_visible(model: &mut Model) {
     let visible = visible_stream_rows(model.height);
     if visible == 0 {
         return;
     }
-    let half = visible / 2;
-    model.diff_scroll = model.diff_cursor.saturating_sub(half);
+
+    if model.diff_cursor < model.diff_scroll {
+        model.diff_scroll = model.diff_cursor;
+    } else {
+        let view_end = model.diff_scroll.saturating_add(visible.saturating_sub(1));
+        if model.diff_cursor > view_end {
+            model.diff_scroll = model.diff_cursor.saturating_sub(visible.saturating_sub(1));
+        }
+    }
+
     clamp_diff_scroll(model);
 }
 
 /// After a scroll operation, snap cursor to the nearest cursor stop.
+#[allow(dead_code)]
 fn snap_cursor_to_nearest_stop(model: &mut Model) {
     let stops = model.cursor_stops.borrow();
     if stops.is_empty() {
@@ -150,58 +158,46 @@ fn snap_cursor_to_nearest_stop(model: &mut Model) {
 }
 
 fn update_scroll(model: &mut Model, msg: &Message) {
-    let max_row = model.max_stream_row.get().saturating_sub(1);
+    let layout = stream_layout(model);
+    let visible = visible_stream_rows(model.height);
+    let max_scroll = layout.total_lines.saturating_sub(visible);
 
     match msg {
         Message::ScrollUp => {
-            model.diff_cursor = model.diff_cursor.saturating_sub(1);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = model.diff_scroll.saturating_sub(1);
         }
         Message::ScrollDown => {
-            model.diff_cursor = (model.diff_cursor + 1).min(max_row);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = (model.diff_scroll + 1).min(max_scroll);
         }
         Message::ScrollTop => {
-            model.diff_cursor = 0;
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = 0;
         }
         Message::ScrollBottom => {
-            model.diff_cursor = max_row;
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = max_scroll;
         }
         Message::ScrollHalfPageUp => {
-            let page = visible_stream_rows(model.height);
-            let half = page.max(1) / 2;
-            model.diff_cursor = model.diff_cursor.saturating_sub(half.max(1));
-            snap_cursor_to_nearest_stop(model);
+            let half = (visible.max(1) / 2).max(1);
+            model.diff_scroll = model.diff_scroll.saturating_sub(half);
         }
         Message::ScrollHalfPageDown => {
-            let page = visible_stream_rows(model.height);
-            let half = page.max(1) / 2;
-            model.diff_cursor = (model.diff_cursor + half.max(1)).min(max_row);
-            snap_cursor_to_nearest_stop(model);
+            let half = (visible.max(1) / 2).max(1);
+            model.diff_scroll = (model.diff_scroll + half).min(max_scroll);
         }
         Message::ScrollTenUp => {
-            model.diff_cursor = model.diff_cursor.saturating_sub(10);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = model.diff_scroll.saturating_sub(10);
         }
         Message::ScrollTenDown => {
-            model.diff_cursor = (model.diff_cursor + 10).min(max_row);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = (model.diff_scroll + 10).min(max_scroll);
         }
         Message::PageUp => {
-            let page = visible_stream_rows(model.height);
-            model.diff_cursor = model.diff_cursor.saturating_sub(page);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = model.diff_scroll.saturating_sub(visible.max(1));
         }
         Message::PageDown => {
-            let page = visible_stream_rows(model.height);
-            model.diff_cursor = (model.diff_cursor + page).min(max_row);
-            snap_cursor_to_nearest_stop(model);
+            model.diff_scroll = (model.diff_scroll + visible.max(1)).min(max_scroll);
         }
         _ => {}
     }
-    center_cursor_scroll(model);
+    clamp_diff_scroll(model);
     update_active_file_from_scroll(model);
 }
 
@@ -729,13 +725,10 @@ fn update_system_theme(model: &mut Model, msg: &Message) {
         Message::ApplyTheme(theme_name) => {
             if let Some(loaded) = theme::load_built_in_theme(theme_name) {
                 model.theme = loaded.theme;
-                if let Some(syntax_theme) = loaded.syntax_theme {
-                    model.highlighter = Highlighter::with_theme(&syntax_theme);
-                } else if theme_name.to_lowercase().contains("light") {
-                    model.highlighter = Highlighter::with_theme("base16-ocean.light");
-                } else {
-                    model.highlighter = Highlighter::with_theme("base16-ocean.dark");
-                }
+                let _ = loaded.syntax_theme;
+                model.highlighter = Highlighter::from_ui_theme(&model.theme);
+                rehighlight_file_cache(&mut model.file_cache, &model.highlighter);
+                model.sync_active_file_cache();
                 model.config.theme = Some(theme_name.clone());
                 let _ = config::save_ui_config(&model.config);
                 model.needs_redraw = true;
@@ -1266,9 +1259,10 @@ fn preview_selected_theme(model: &mut Model) {
     if let Some(&name) = theme_names.get(model.command_palette_selection) {
         if let Some(loaded) = theme::load_built_in_theme(name) {
             model.theme = loaded.theme;
-            if let Some(syntax_theme) = loaded.syntax_theme {
-                model.highlighter = Highlighter::with_theme(&syntax_theme);
-            }
+            let _ = loaded.syntax_theme;
+            model.highlighter = Highlighter::from_ui_theme(&model.theme);
+            rehighlight_file_cache(&mut model.file_cache, &model.highlighter);
+            model.sync_active_file_cache();
         }
     }
 }

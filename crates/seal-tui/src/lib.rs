@@ -48,9 +48,7 @@ use anyhow::{Context, Result};
 use crate::config::{load_ui_config, save_ui_config};
 use crate::input::map_event_to_message;
 use crate::model::{CommentRequest, DiffViewMode, EditorRequest};
-use crate::render_backend::{
-    enable_raw_mode, Event, RawModeGuard, Renderer, RendererOptions,
-};
+use crate::render_backend::{enable_raw_mode, Event, RawModeGuard, Renderer, RendererOptions};
 use crate::render_backend::{event_from_ftui, rgba_to_packed, OptimizedBuffer};
 use crate::render_backend::{
     Cell as OtCell, CellContent as OtCellContent, TextAttributes as OtTextAttributes,
@@ -60,12 +58,12 @@ use crate::theme::{load_built_in_theme, load_theme_from_path};
 
 use seal_core::core::SealServices;
 
+use ftui_core::terminal_session::{SessionOptions as FtuiSessionOptions, TerminalSession};
 use ftui_render::buffer::Buffer as FtuiBuffer;
 use ftui_render::cell::{
     Cell as FtuiCell, CellAttrs as FtuiCellAttrs, CellContent as FtuiCellContent,
     StyleFlags as FtuiStyleFlags,
 };
-use ftui_core::terminal_session::{SessionOptions as FtuiSessionOptions, TerminalSession};
 use ftui_render::diff::BufferDiff as FtuiBufferDiff;
 use ftui_render::presenter::{Presenter as FtuiPresenter, TerminalCapabilities};
 
@@ -92,7 +90,7 @@ pub fn run(repo_root: &Path, services: SealServices) -> Result<()> {
         });
 
     let mut selected_builtin: Option<String> = None;
-    let (theme, syntax_theme) = if let Some(selection) = theme_selection {
+    let (theme, _syntax_theme) = if let Some(selection) = theme_selection {
         if let Some(loaded) = load_built_in_theme(&selection) {
             selected_builtin = Some(selection);
             (loaded.theme, loaded.syntax_theme)
@@ -125,11 +123,7 @@ pub fn run(repo_root: &Path, services: SealServices) -> Result<()> {
     // Create model
     let mut model = Model::new(width, height, config);
     model.theme = theme;
-    if let Some(theme_name) = syntax_theme {
-        model.highlighter = Highlighter::with_theme(&theme_name);
-    } else if model.theme.name.to_lowercase().contains("light") {
-        model.highlighter = Highlighter::with_theme("base16-ocean.light");
-    }
+    model.highlighter = Highlighter::from_ui_theme(&model.theme);
 
     apply_default_diff_view(&mut model);
 
@@ -156,14 +150,16 @@ pub fn run(repo_root: &Path, services: SealServices) -> Result<()> {
     let mut ftui_presenter = FtuiPresenter::new(std::io::stdout(), TerminalCapabilities::detect());
     let mut ftui_prev = FtuiBuffer::new(width, height);
     let mut ftui_next = FtuiBuffer::new(width, height);
-    let mut terminal_session = Some(TerminalSession::new(FtuiSessionOptions {
-        alternate_screen: true,
-        mouse_capture: true,
-        bracketed_paste: true,
-        focus_events: true,
-        ..Default::default()
-    })
-    .context("Failed to initialize ftui terminal session")?);
+    let mut terminal_session = Some(
+        TerminalSession::new(FtuiSessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            ..Default::default()
+        })
+        .context("Failed to initialize ftui terminal session")?,
+    );
     terminal_session
         .as_ref()
         .expect("ftui session initialized")
@@ -222,32 +218,32 @@ pub fn run(repo_root: &Path, services: SealServices) -> Result<()> {
                 .read_event()
                 .context("Failed reading ftui terminal event")?;
             if let Some(ft_event) = ft_event {
-            if let Some(event) = event_from_ftui(ft_event) {
-            let resized_to = if let Event::Resize(resize) = &event {
-                Some((resize.width, resize.height))
-            } else {
-                None
-            };
-            process_event(
-                &event,
-                &mut model,
-                &mut EventContext {
-                    renderer: &mut renderer,
-                    raw_guard: &mut raw_guard,
-                    wrap_guard: &mut wrap_guard,
-                    cursor_guard: &mut cursor_guard,
-                    client: &Some(client.as_ref()),
-                    repo_path: repo_path.as_deref(),
-                    options,
-                    terminal_session: &mut terminal_session,
-                },
-            )?;
-            if let Some((width, height)) = resized_to {
-                ftui_prev = FtuiBuffer::new(width, height);
-                ftui_next = FtuiBuffer::new(width, height);
+                if let Some(event) = event_from_ftui(ft_event) {
+                    let resized_to = if let Event::Resize(resize) = &event {
+                        Some((resize.width, resize.height))
+                    } else {
+                        None
+                    };
+                    process_event(
+                        &event,
+                        &mut model,
+                        &mut EventContext {
+                            renderer: &mut renderer,
+                            raw_guard: &mut raw_guard,
+                            wrap_guard: &mut wrap_guard,
+                            cursor_guard: &mut cursor_guard,
+                            client: &Some(client.as_ref()),
+                            repo_path: repo_path.as_deref(),
+                            options,
+                            terminal_session: &mut terminal_session,
+                        },
+                    )?;
+                    if let Some((width, height)) = resized_to {
+                        ftui_prev = FtuiBuffer::new(width, height);
+                        ftui_next = FtuiBuffer::new(width, height);
+                    }
+                }
             }
-        }
-        }
         }
     }
 
@@ -659,30 +655,22 @@ fn populate_file_cache(model: &mut Model, files: Vec<crate::db::FileData>) {
     model.file_cache.clear();
 
     for file_data in files.into_iter().filter(|f| !f.path.starts_with(".seal/")) {
-        let diff = file_data.diff.as_deref().map(crate::diff::ParsedDiff::parse);
+        let diff = file_data
+            .diff
+            .as_deref()
+            .map(crate::diff::ParsedDiff::parse);
 
         let file_content = file_data.content.map(|c| crate::model::FileContent {
             lines: c.lines,
             start_line: c.start_line,
         });
 
-        let highlighted_lines = if let Some(parsed) = &diff {
-            compute_diff_highlights(parsed, &file_data.path, &model.highlighter)
-        } else if let Some(content) = &file_content {
-            compute_file_highlights(&content.lines, &file_data.path, &model.highlighter)
-        } else {
-            Vec::new()
-        };
-
-        let file_highlighted_lines = if diff.is_some() {
-            if let Some(content) = &file_content {
-                compute_file_highlights(&content.lines, &file_data.path, &model.highlighter)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let (highlighted_lines, file_highlighted_lines) = compute_cache_highlights(
+            diff.as_ref(),
+            file_content.as_ref(),
+            &file_data.path,
+            &model.highlighter,
+        );
 
         model.file_cache.insert(
             file_data.path,
@@ -698,6 +686,22 @@ fn populate_file_cache(model: &mut Model, files: Vec<crate::db::FileData>) {
     model.sync_active_file_cache();
 }
 
+pub(crate) fn rehighlight_file_cache(
+    file_cache: &mut std::collections::HashMap<String, crate::model::FileCacheEntry>,
+    highlighter: &Highlighter,
+) {
+    for (path, entry) in file_cache.iter_mut() {
+        let (highlighted_lines, file_highlighted_lines) = compute_cache_highlights(
+            entry.diff.as_ref(),
+            entry.file_content.as_ref(),
+            path,
+            highlighter,
+        );
+        entry.highlighted_lines = highlighted_lines;
+        entry.file_highlighted_lines = file_highlighted_lines;
+    }
+}
+
 fn reload_review_data(model: &mut Model, client: &dyn SealClient, _repo_path: Option<&Path>) {
     let Some(review) = &model.current_review else {
         return;
@@ -711,11 +715,7 @@ fn reload_review_data(model: &mut Model, client: &dyn SealClient, _repo_path: Op
     }
 }
 
-fn handle_data_loading(
-    model: &mut Model,
-    client: &dyn SealClient,
-    _repo_path: Option<&Path>,
-) {
+fn handle_data_loading(model: &mut Model, client: &dyn SealClient, _repo_path: Option<&Path>) {
     if model.screen == Screen::ReviewDetail && model.current_review.is_none() {
         let reviews = model.filtered_reviews();
         if let Some(review) = reviews.get(model.list_index) {
@@ -787,4 +787,31 @@ fn compute_file_highlights(
         .iter()
         .map(|line| file_hl.highlight_line(line))
         .collect()
+}
+
+fn compute_cache_highlights(
+    diff: Option<&crate::diff::ParsedDiff>,
+    file_content: Option<&crate::model::FileContent>,
+    file_path: &str,
+    highlighter: &Highlighter,
+) -> (Vec<Vec<HighlightSpan>>, Vec<Vec<HighlightSpan>>) {
+    let highlighted_lines = if let Some(parsed) = diff {
+        compute_diff_highlights(parsed, file_path, highlighter)
+    } else if let Some(content) = file_content {
+        compute_file_highlights(&content.lines, file_path, highlighter)
+    } else {
+        Vec::new()
+    };
+
+    let file_highlighted_lines = if diff.is_some() {
+        if let Some(content) = file_content {
+            compute_file_highlights(&content.lines, file_path, highlighter)
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    (highlighted_lines, file_highlighted_lines)
 }

@@ -6,7 +6,9 @@
 //! - Bottom bar with title (left) and hotkeys (right)
 
 use crate::db::Comment;
-use crate::markdown::{draw_markdown_content, markdown_line_bg, render_markdown};
+use crate::markdown::{
+    draw_markdown_content, markdown_line_bg, render_markdown, render_markdown_with_highlighter,
+};
 use crate::render_backend::{buffer_draw_text, buffer_fill_rect, OptimizedBuffer, Style};
 
 use crate::model::{Focus, InlineEditor, Model};
@@ -64,6 +66,7 @@ pub fn view(model: &Model, buffer: &mut OptimizedBuffer) {
     y = render_existing_comments(
         buffer,
         &model.theme,
+        &model.highlighter,
         editor,
         &panel,
         content_x,
@@ -150,6 +153,7 @@ fn compute_panel(
 fn render_existing_comments(
     buffer: &mut OptimizedBuffer,
     theme: &Theme,
+    highlighter: &crate::syntax::Highlighter,
     editor: &InlineEditor,
     panel: &Rect,
     content_x: u32,
@@ -178,7 +182,9 @@ fn render_existing_comments(
         );
         y += 1;
 
-        for line in render_markdown(&comment.body, body_width as usize) {
+        for line in
+            render_markdown_with_highlighter(&comment.body, body_width as usize, Some(highlighter))
+        {
             if y >= panel.y + panel.height - 3 {
                 break 'comments;
             }

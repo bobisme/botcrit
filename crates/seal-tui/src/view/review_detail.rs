@@ -141,15 +141,23 @@ fn draw_sidebar_file_item(
             .width
             .saturating_sub(prefix_width + indicator_len + pad.left + pad.right);
 
-        let filename = truncate_path(&entry.path, filename_width as usize);
-        draw_text_truncated(
-            buffer,
-            prefix_x + prefix_width,
-            y,
-            &filename,
-            filename_width,
-            style,
-        );
+        let (dir_prefix, filename) = split_sidebar_path(&entry.path, filename_width as usize);
+        let text_x = prefix_x + prefix_width;
+        if !dir_prefix.is_empty() {
+            draw_text_truncated(
+                buffer,
+                text_x,
+                y,
+                &dir_prefix,
+                filename_width,
+                theme.style_muted_on(row_bg),
+            );
+        }
+        let dir_width = dir_prefix.chars().count() as u32;
+        let file_width = filename_width.saturating_sub(dir_width);
+        if file_width > 0 {
+            draw_text_truncated(buffer, text_x + dir_width, y, &filename, file_width, style);
+        }
 
         let indicator_x = inner
             .x
@@ -383,6 +391,15 @@ fn word_wrap_lines(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
+fn split_sidebar_path(path: &str, max_width: usize) -> (String, String) {
+    let display = truncate_path(path, max_width);
+    if let Some((dir, filename)) = display.rsplit_once('/') {
+        (format!("{dir}/"), filename.to_string())
+    } else {
+        (String::new(), display)
+    }
+}
+
 fn format_ref_for_display(raw: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -401,6 +418,19 @@ fn format_ref_for_display(raw: &str, max_width: usize) -> String {
     };
 
     format_with_prefix("⎇ ", branch, max_width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_sidebar_path;
+
+    #[test]
+    fn split_sidebar_path_preserves_filename() {
+        let (dir, file) = split_sidebar_path("crates/wraith-diff/src/lib.rs", 18);
+
+        assert!(dir.ends_with('/'));
+        assert_eq!(file, "lib.rs");
+    }
 }
 
 fn format_with_prefix(prefix: &str, body: &str, max_width: usize) -> String {
@@ -543,6 +573,7 @@ fn draw_diff_pane(model: &Model, buffer: &mut OptimizedBuffer, area: Rect) {
             scroll: model.diff_scroll,
             diff_cursor: model.diff_cursor,
             theme,
+            highlighter: &model.highlighter,
             view_mode: model.diff_view_mode,
             wrap: model.diff_wrap,
             thread_positions: &model.thread_positions,

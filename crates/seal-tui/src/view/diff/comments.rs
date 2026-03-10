@@ -5,8 +5,10 @@ use crate::render_backend::{buffer_draw_text, buffer_fill_rect, color_lerp, Styl
 use crate::db::ThreadSummary;
 use crate::layout::BLOCK_PADDING;
 use crate::markdown::{
-    draw_markdown_content, markdown_line_bg, render_markdown, MarkdownContent, MarkdownStyle,
+    draw_markdown_content, markdown_line_bg, render_markdown, render_markdown_with_highlighter,
+    MarkdownContent, MarkdownStyle,
 };
+use crate::syntax::Highlighter;
 use crate::view::components::Rect;
 
 use super::helpers::{
@@ -32,6 +34,7 @@ fn build_comment_lines(
     thread: &ThreadSummary,
     comments: &[crate::db::Comment],
     content_width: usize,
+    highlighter: Option<&Highlighter>,
 ) -> Vec<CommentLine> {
     let mut content_lines: Vec<CommentLine> = Vec::new();
 
@@ -78,7 +81,12 @@ fn build_comment_lines(
             right,
             kind: CommentLineKind::Author,
         });
-        let rendered = render_markdown(&comment.body, content_width);
+        let rendered = match highlighter {
+            Some(highlighter) => {
+                render_markdown_with_highlighter(&comment.body, content_width, Some(highlighter))
+            }
+            None => render_markdown(&comment.body, content_width),
+        };
         for line in rendered {
             content_lines.push(CommentLine {
                 content: line.content,
@@ -109,7 +117,7 @@ pub(super) fn comment_block_rows(
     }
     let padded = comment_content_area(comment_block_area(area));
     let content_width = padded.width as usize;
-    let content_lines = build_comment_lines(thread, comments, content_width);
+    let content_lines = build_comment_lines(thread, comments, content_width, None);
     let content_start = BLOCK_PADDING;
     let content_end = content_start + content_lines.len();
     content_end.saturating_add(BLOCK_PADDING)
@@ -122,6 +130,7 @@ pub(super) fn emit_comment_block(
     comments: &[crate::db::Comment],
     is_highlighted: bool,
     is_cursor: bool,
+    highlighter: &Highlighter,
 ) {
     if comments.is_empty() {
         return;
@@ -131,7 +140,7 @@ pub(super) fn emit_comment_block(
     let block = comment_block_area(area);
     let padded = comment_content_area(block);
     let content_width = padded.width as usize;
-    let content_lines = build_comment_lines(thread, comments, content_width);
+    let content_lines = build_comment_lines(thread, comments, content_width, Some(highlighter));
 
     let top_margin = 0usize;
     let bottom_margin = 0usize;
@@ -316,6 +325,7 @@ mod tests {
                 comment("th-1234.2", "bob", "second"),
             ],
             40,
+            None,
         );
 
         let blanks = lines

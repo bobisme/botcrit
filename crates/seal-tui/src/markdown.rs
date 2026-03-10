@@ -90,11 +90,23 @@ impl MarkdownLine {
 
 #[must_use]
 pub fn render_markdown(text: &str, max_width: usize) -> Vec<MarkdownLine> {
+    render_markdown_with_highlighter(text, max_width, None)
+}
+
+#[must_use]
+pub fn render_markdown_with_highlighter(
+    text: &str,
+    max_width: usize,
+    highlighter: Option<&Highlighter>,
+) -> Vec<MarkdownLine> {
     if max_width == 0 {
         return Vec::new();
     }
 
-    let highlighter = markdown_highlighter();
+    let highlighter = match highlighter {
+        Some(highlighter) => highlighter,
+        None => markdown_highlighter(),
+    };
     let mut code_highlighter = None;
     let mut in_code_block = false;
     let mut pending_blank_after_code = false;

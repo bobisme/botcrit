@@ -4,12 +4,17 @@
 //! Integrates with the theme system for consistent colors.
 
 use std::path::Path;
+use std::str::FromStr;
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color, FontStyle, Theme as SyntectTheme, ThemeSet};
+use syntect::highlighting::{
+    Color, FontStyle, ScopeSelectors, StyleModifier, Theme as SyntectTheme, ThemeItem, ThemeSet,
+    ThemeSettings,
+};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::render_backend::{color_from_hex, Rgba};
+use crate::theme::Theme;
 
 /// Highlighted text span with color information
 #[derive(Debug, Clone)]
@@ -69,6 +74,14 @@ impl Highlighter {
                     .unwrap_or_else(|| theme_set.themes.values().next().unwrap().clone())
             });
 
+        Self { syntax_set, theme }
+    }
+
+    /// Create a highlighter using the active UI theme's syntax colors.
+    #[must_use]
+    pub fn from_ui_theme(theme: &Theme) -> Self {
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme = syntect_theme_from_ui_theme(theme);
         Self { syntax_set, theme }
     }
 
@@ -180,6 +193,72 @@ impl Highlighter {
 impl Default for Highlighter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn syntect_theme_from_ui_theme(theme: &Theme) -> SyntectTheme {
+    SyntectTheme {
+        name: Some(format!("{}-syntax", theme.name)),
+        author: None,
+        settings: ThemeSettings {
+            foreground: Some(rgba_to_syntect_color(theme.foreground)),
+            background: Some(rgba_to_syntect_color(theme.background)),
+            caret: Some(rgba_to_syntect_color(theme.cursor)),
+            ..ThemeSettings::default()
+        },
+        scopes: vec![
+            scope_item("comment", theme.syntax.comment, Some(FontStyle::ITALIC)),
+            scope_item(
+                "keyword, storage.modifier",
+                theme.syntax.keyword,
+                Some(FontStyle::BOLD),
+            ),
+            scope_item(
+                "entity.name.function, support.function, meta.function-call, variable.function",
+                theme.syntax.function,
+                None,
+            ),
+            scope_item(
+                "entity.name.type, storage.type, support.type",
+                theme.syntax.type_name,
+                None,
+            ),
+            scope_item("string", theme.syntax.string, None),
+            scope_item("constant.numeric", theme.syntax.number, None),
+            scope_item("keyword.operator", theme.syntax.operator, None),
+            scope_item("punctuation", theme.syntax.punctuation, None),
+            scope_item(
+                "constant.language, constant.character.escape, constant.other",
+                theme.syntax.constant,
+                None,
+            ),
+            scope_item(
+                "entity.other.attribute-name, meta.attribute, punctuation.definition.attribute",
+                theme.syntax.attribute,
+                None,
+            ),
+            scope_item("variable, support.variable", theme.syntax.variable, None),
+        ],
+    }
+}
+
+fn scope_item(selector: &str, color: Rgba, font_style: Option<FontStyle>) -> ThemeItem {
+    ThemeItem {
+        scope: ScopeSelectors::from_str(selector).expect("valid syntax scope selector"),
+        style: StyleModifier {
+            foreground: Some(rgba_to_syntect_color(color)),
+            background: None,
+            font_style,
+        },
+    }
+}
+
+fn rgba_to_syntect_color(color: Rgba) -> Color {
+    Color {
+        r: (color.r * 255.0).round() as u8,
+        g: (color.g * 255.0).round() as u8,
+        b: (color.b * 255.0).round() as u8,
+        a: (color.a * 255.0).round() as u8,
     }
 }
 

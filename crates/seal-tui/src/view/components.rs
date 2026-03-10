@@ -187,7 +187,7 @@ pub fn truncate_path(path: &str, max_width: usize) -> String {
         if filename_chars + 2 <= max_width {
             // "\u{2026}/" + filename
             let available = max_width - filename_chars - 2;
-            let prefix = take_chars(&path[..idx], available);
+            let prefix = take_tail_chars(&path[..idx], available);
             return format!("{prefix}\u{2026}/{filename}");
         }
     }
@@ -207,6 +207,38 @@ fn take_chars(text: &str, max_chars: usize) -> &str {
         }
     }
     text
+}
+
+fn take_tail_chars(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text;
+    }
+
+    let skip = char_count - max_chars;
+    for (count, (idx, _)) in text.char_indices().enumerate() {
+        if count == skip {
+            return &text[idx..];
+        }
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_path;
+
+    #[test]
+    fn truncate_path_keeps_tail_directories() {
+        let path = "crates/wraith-diff/src/render/some_file.rs";
+        let truncated = truncate_path(path, 24);
+
+        assert!(truncated.ends_with("some_file.rs"));
+        assert!(truncated.contains("render") || truncated.contains("…/"));
+    }
 }
 
 /// A line of content within a block.

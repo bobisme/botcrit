@@ -26,8 +26,8 @@ use crate::layout::{
     block_height, BLOCK_MARGIN, BLOCK_PADDING, SBS_LINE_NUM_WIDTH, THREAD_COL_WIDTH,
     UNIFIED_LINE_NUM_WIDTH,
 };
-use crate::markdown::{draw_markdown_content, markdown_line_bg, render_markdown, MarkdownContent};
-use crate::syntax::HighlightSpan;
+use crate::markdown::{draw_markdown_content, markdown_line_bg, MarkdownContent};
+use crate::syntax::{HighlightSpan, Highlighter};
 use crate::theme::Theme;
 
 // Re-export public API
@@ -155,6 +155,7 @@ struct StreamRenderCtx<'a> {
     all_comments: &'a std::collections::HashMap<String, Vec<crate::db::Comment>>,
     thread_positions: &'a std::cell::RefCell<std::collections::HashMap<String, usize>>,
     line_map: &'a std::cell::RefCell<std::collections::HashMap<usize, i64>>,
+    highlighter: &'a Highlighter,
 }
 
 /// Per-file rendering context for unified/SBS diff functions. Bundles the
@@ -169,6 +170,7 @@ struct DiffRenderCtx<'a> {
     all_comments: &'a std::collections::HashMap<String, Vec<crate::db::Comment>>,
     thread_positions: &'a std::cell::RefCell<std::collections::HashMap<String, usize>>,
     line_map: &'a std::cell::RefCell<std::collections::HashMap<usize, i64>>,
+    highlighter: &'a Highlighter,
 }
 
 impl StreamCursor<'_> {
@@ -391,6 +393,7 @@ fn render_description_block(
     cursor: &mut StreamCursor<'_>,
     area: Rect,
     description: &str,
+    highlighter: &Highlighter,
     _theme: &Theme,
 ) {
     use crate::render_backend::Style;
@@ -398,7 +401,11 @@ fn render_description_block(
     let block = comment_block_area(area);
     let padded = comment_content_area(block);
     let content_width = padded.width as usize;
-    let content_lines = render_markdown(description, content_width);
+    let content_lines = crate::markdown::render_markdown_with_highlighter(
+        description,
+        content_width,
+        Some(highlighter),
+    );
 
     let top_margin = BLOCK_MARGIN;
     let bottom_margin = BLOCK_MARGIN;
@@ -525,6 +532,7 @@ pub struct DiffStreamParams<'a> {
     pub scroll: usize,
     pub diff_cursor: usize,
     pub theme: &'a Theme,
+    pub highlighter: &'a Highlighter,
     pub view_mode: crate::model::DiffViewMode,
     pub wrap: bool,
     pub thread_positions: &'a std::cell::RefCell<std::collections::HashMap<String, usize>>,
@@ -583,6 +591,7 @@ fn render_file_with_diff(
         all_comments: sctx.all_comments,
         thread_positions: sctx.thread_positions,
         line_map: sctx.line_map,
+        highlighter: sctx.highlighter,
     };
 
     let emitted_threads = match view_mode {
@@ -613,6 +622,7 @@ fn render_file_with_diff(
             sctx.all_comments,
             sctx.thread_positions,
             &emitted_threads,
+            sctx.highlighter,
         );
     } else if !orphaned_threads.is_empty() {
         let mut orphaned_sorted = orphaned_threads.clone();
@@ -625,7 +635,15 @@ fn render_file_with_diff(
                 let rows = comment_block_rows(thread, comments, area);
                 let is_cursor = cursor.is_cursor_at(rows);
                 let hl = is_cursor || cursor.is_selected_at(rows);
-                emit_comment_block(cursor, area, thread, comments, hl, is_cursor);
+                emit_comment_block(
+                    cursor,
+                    area,
+                    thread,
+                    comments,
+                    hl,
+                    is_cursor,
+                    sctx.highlighter,
+                );
             }
         }
     }
@@ -731,7 +749,15 @@ fn render_file_content_no_diff(
                     let rows = comment_block_rows(thread, comments, area);
                     let is_cursor = cursor.is_cursor_at(rows);
                     let hl = is_cursor || cursor.is_selected_at(rows);
-                    emit_comment_block(cursor, area, thread, comments, hl, is_cursor);
+                    emit_comment_block(
+                        cursor,
+                        area,
+                        thread,
+                        comments,
+                        hl,
+                        is_cursor,
+                        sctx.highlighter,
+                    );
                 }
             }
         }
@@ -843,7 +869,15 @@ fn try_emit_line_comment(
             let rows = comment_block_rows(thread, comments, ctx.area);
             let is_cursor = cursor.is_cursor_at(rows);
             let hl = is_cursor || cursor.is_selected_at(rows);
-            emit_comment_block(cursor, ctx.area, thread, comments, hl, is_cursor);
+            emit_comment_block(
+                cursor,
+                ctx.area,
+                thread,
+                comments,
+                hl,
+                is_cursor,
+                ctx.highlighter,
+            );
         }
     }
 }
@@ -874,6 +908,7 @@ fn render_unified_display_items(
                             thread_positions: ctx.thread_positions,
                             emitted_threads,
                             last_line_num,
+                            highlighter: ctx.highlighter,
                         },
                     );
                 }
@@ -1030,6 +1065,7 @@ fn render_file_diff_unified(
                     thread_positions: ctx.thread_positions,
                     emitted_threads: &mut emitted_threads,
                     last_line_num: &mut last_line_num,
+                    highlighter: ctx.highlighter,
                 },
             );
         }
@@ -1152,6 +1188,7 @@ fn render_file_diff_sbs(
                             thread_positions: ctx.thread_positions,
                             emitted_threads: &mut emitted_threads,
                             last_line_num: &mut last_line_num,
+                            highlighter: ctx.highlighter,
                         },
                     );
                 }
@@ -1246,7 +1283,15 @@ fn render_file_diff_sbs(
                         let rows = comment_block_rows(thread, comments, ctx.area);
                         let is_cursor = cursor.is_cursor_at(rows);
                         let hl = is_cursor || cursor.is_selected_at(rows);
-                        emit_comment_block(cursor, ctx.area, thread, comments, hl, is_cursor);
+                        emit_comment_block(
+                            cursor,
+                            ctx.area,
+                            thread,
+                            comments,
+                            hl,
+                            is_cursor,
+                            ctx.highlighter,
+                        );
                     }
                 }
             }
@@ -1266,6 +1311,7 @@ fn render_file_diff_sbs(
                     thread_positions: ctx.thread_positions,
                     emitted_threads: &mut emitted_threads,
                     last_line_num: &mut last_line_num,
+                    highlighter: ctx.highlighter,
                 },
             );
         }
@@ -1294,7 +1340,7 @@ pub fn render_diff_stream(buffer: &mut OptimizedBuffer, area: Rect, params: &Dif
     // Render description block if present
     if let Some(desc) = params.description {
         if !desc.trim().is_empty() {
-            render_description_block(&mut cursor, area, desc, params.theme);
+            render_description_block(&mut cursor, area, desc, params.highlighter, params.theme);
         }
     }
 
@@ -1308,6 +1354,7 @@ pub fn render_diff_stream(buffer: &mut OptimizedBuffer, area: Rect, params: &Dif
         all_comments: params.all_comments,
         thread_positions: params.thread_positions,
         line_map: params.line_map,
+        highlighter: params.highlighter,
     };
 
     for file in files {

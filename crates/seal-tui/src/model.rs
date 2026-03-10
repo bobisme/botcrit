@@ -329,9 +329,9 @@ impl LayoutMode {
     #[must_use]
     pub const fn sidebar_width(self) -> u16 {
         match self {
-            Self::Full => 28,
-            Self::Compact => 24,
-            Self::Overlay => 22,
+            Self::Full => 34,
+            Self::Compact => 30,
+            Self::Overlay => 28,
             Self::Single => 0,
         }
     }

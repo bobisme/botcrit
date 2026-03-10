@@ -65,13 +65,23 @@ fn history_lookup_command(seal_root: Option<&Path>, path: &str) -> Option<String
     }
 }
 
+fn review_log_history_path(review_id: Option<&str>) -> String {
+    match review_id {
+        Some(review_id) => format!(".seal/reviews/{review_id}/events.jsonl"),
+        None => ".seal/reviews/<review_id>/events.jsonl".to_string(),
+    }
+}
+
 fn rebuild_recovery_hint(seal_root: Option<&Path>) -> String {
-    if let Some(command) = history_lookup_command(seal_root, ".seal/events.jsonl") {
+    let path = review_log_history_path(None);
+    if let Some(command) = history_lookup_command(seal_root, &path) {
         format!(
-            "These reviews were in index.db but not in the restored events.jsonl. Check repository history for older versions using: {command}"
+            "These reviews were in index.db but not in the restored review event logs. Check repository history for older versions using: {command}"
         )
     } else {
-        "These reviews were in index.db but not in the restored events.jsonl. Check repository history for older versions of .seal/events.jsonl.".to_string()
+        format!(
+            "These reviews were in index.db but not in the restored review event logs. Check repository history for older versions of {path}."
+        )
     }
 }
 
@@ -91,19 +101,20 @@ fn emit_orphaned_reviews_warning(seal_root: Option<&Path>, review_ids: &[String]
     let repo_key = seal_root
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "<unknown>".to_string());
-    let key = format!("orphaned-reviews:{repo_key}:{}", review_ids.join(","));
+    let key = format!("orphaned-reviews:{repo_key}");
     if !should_emit_warning_once(key) {
         return;
     }
 
-    eprintln!(
-        "WARNING: {} review(s) have events but no ReviewCreated - skipping orphaned events",
-        review_ids.len()
-    );
-    for review_id in review_ids {
+    eprintln!("WARNING: review log(s) have events but no ReviewCreated - skipping orphaned events");
+    for review_id in review_ids.iter().take(3) {
         eprintln!("  {review_id}");
     }
-    if let Some(command) = history_lookup_command(seal_root, ".seal/events.jsonl") {
+    if review_ids.len() > 3 {
+        eprintln!("  ... and {} more", review_ids.len() - 3);
+    }
+    let path = review_log_history_path(review_ids.first().map(String::as_str));
+    if let Some(command) = history_lookup_command(seal_root, &path) {
         eprintln!("  Use `{command}` to find lost reviews in history");
     }
 }
@@ -137,9 +148,12 @@ fn emit_stale_review_logs_warning(seal_root: &Path, anomalies: &[SyncAnomaly]) {
         tracing::warn!("  {line}");
     }
     tracing::warn!("Projection data preserved. To investigate:");
-    if let Some(command) =
-        history_lookup_command(Some(seal_root), ".seal/reviews/<review_id>/events.jsonl")
-    {
+    let history_path = if anomalies.len() == 1 {
+        review_log_history_path(Some(&anomalies[0].review_id))
+    } else {
+        review_log_history_path(None)
+    };
+    if let Some(command) = history_lookup_command(Some(seal_root), &history_path) {
         tracing::warn!("  {command}");
     } else {
         tracing::warn!("  Inspect repository history for .seal/reviews/<review_id>/events.jsonl");
@@ -661,11 +675,13 @@ fn rebuild_projection_with_orphan_detection(
                 "Orphaned review details saved to: {}",
                 backup_path.display()
             );
-        } else if let Some(command) = history_lookup_command(repo_root, ".seal/events.jsonl") {
+        } else if let Some(command) =
+            history_lookup_command(repo_root, &review_log_history_path(None))
+        {
             eprintln!("HINT: Run '{command}' to find older versions");
         } else {
             eprintln!(
-                "HINT: Inspect repository history for .seal/events.jsonl to find older versions"
+                "HINT: Inspect repository history for .seal/reviews/<review_id>/events.jsonl to find older versions"
             );
         }
     }
@@ -1934,6 +1950,7 @@ mod tests {
         let hint = rebuild_recovery_hint(None);
         assert!(hint.contains("Check repository history"));
         assert!(!hint.contains("jj file annotate"));
+        assert!(hint.contains(".seal/reviews/<review_id>/events.jsonl"));
     }
 
     #[test]

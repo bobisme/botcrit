@@ -4,7 +4,7 @@ use crate::render_backend::{buffer_draw_text, buffer_fill_rect, OptimizedBuffer,
 
 use crate::db::ThreadSummary;
 use crate::layout::{CONTEXT_LINES, SBS_LINE_NUM_WIDTH};
-use crate::syntax::HighlightSpan;
+use crate::syntax::{HighlightSpan, Highlighter};
 use crate::theme::Theme;
 use crate::view::components::Rect;
 
@@ -177,6 +177,7 @@ pub(super) struct OrphanedRenderState<'a> {
     pub thread_positions: &'a std::cell::RefCell<std::collections::HashMap<String, usize>>,
     pub emitted_threads: &'a mut std::collections::HashSet<String>,
     pub last_line_num: &'a mut Option<i64>,
+    pub highlighter: &'a Highlighter,
 }
 
 pub(super) fn emit_orphaned_context_section(
@@ -224,6 +225,7 @@ pub(super) fn emit_orphaned_context_section(
                                 comments,
                                 hl,
                                 is_cursor,
+                                state.highlighter,
                             );
                         }
                     }
@@ -324,7 +326,15 @@ pub(super) fn emit_orphaned_context_section(
                         let rows = comment_block_rows(thread, comments, comment_area);
                         let is_cursor = cursor.is_cursor_at(rows);
                         let hl = is_cursor || cursor.is_selected_at(rows);
-                        emit_comment_block(cursor, comment_area, thread, comments, hl, is_cursor);
+                        emit_comment_block(
+                            cursor,
+                            comment_area,
+                            thread,
+                            comments,
+                            hl,
+                            is_cursor,
+                            state.highlighter,
+                        );
                     }
                 }
                 *state.last_line_num = Some(*line_num);
@@ -340,6 +350,7 @@ pub(super) fn emit_remaining_orphaned_comments(
     all_comments: &std::collections::HashMap<String, Vec<crate::db::Comment>>,
     thread_positions: &std::cell::RefCell<std::collections::HashMap<String, usize>>,
     emitted_threads: &std::collections::HashSet<String>,
+    highlighter: &Highlighter,
 ) {
     let mut remaining: Vec<&&ThreadSummary> = context
         .threads
@@ -355,7 +366,15 @@ pub(super) fn emit_remaining_orphaned_comments(
             let rows = comment_block_rows(thread, comments, comment_area);
             let is_cursor = cursor.is_cursor_at(rows);
             let hl = is_cursor || cursor.is_selected_at(rows);
-            emit_comment_block(cursor, comment_area, thread, comments, hl, is_cursor);
+            emit_comment_block(
+                cursor,
+                comment_area,
+                thread,
+                comments,
+                hl,
+                is_cursor,
+                highlighter,
+            );
         }
     }
 }

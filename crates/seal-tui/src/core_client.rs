@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use seal_core::core::{CoreContext, SealServices};
-use seal_core::sealignore::SealIgnore;
 use seal_core::events::CodeSelection;
 use seal_core::scm::{resolve_backend, ScmPreference};
+use seal_core::sealignore::SealIgnore;
 
 use crate::db::{
-    Comment, SealClient, FileContentData, FileData, ReviewData, ReviewDetail, ReviewSummary,
+    Comment, FileContentData, FileData, ReviewData, ReviewDetail, ReviewSummary, SealClient,
     ThreadSummary,
 };
 
@@ -31,9 +31,7 @@ impl CoreClient {
 
     /// Re-sync and get fresh services.
     fn services(&self) -> Result<SealServices> {
-        self.ctx
-            .services()
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        self.ctx.services().map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     fn comment_agent() -> String {
@@ -125,11 +123,16 @@ impl SealClient for CoreClient {
             .threads()
             .list(review_id, None, None)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let sealignore = SealIgnore::load(&self.repo_root);
+        let visible_threads: Vec<_> = core_threads
+            .into_iter()
+            .filter(|thread| !sealignore.is_ignored(&thread.file_path))
+            .collect();
 
-        let mut threads = Vec::with_capacity(core_threads.len());
+        let mut threads = Vec::with_capacity(visible_threads.len());
         let mut comments: HashMap<String, Vec<Comment>> = HashMap::new();
 
-        for t in &core_threads {
+        for t in &visible_threads {
             threads.push(convert_thread_summary(t));
 
             let core_comments = services
@@ -148,7 +151,7 @@ impl SealClient for CoreClient {
         let review_detail = convert_review_detail(&detail);
 
         // Build file diffs using SCM
-        let files = self.build_file_diffs(&detail, &core_threads);
+        let files = self.build_file_diffs(&detail, &visible_threads);
 
         Ok(Some(ReviewData {
             detail: review_detail,
@@ -177,9 +180,7 @@ impl SealClient for CoreClient {
 
         #[allow(clippy::cast_sign_loss)]
         let selection = match end_line {
-            Some(end) if end != start_line => {
-                CodeSelection::range(start_line as u32, end as u32)
-            }
+            Some(end) if end != start_line => CodeSelection::range(start_line as u32, end as u32),
             _ => CodeSelection::line(start_line as u32),
         };
 
@@ -237,7 +238,9 @@ impl CoreClient {
             .unwrap_or_else(|_| review.initial_commit.clone());
 
         // Get full diff and split by file
-        let full_diff = scm.diff_git(&base_commit, &target_commit).unwrap_or_default();
+        let full_diff = scm
+            .diff_git(&base_commit, &target_commit)
+            .unwrap_or_default();
         let diffs_by_file = split_diff_by_file(&full_diff);
 
         // Collect files: union of files with threads + files with diffs
